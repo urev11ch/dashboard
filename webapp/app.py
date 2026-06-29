@@ -29,7 +29,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Stre
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from runtime_paths import resolve_cache_root, resolve_default_workspace_root
+from runtime_paths import resolve_cache_root, resolve_default_workspace_root, resolve_runtime_root
 import wash_report as core
 from webapp.chart_payload import build_cycle_chart_payload
 
@@ -78,12 +78,10 @@ SUPPORTED_ARCHIVE_SUFFIXES = (
 ARCHIVE_CACHE_ROOT = resolve_cache_root("wash_journal_archive_cache")
 ANALYSIS_CACHE_ROOT = resolve_cache_root("wash_journal_analysis_cache")
 WEB_RUNTIME_OUTPUT_DIR = ANALYSIS_CACHE_ROOT / "generated"
-FTP_WORKSPACE_CACHE_ROOT = ANALYSIS_CACHE_ROOT / "ftp-workspaces"
-FTP_MATERIALIZED_CACHE_ROOT = ANALYSIS_CACHE_ROOT / "ftp-materialized"
 ARCHIVE_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 ANALYSIS_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 DB_ANALYSIS_CACHE_VERSION = 1
-WORKSPACE_ANALYSIS_CACHE_VERSION = 1
+WORKSPACE_ANALYSIS_CACHE_VERSION = 2
 CHART_PAYLOAD_DISK_CACHE_VERSION = 1
 CHART_PAYLOAD_CACHE_LIMIT = 64
 DB_ANALYSIS_MAX_WORKERS = 4
@@ -108,6 +106,7 @@ FTP_SOURCE_CONFIG_VERSION = 1
 FTP_CONNECT_TIMEOUT_SECONDS = 15
 FTP_DEFAULT_PORT = 21
 FTP_DOWNLOAD_MAX_DEPTH = 24
+FTP_DOWNLOAD_DATE_FORMAT = "%Y-%m-%d"
 FTP_HOST_RE = re.compile(r"^[A-Za-z0-9._:\-\[\]]+$")
 DEFAULT_FTP_FORM_VALUES = {
     "host": "",
@@ -117,11 +116,34 @@ DEFAULT_FTP_FORM_VALUES = {
     "path": "/datalog",
 }
 
+def resolve_app_data_root() -> Path:
+    """Папка приложения: рядом с .exe в собранной версии, иначе корень проекта."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return PROJECT_ROOT
+
+
+def resolve_datalog_root() -> Path:
+    """Постоянная папка `datalog` в каталоге приложения (с запасным вариантом,
+    если каталог приложения недоступен для записи — например, Program Files)."""
+    candidate = resolve_app_data_root() / "datalog"
+    try:
+        candidate.mkdir(parents=True, exist_ok=True)
+        probe = candidate / ".write-test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        return candidate.resolve()
+    except OSError:
+        fallback = resolve_runtime_root() / "datalog"
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback.resolve()
+
+
+DATALOG_ROOT = resolve_datalog_root()
+
 ARCHIVE_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 ANALYSIS_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 WEB_RUNTIME_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-FTP_WORKSPACE_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
-FTP_MATERIALIZED_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="Отчеты по мойкам")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -229,24 +251,6 @@ def format_day_key(timestamp: float) -> str:
 
 def ftp_source_config_path(root_path: Path) -> Path:
     return root_path / FTP_SOURCE_CONFIG_FILENAME
-
-
-def ftp_workspace_key(config: dict[str, Any]) -> str:
-    payload = {
-        "version": FTP_SOURCE_CONFIG_VERSION,
-        "host": config.get("host"),
-        "port": config.get("port"),
-        "username": config.get("username"),
-        "path": config.get("path"),
-        "passive": config.get("passive", True),
-    }
-    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-    return hashlib.sha1(serialized.encode("utf-8")).hexdigest()[:20]
-
-
-def ftp_materialized_cache_dir(root_path: Path) -> Path:
-    cache_key = hashlib.sha1(str(root_path.resolve()).encode("utf-8")).hexdigest()[:20]
-    return FTP_MATERIALIZED_CACHE_ROOT / cache_key
 
 
 def format_ftp_display_label(config: dict[str, Any]) -> str:
@@ -381,10 +385,12 @@ def save_ftp_source_config(root_path: Path, config: dict[str, Any]) -> None:
 
 
 def create_ftp_workspace(config: dict[str, Any]) -> tuple[Path, str]:
-    workspace_dir = FTP_WORKSPACE_CACHE_ROOT / ftp_workspace_key(config)
-    workspace_dir.mkdir(parents=True, exist_ok=True)
-    save_ftp_source_config(workspace_dir, config)
-    return workspace_dir.resolve(), format_ftp_display_label(config)
+    # Источником данных служит постоянная папка datalog рядом с приложением:
+    # архивы складываются в подпапки по дате скачивания, а сама конфигурация
+    # подключения хранится в корне datalog, чтобы «Обновить данные» докачивало.
+    DATALOG_ROOT.mkdir(parents=True, exist_ok=True)
+    save_ftp_source_config(DATALOG_ROOT, config)
+    return DATALOG_ROOT, format_ftp_display_label(config)
 
 
 def open_ftp_connection(config: dict[str, Any]) -> ftplib.FTP:
@@ -561,41 +567,65 @@ def download_ftp_files(
     return downloaded
 
 
+def datalog_has_archives(root_path: Path) -> bool:
+    """Есть ли в datalog уже скачанные базы `.db` или архивы (за любую дату)."""
+    try:
+        for candidate in root_path.rglob("*"):
+            if not candidate.is_file():
+                continue
+            lower_name = candidate.name.lower()
+            if lower_name.endswith(".db") or any(
+                lower_name.endswith(suffix) for suffix in SUPPORTED_ARCHIVE_SUFFIXES
+            ):
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def materialize_ftp_sources(
     root_path: Path,
     *,
     progress_callback: core.ProgressCallback | None = None,
     cancel_check: Callable[[], bool] | None = None,
-) -> list[Path]:
+) -> int:
+    """Скачивает архивы с FTP в `datalog/<дата-скачивания>/` (постоянное
+    хранилище рядом с приложением) и возвращает число скачанных файлов.
+
+    Папка не очищается: каждая загрузка добавляет новую подпапку по дате, а
+    повторяющиеся мойки убираются позже на этапе анализа. Если FTP недоступен,
+    но локальные архивы уже есть — продолжаем работу с ними."""
     config = load_ftp_source_config(root_path)
     if config is None:
-        return []
+        return 0
 
-    materialized_dir = ftp_materialized_cache_dir(root_path)
-    if materialized_dir.exists():
-        shutil.rmtree(materialized_dir, ignore_errors=True)
-    materialized_dir.mkdir(parents=True, exist_ok=True)
+    date_folder = time.strftime(FTP_DOWNLOAD_DATE_FORMAT, time.localtime())
+    download_dir = root_path / date_folder
+    download_dir.mkdir(parents=True, exist_ok=True)
 
-    downloaded_files = download_ftp_files(
-        config,
-        materialized_dir,
-        progress_callback=progress_callback,
-        cancel_check=cancel_check,
-    )
+    try:
+        downloaded_files = download_ftp_files(
+            config,
+            download_dir,
+            progress_callback=progress_callback,
+            cancel_check=cancel_check,
+        )
+    except core.AnalysisCancelledError:
+        raise
+    except (ValueError, SystemExit, OSError) as exc:
+        if datalog_has_archives(root_path):
+            core.emit_progress(
+                progress_callback,
+                phase="ftp",
+                message=f"FTP недоступен ({exc}); использую ранее скачанные архивы.",
+                item=format_ftp_display_label(config),
+            )
+            return 0
+        raise SystemExit(
+            f"Не удалось скачать архивы с FTP, и локальных архивов в `datalog` нет: {exc}"
+        ) from exc
 
-    db_paths: list[Path] = []
-    for local_path in downloaded_files:
-        lower_name = local_path.name.lower()
-        if lower_name.endswith(".db"):
-            db_paths.append(local_path.resolve())
-        elif any(lower_name.endswith(suffix) for suffix in SUPPORTED_ARCHIVE_SUFFIXES):
-            try:
-                db_paths.extend(extract_archive_dbs_cached(local_path, cancel_check=cancel_check))
-            except (OSError, ValueError, zipfile.BadZipFile, tarfile.TarError):
-                continue
-
-    unique_db_paths = {str(path): path for path in db_paths}
-    return sorted(unique_db_paths.values(), key=lambda item: str(item).lower())
+    return len(downloaded_files)
 
 
 def object_name_override_key(channel: int, object_id: int) -> str:
@@ -1179,13 +1209,18 @@ def discover_db_files(
 ) -> tuple[list[Path], ScanSummary]:
     direct_db_files: list[Path] = []
     archive_files: list[Path] = []
-    ftp_db_files: list[Path] = []
     scanned_files = 0
 
     with archive_cache_lock:
         cleanup_expired_cache_entries(ARCHIVE_CACHE_ROOT, ARCHIVE_CACHE_TTL_SECONDS)
-    with analysis_cache_lock:
-        cleanup_expired_cache_entries(FTP_MATERIALIZED_CACHE_ROOT, ANALYSIS_CACHE_TTL_SECONDS)
+
+    # Сначала докачиваем свежие архивы с FTP в datalog/<дата>/, чтобы обход
+    # ниже увидел и их, и ранее скачанные за прошлые даты.
+    ftp_downloaded_count = materialize_ftp_sources(
+        root_path,
+        progress_callback=progress_callback,
+        cancel_check=cancel_check,
+    )
 
     core.emit_progress(
         progress_callback,
@@ -1198,8 +1233,6 @@ def discover_db_files(
         ARCHIVE_CACHE_ROOT.resolve(),
         ANALYSIS_CACHE_ROOT.resolve(),
         WEB_RUNTIME_OUTPUT_DIR.resolve(),
-        FTP_WORKSPACE_CACHE_ROOT.resolve(),
-        FTP_MATERIALIZED_CACHE_ROOT.resolve(),
     }
 
     for current_root, _dirnames, filenames in os.walk(root_path):
@@ -1231,12 +1264,6 @@ def discover_db_files(
                     item=filename,
                 )
 
-    ftp_db_files = materialize_ftp_sources(
-        root_path,
-        progress_callback=progress_callback,
-        cancel_check=cancel_check,
-    )
-
     extracted_db_files: list[Path] = []
     for index, archive_path in enumerate(sorted(archive_files), start=1):
         if cancel_check is not None and cancel_check():
@@ -1261,11 +1288,11 @@ def discover_db_files(
         except (OSError, ValueError, zipfile.BadZipFile, tarfile.TarError):
             continue
 
-    unique_paths = {str(path): path for path in [*direct_db_files, *extracted_db_files, *ftp_db_files]}
+    unique_paths = {str(path): path for path in [*direct_db_files, *extracted_db_files]}
     db_files = sorted(unique_paths.values(), key=lambda item: str(item).lower())
     return db_files, ScanSummary(
         archive_count=len(archive_files),
-        ftp_source_count=len(ftp_db_files),
+        ftp_source_count=ftp_downloaded_count,
     )
 
 

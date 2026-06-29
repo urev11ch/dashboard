@@ -787,7 +787,9 @@ def build_object_overviews(
     samples_by_db: dict[str, list[Sample]],
     channels_by_db: dict[str, int],
 ) -> list[ObjectOverview]:
-    grouped: dict[tuple[str, int, int], dict[str, object]] = {}
+    # Объект уникален по (канал, объект); один и тот же объект из нескольких
+    # архивов объединяем в одну запись, чтобы он не дублировался в списке.
+    grouped: dict[tuple[int, int], dict[str, object]] = {}
 
     for source_db, samples in samples_by_db.items():
         channel = channels_by_db[source_db]
@@ -795,10 +797,11 @@ def build_object_overviews(
             if sample.object_id <= 0:
                 continue
 
-            key = (source_db, channel, sample.object_id)
+            key = (channel, sample.object_id)
             entry = grouped.setdefault(
                 key,
                 {
+                    "source_db": source_db,
                     "start_ts": sample.ts,
                     "end_ts": sample.ts,
                     "sample_count": 0,
@@ -815,11 +818,11 @@ def build_object_overviews(
             add_sample_to_metrics(entry["metrics"], sample)
 
     overviews: list[ObjectOverview] = []
-    for (source_db, channel, object_id), entry in grouped.items():
+    for (channel, object_id), entry in grouped.items():
         metrics = entry["metrics"]
         overviews.append(
             ObjectOverview(
-                source_db=source_db,
+                source_db=entry["source_db"],
                 channel=channel,
                 object_id=object_id,
                 object_name=name_for_object(channel, object_id),
@@ -940,6 +943,27 @@ def analyze_single_db_file(
         wash_intervals=wash_intervals,
     )
 
+def deduplicate_cycles(cycles: Sequence[Cycle]) -> list[Cycle]:
+    """Убирает повторяющиеся мойки, которые встречаются сразу в нескольких
+    архивах (перекрытие периодов выгрузки).
+
+    Мойка считается одной и той же по сочетанию канал + объект + программа +
+    время старта (с точностью до секунды). Из дубликатов оставляем самую
+    полную запись — с наибольшим числом точек измерений."""
+    best_by_signature: dict[tuple[int, int, int, int], Cycle] = {}
+    for cycle in cycles:
+        signature = (
+            cycle.channel,
+            cycle.object_id,
+            cycle.program_id,
+            int(round(cycle.start_ts)),
+        )
+        existing = best_by_signature.get(signature)
+        if existing is None or cycle.sample_count > existing.sample_count:
+            best_by_signature[signature] = cycle
+    return list(best_by_signature.values())
+
+
 def build_analysis_result(
     db_files: Sequence[str | Path],
     *,
@@ -964,6 +988,8 @@ def build_analysis_result(
         all_segments.extend(chunk.segments)
         all_cycles.extend(chunk.cycles)
         all_wash_intervals.extend(chunk.wash_intervals)
+
+    all_cycles = deduplicate_cycles(all_cycles)
 
     all_overviews = build_object_overviews(samples_by_db, channels_by_db)
     sorted_cycles = sorted(all_cycles, key=lambda item: item.start_ts, reverse=True)
