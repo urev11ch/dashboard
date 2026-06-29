@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import hashlib
 import ftplib
@@ -103,7 +104,7 @@ OBJECT_NAME_OVERRIDES_FILENAME = core.OBJECT_NAMES_FILENAME
 OBJECT_NAME_OVERRIDES_VERSION = 1
 FTP_SOURCE_CONFIG_FILENAME = "wash_ftp_source.json"
 FTP_SOURCE_CONFIG_VERSION = 1
-FTP_CONNECT_TIMEOUT_SECONDS = 15
+FTP_CONNECT_TIMEOUT_SECONDS = 10
 FTP_DEFAULT_PORT = 21
 FTP_DOWNLOAD_MAX_DEPTH = 24
 FTP_DOWNLOAD_DATE_FORMAT = "%Y-%m-%d"
@@ -1880,24 +1881,39 @@ def workspace_data() -> JSONResponse:
 
 
 @app.get("/api/workspace-job/stream")
-def workspace_job_status_stream() -> StreamingResponse:
-    subscriber = register_workspace_job_stream()
+async def workspace_job_status_stream() -> StreamingResponse:
+    # Асинхронный опрос состояния задачи на событийном цикле: не занимает поток
+    # из ограниченного пула (раньше блокирующий sync-генератор мог исчерпать
+    # пул потоков и подвесить весь интерфейс). При обрыве соединения генератор
+    # корректно отменяется.
+    poll_interval = 0.5
+    keepalive_ticks = max(1, int(WORKSPACE_JOB_STREAM_KEEPALIVE_SECONDS / poll_interval))
 
-    def event_stream() -> Any:
-        try:
-            while True:
-                try:
-                    payload = subscriber.get(timeout=WORKSPACE_JOB_STREAM_KEEPALIVE_SECONDS)
-                except Empty:
-                    yield ": keepalive\n\n"
-                    continue
+    async def event_stream() -> Any:
+        last_payload: str | None = None
+        idle_ticks = 0
+        while True:
+            with state_lock:
+                snapshot = serialize_job(state.workspace_job)
+            payload = json.dumps(snapshot, ensure_ascii=False)
 
+            if payload != last_payload:
+                last_payload = payload
+                idle_ticks = 0
                 yield f"data: {payload}\n\n"
-                status = json.loads(payload)
-                if not status.get("active") and status.get("status") in {"completed", "failed", "cancelled"}:
+                if not snapshot.get("active") and snapshot.get("status") in {
+                    "completed",
+                    "failed",
+                    "cancelled",
+                }:
                     break
-        finally:
-            unregister_workspace_job_stream(subscriber)
+            else:
+                idle_ticks += 1
+                if idle_ticks >= keepalive_ticks:
+                    idle_ticks = 0
+                    yield ": keepalive\n\n"
+
+            await asyncio.sleep(poll_interval)
 
     return StreamingResponse(
         event_stream(),
