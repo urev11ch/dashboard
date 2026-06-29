@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ page_title }}</title>
+  <link rel="icon" type="image/svg+xml" href="{{ request.url_for('static', path='washjournal-icon.svg') }}">
+  <link rel="stylesheet" href="{{ request.url_for('static', path='style.css') }}?v={{ asset_versions.style_css }}">
+</head>
+<body>
+  {% if not has_analysis %}
+  <main class="welcome-shell">
+    <section class="welcome-card">
+      <div class="eyebrow">OptiCIP Dashboard</div>
+      <h1>Выберите источник данных</h1>
+      <p class="welcome-copy">
+        Приложение поддерживает два режима: основной вход через FTP-сервер и дополнительную работу
+        с папкой, архивами и файлами <code>.db</code>.
+      </p>
+
+      <div class="welcome-source-switcher" role="tablist" aria-label="Источник данных">
+        <button type="button" class="welcome-source-tab is-active" data-source-tab="ftp" aria-pressed="true">FTP сервер</button>
+        <button type="button" class="welcome-source-tab ghost" data-source-tab="folder" aria-pressed="false">Папка и архивы</button>
+      </div>
+
+      <div class="welcome-source-stack">
+        <section class="welcome-source-panel welcome-source-panel--primary" data-source-panel="ftp">
+          <div class="eyebrow">Основной режим</div>
+          <h2 class="welcome-source-title">FTP сервер</h2>
+          <p class="welcome-source-copy">
+            Основной способ подключения для этой установки. Приложение рекурсивно скачает с сервера
+            файлы <code>.db</code> и поддерживаемые архивы <code>.zip</code>/<code>.tar.*</code>, затем построит журнал моек.
+          </p>
+          <form method="post" action="/workspace/open-ftp" class="folder-form folder-form--ftp">
+            <div class="welcome-ftp-panel">
+            <div class="welcome-form-grid">
+              <label>
+                <span>Host или ссылка</span>
+                <input type="text" name="host" value="{{ ftp_form_defaults.host }}" placeholder="IP панели или ftp://uploadhis:111111@IP/datalog" autocomplete="off" spellcheck="false" required>
+              </label>
+              <label>
+                <span>Port</span>
+                <input type="number" name="port" value="{{ ftp_form_defaults.port }}" min="1" max="65535" step="1" autocomplete="off" required>
+              </label>
+              <label>
+                <span>Пользователь</span>
+                <input type="text" name="username" value="{{ ftp_form_defaults.username }}" placeholder="anonymous" autocomplete="username" spellcheck="false">
+              </label>
+              <label>
+                <span>Папка на сервере</span>
+                <input type="text" name="path" value="{{ ftp_form_defaults.path }}" placeholder="/" autocomplete="off" spellcheck="false">
+              </label>
+            </div>
+            <div class="welcome-ftp-hint">
+              <strong>Быстрый старт</strong>
+              <span>
+                Укажите IP панели оператора — пользователь <code>uploadhis</code>, пароль <code>111111</code> и
+                папка <code>/datalog</code> уже подставлены. Можно вставить ссылку целиком в поле Host:
+                <code>ftp://uploadhis:111111@IP/datalog</code>.
+              </span>
+            </div>
+            <label for="ftpPassword">Пароль</label>
+            <input id="ftpPassword" type="password" name="password" value="{{ ftp_form_defaults.password }}" placeholder="Пароль FTP" autocomplete="current-password">
+            <label class="welcome-ftp-passive">
+              <input type="checkbox" name="passive" value="on" checked>
+              <span>Пассивный режим (PASV) — рекомендуется для большинства серверов</span>
+            </label>
+            <div class="folder-actions">
+              <button type="submit">Подключиться к FTP</button>
+            </div>
+            </div>
+          </form>
+        </section>
+
+        <section class="welcome-source-panel" data-source-panel="folder" hidden>
+          <div class="eyebrow">Дополнительный режим</div>
+          <h2 class="welcome-source-title">Папка и архивы</h2>
+          <p class="welcome-source-copy">
+            Если нужно работать не с FTP, а с локальными файлами, укажите корневую папку. Приложение само найдёт базы
+            <code>.db</code> во вложенных каталогах и внутри поддерживаемых архивов <code>.zip</code> и <code>.tar.*</code>.
+          </p>
+          <form method="post" action="/workspace/open" class="folder-form" id="workspaceOpenForm">
+            <label for="workspacePath">Путь к папке</label>
+            <input id="workspacePath" type="text" name="path" value="{{ workspace_input_value }}" placeholder="{{ workspace_path_placeholder }}" autocomplete="off" spellcheck="false" required>
+            <div class="folder-actions">
+              <button
+                type="button"
+                class="ghost"
+                data-folder-picker
+                data-target-input="workspacePath"
+                data-submit-form="workspaceOpenForm"
+              >
+                Выбрать папку
+              </button>
+              <button type="submit">Открыть папку</button>
+            </div>
+          </form>
+        </section>
+      </div>
+
+      {% if error %}
+      <div class="notice error">{{ error }}</div>
+      {% endif %}
+
+      <div class="welcome-hints">
+        <div class="hint-card">
+          <span>01</span>
+          <strong>FTP по умолчанию</strong>
+          <p>Основной сценарий запуска рассчитан на подключение к FTP-серверу: приложение само скачает архивы Weintek и файлы <code>.db</code>.</p>
+        </div>
+        <div class="hint-card">
+          <span>02</span>
+          <strong>Файловый fallback</strong>
+          <p>Если базы лежат на диске или в архиве, можно в один клик переключиться на выбор папки и открыть их без отдельной настройки.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+  {% else %}
+  <main class="wash-screen">
+    <header class="screen-header">
+      <div>
+        <h1>OptiCIP Dashboard</h1>
+        <div class="screen-path" id="screenPath">{{ display_root }}</div>
+      </div>
+      <div class="screen-header-actions">
+        <div class="screen-stats" id="screenStats">
+          <div class="stat-pill">Моек: {{ summary.cycle_count }}</div>
+          <div class="stat-pill">Объектов: {{ summary.object_count }}</div>
+          <div class="stat-pill">Баз: {{ summary.db_count }}</div>
+          {% if summary.archive_count %}
+          <div class="stat-pill">Архивов: {{ summary.archive_count }}</div>
+          {% endif %}
+          {% if summary.ftp_source_count %}
+          <div class="stat-pill">FTP: {{ summary.ftp_source_count }}</div>
+          {% endif %}
+        </div>
+        <div class="screen-header-buttons">
+          <button type="button" class="ghost" id="openObjectEditor">Редактор объектов</button>
+          <form method="post" action="/workspace/refresh" id="workspaceRefreshForm">
+            <button type="submit">Обновить данные</button>
+          </form>
+          <form method="post" action="/workspace/reset">
+            <button type="submit" class="ghost">Сменить источник</button>
+          </form>
+        </div>
+      </div>
+    </header>
+
+    <section class="list-toolbar">
+      <div class="toolbar-field toolbar-field--search">
+        <label for="searchInput">Поиск</label>
+        <input type="text" id="searchInput" placeholder="Объект, программа, дата" autocomplete="off" spellcheck="false">
+        <div class="toolbar-search-meta">
+          <span class="toolbar-filter-count" id="washFilterCount" aria-live="polite">Найдено моек: {{ summary.cycle_count }}</span>
+          <button type="button" class="ghost toolbar-period-clear" id="clearDateFilters">Сбросить фильтры</button>
+        </div>
+      </div>
+      <div class="toolbar-field toolbar-field--period">
+        <label for="dayFilter">Период</label>
+        <div class="toolbar-period-grid">
+          <label class="toolbar-calendar-button" id="openDayFilter" aria-label="Открыть календарь" title="Открыть календарь">
+            <input type="date" id="dayFilter" class="toolbar-date-input" aria-label="Выбрать дату">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M7 2a1 1 0 0 1 1 1v1h8V3a1 1 0 1 1 2 0v1h1a3 3 0 0 1 3 3v11a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V7a3 3 0 0 1 3-3h1V3a1 1 0 0 1 1-1Zm13 8H4v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8ZM6 6a1 1 0 0 0-1 1v1h15V7a1 1 0 0 0-1-1H6Zm2 7h3v3H8v-3Z"/>
+            </svg>
+          </label>
+        </div>
+        <div class="toolbar-period-presets" id="periodPresets">
+          <button type="button" class="ghost toolbar-period-preset" data-period-preset="today">Сегодня</button>
+          <button type="button" class="ghost toolbar-period-preset" data-period-preset="7d">7 дней</button>
+          <button type="button" class="ghost toolbar-period-preset" data-period-preset="30d">30 дней</button>
+          <button type="button" class="ghost toolbar-period-preset is-active" data-period-preset="all">Весь период</button>
+        </div>
+      </div>
+      <div class="toolbar-field">
+        <label for="channelFilter">Канал</label>
+        <input type="hidden" id="channelFilter" value="">
+        <div class="toolbar-channel-grid" id="channelOptions"></div>
+      </div>
+      <div class="toolbar-field">
+        <label for="sortOrder">Сортировка</label>
+        <input type="hidden" id="sortOrder" value="date_desc">
+        <div class="toolbar-sort-grid" id="sortOptions">
+          <button type="button" class="toolbar-sort-option is-active" data-sort-value="date_desc">Новые</button>
+          <button type="button" class="toolbar-sort-option" data-sort-value="date_asc">Старые</button>
+          <button type="button" class="toolbar-sort-option" data-sort-value="object_asc">А-Я</button>
+          <button type="button" class="toolbar-sort-option" data-sort-value="duration_desc">Дольше</button>
+        </div>
+      </div>
+    </section>
+
+    <div class="notice error" id="screenErrorNotice"{% if not error %} hidden{% endif %}>{{ error or '' }}</div>
+
+    <section class="wash-list-panel wash-list-panel--full">
+      <div class="wash-list-head">
+        <span>Дата и время</span>
+        <span>Объект</span>
+        <span>Программа</span>
+        <span>Длительность</span>
+        <span>Результат</span>
+      </div>
+      <div id="washList" class="wash-list wash-list--table"></div>
+    </section>
+  </main>
+  {% endif %}
+
+  <section class="workspace-job-overlay" data-workspace-job{% if not job_status.active %} hidden{% endif %}>
+    <div class="workspace-job-card">
+      <div class="eyebrow">Обрабатываю данные</div>
+      <h2 data-workspace-job-message>{{ job_status.message }}</h2>
+      <p class="workspace-job-target" data-workspace-job-target>{{ job_status.display_target or job_status.target_root }}</p>
+      <div class="workspace-job-meta">
+        <span class="workspace-job-phase" data-workspace-job-phase>{{ job_status.phase }}</span>
+        <span class="workspace-job-count" data-workspace-job-count>
+          {% if job_status.total %}
+          {{ job_status.current }} из {{ job_status.total }}
+          {% else %}
+          {{ job_status.current }}
+          {% endif %}
+        </span>
+      </div>
+      <div
+        class="workspace-job-progress"
+        role="progressbar"
+        aria-valuemin="0"
+        aria-valuemax="{{ job_status.total or 0 }}"
+        aria-valuenow="{{ job_status.current }}"
+      >
+        <span
+          data-workspace-job-bar
+          style="width:{% if job_status.total %}{{ ((job_status.current / job_status.total) * 100) | round(2) }}{% else %}12{% endif %}%"
+        ></span>
+      </div>
+      <div class="workspace-job-item" data-workspace-job-item{% if not job_status.item %} hidden{% endif %}>{{ job_status.item }}</div>
+      <div class="workspace-job-actions">
+        <button type="button" class="ghost" data-workspace-job-cancel>Отменить</button>
+      </div>
+    </div>
+  </section>
+
+  <script>
+    window.__WASH_APP__ = {{ app_state|tojson }};
+  </script>
+  <script src="{{ request.url_for('static', path='wash-chart.js') }}?v={{ asset_versions.wash_chart_js }}"></script>
+  <script src="{{ request.url_for('static', path='app.js') }}?v={{ asset_versions.app_js }}"></script>
+</body>
+</html>
