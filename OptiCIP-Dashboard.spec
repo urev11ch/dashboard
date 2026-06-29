@@ -33,6 +33,9 @@ for package in ("webview",):
 icon_path = os.path.join("webapp", "static", "icon.ico")
 app_icon = icon_path if os.path.exists(icon_path) else None
 
+# Version resource shown in the .exe "Properties" tab.
+version_file = "version_info.txt" if os.path.exists("version_info.txt") else None
+
 
 a = Analysis(
     ["run_wash_desktop.py"],
@@ -69,4 +72,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=app_icon,
+    version=version_file,
 )

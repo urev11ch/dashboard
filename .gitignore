@@ -32,3 +32,6 @@ datalog/
 
 # PyInstaller output
 *.spec.bak
+
+# Pytest
+.pytest_cache/

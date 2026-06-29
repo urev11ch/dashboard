@@ -11,6 +11,9 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      # true, если в репозитории заданы секреты для подписи кода
+      HAS_SIGNING: ${{ secrets.WINDOWS_PFX_BASE64 != '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,12 +28,42 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-windows.txt
 
+      - name: Run tests
+        run: |
+          pip install pytest
+          pytest -q
+
       - name: Build executable
         run: pyinstaller --noconfirm OptiCIP-Dashboard.spec
 
-      - name: Upload artifact
+      - name: Sign executable
+        if: env.HAS_SIGNING == 'true'
+        env:
+          WINDOWS_PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
+          WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+        run: pwsh ./scripts/sign.ps1 -Path "dist/OptiCIP-Dashboard.exe"
+
+      - name: Download WebView2 bootstrapper
+        run: Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile "MicrosoftEdgeWebview2Setup.exe"
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer.iss'
+
+      - name: Sign installer
+        if: env.HAS_SIGNING == 'true'
+        env:
+          WINDOWS_PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
+          WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+        run: pwsh ./scripts/sign.ps1 -Path "installer_out/OptiCIP-Dashboard-Setup.exe"
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: OptiCIP-Dashboard-windows
-          path: dist/OptiCIP-Dashboard.exe
+          path: |
+            dist/OptiCIP-Dashboard.exe
+            installer_out/OptiCIP-Dashboard-Setup.exe
           if-no-files-found: error

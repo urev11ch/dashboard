@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import hashlib
 import ftplib
@@ -100,10 +101,12 @@ IGNORED_WORKSPACE_DIR_NAMES = frozenset(
         "node_modules",
     }
 )
+APP_VERSION = "1.0.0"
 OBJECT_NAME_OVERRIDES_FILENAME = core.OBJECT_NAMES_FILENAME
 OBJECT_NAME_OVERRIDES_VERSION = 1
-FTP_SOURCE_CONFIG_FILENAME = "wash_ftp_source.json"
 FTP_SOURCE_CONFIG_VERSION = 1
+FTP_SOURCES_FILENAME = "wash_ftp_sources.json"
+FTP_SOURCES_VERSION = 1
 FTP_CONNECT_TIMEOUT_SECONDS = 10
 FTP_DEFAULT_PORT = 21
 FTP_DOWNLOAD_MAX_DEPTH = 24
@@ -112,8 +115,8 @@ FTP_HOST_RE = re.compile(r"^[A-Za-z0-9._:\-\[\]]+$")
 DEFAULT_FTP_FORM_VALUES = {
     "host": "",
     "port": "21",
-    "username": "uploadhis",
-    "password": "111111",
+    "username": "",
+    "password": "",
     "path": "/datalog",
 }
 
@@ -253,15 +256,180 @@ def format_day_key(timestamp: float) -> str:
         return ""
 
 
-def ftp_source_config_path(root_path: Path) -> Path:
-    return root_path / FTP_SOURCE_CONFIG_FILENAME
-
-
 def format_ftp_display_label(config: dict[str, Any]) -> str:
     host = str(config.get("host") or "").strip()
     port = int(config.get("port") or FTP_DEFAULT_PORT)
     path = str(config.get("path") or "/").strip() or "/"
     return f"FTP · {host}:{port}{path}"
+
+
+# ---- защищённое хранение паролей ---------------------------------------
+# На Windows используем DPAPI (CryptProtectData) — пароль шифруется ключом
+# текущего пользователя ОС. На других платформах (dev) — обратимое кодирование
+# (не шифрование), чтобы не хранить совсем уж в чистом виде.
+def _dpapi_crypt(data: bytes, *, protect: bool) -> bytes | None:
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    class DATA_BLOB(ctypes.Structure):
+        _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+    buffer = ctypes.create_string_buffer(data, len(data))
+    blob_in = DATA_BLOB(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_char)))
+    blob_out = DATA_BLOB()
+    crypt32 = ctypes.windll.crypt32
+    func = crypt32.CryptProtectData if protect else crypt32.CryptUnprotectData
+    # CRYPTPROTECT_UI_FORBIDDEN = 0x1
+    ok = func(ctypes.byref(blob_in), None, None, None, None, 0x1, ctypes.byref(blob_out))
+    if not ok:
+        return None
+    try:
+        return ctypes.string_at(blob_out.pbData, blob_out.cbData)
+    finally:
+        ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+
+
+def protect_secret(value: str) -> str:
+    raw = (value or "").encode("utf-8")
+    if not raw:
+        return ""
+    blob = _dpapi_crypt(raw, protect=True)
+    if blob is not None:
+        return "dpapi:" + base64.b64encode(blob).decode("ascii")
+    return "b64:" + base64.b64encode(raw).decode("ascii")
+
+
+def unprotect_secret(token: str) -> str:
+    token = str(token or "")
+    if not token:
+        return ""
+    if token.startswith("dpapi:"):
+        try:
+            blob = base64.b64decode(token[6:])
+        except Exception:
+            return ""
+        raw = _dpapi_crypt(blob, protect=False)
+        return raw.decode("utf-8") if raw is not None else ""
+    if token.startswith("b64:"):
+        try:
+            return base64.b64decode(token[4:]).decode("utf-8")
+        except Exception:
+            return ""
+    return token  # legacy plaintext
+
+
+# ---- реестр сохранённых FTP-подключений (несколько панелей) ------------
+def ftp_sources_path() -> Path:
+    return TEMP_ROOT / FTP_SOURCES_FILENAME
+
+
+def ftp_connection_id(config: dict[str, Any]) -> str:
+    payload = f"{config['host']}|{config['port']}|{config['username']}|{config['path']}"
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def load_ftp_sources_registry() -> dict[str, Any]:
+    try:
+        payload = json.loads(ftp_sources_path().read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    connections = payload.get("connections")
+    if not isinstance(connections, list):
+        connections = []
+    cleaned = [c for c in connections if isinstance(c, dict) and c.get("id")]
+    return {
+        "version": FTP_SOURCES_VERSION,
+        "active_id": payload.get("active_id"),
+        "connections": cleaned,
+    }
+
+
+def save_ftp_sources_registry(registry: dict[str, Any]) -> None:
+    path = ftp_sources_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(f"{path.suffix}.tmp")
+    temp_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path.replace(path)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def upsert_ftp_connection(config: dict[str, Any], label: str = "") -> dict[str, Any]:
+    registry = load_ftp_sources_registry()
+    conn_id = ftp_connection_id(config)
+    entry = {
+        "id": conn_id,
+        "label": (label or "").strip() or format_ftp_display_label(config),
+        "host": config["host"],
+        "port": config["port"],
+        "username": config["username"],
+        "password_enc": protect_secret(config.get("password", "")),
+        "path": config["path"],
+        "passive": bool(config.get("passive", True)),
+    }
+    registry["connections"] = [c for c in registry["connections"] if c.get("id") != conn_id]
+    registry["connections"].append(entry)
+    registry["active_id"] = conn_id
+    save_ftp_sources_registry(registry)
+    return entry
+
+
+def find_ftp_connection(conn_id: str) -> dict[str, Any] | None:
+    if not conn_id:
+        return None
+    for conn in load_ftp_sources_registry()["connections"]:
+        if conn.get("id") == conn_id:
+            return conn
+    return None
+
+
+def connection_to_config(conn: dict[str, Any]) -> dict[str, Any]:
+    return normalize_ftp_connection_settings(
+        {
+            "host": conn.get("host"),
+            "port": conn.get("port"),
+            "username": conn.get("username"),
+            "password": unprotect_secret(conn.get("password_enc", "")),
+            "path": conn.get("path"),
+            "passive": conn.get("passive", True),
+        }
+    )
+
+
+def delete_ftp_connection(conn_id: str) -> None:
+    registry = load_ftp_sources_registry()
+    registry["connections"] = [c for c in registry["connections"] if c.get("id") != conn_id]
+    if registry.get("active_id") == conn_id:
+        registry["active_id"] = None
+    save_ftp_sources_registry(registry)
+    profile_dir = DATALOG_ROOT / conn_id
+    if profile_dir.exists():
+        shutil.rmtree(profile_dir, ignore_errors=True)
+
+
+def list_ftp_sources_public() -> list[dict[str, Any]]:
+    registry = load_ftp_sources_registry()
+    rows: list[dict[str, Any]] = []
+    for conn in registry["connections"]:
+        rows.append(
+            {
+                "id": conn.get("id") or "",
+                "label": conn.get("label") or "",
+                "host": conn.get("host") or "",
+                "port": conn.get("port") or FTP_DEFAULT_PORT,
+                "path": conn.get("path") or "/",
+                "username": conn.get("username") or "",
+                "active": conn.get("id") == registry.get("active_id"),
+            }
+        )
+    rows.sort(key=lambda row: str(row["label"]).lower())
+    return rows
 
 
 def normalize_ftp_host(raw_value: Any) -> str:
@@ -357,44 +525,16 @@ def normalize_ftp_connection_settings(raw_payload: Any) -> dict[str, Any]:
     }
 
 
-def load_ftp_source_config(root_path: Path | None) -> dict[str, Any] | None:
-    if root_path is None:
-        return None
-
-    path = ftp_source_config_path(root_path)
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return None
-    except (OSError, json.JSONDecodeError) as exc:
-        raise SystemExit(f"Не удалось прочитать `{FTP_SOURCE_CONFIG_FILENAME}`: {exc}") from exc
-
-    try:
-        return normalize_ftp_connection_settings(payload)
-    except ValueError as exc:
-        raise SystemExit(str(exc)) from exc
-
-
-def save_ftp_source_config(root_path: Path, config: dict[str, Any]) -> None:
-    path = ftp_source_config_path(root_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(config, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
-
-
-def create_ftp_workspace(config: dict[str, Any]) -> tuple[Path, str]:
-    # Источником данных служит постоянная папка datalog рядом с приложением:
-    # архивы складываются в подпапки по дате скачивания, а сама конфигурация
-    # подключения хранится в корне datalog, чтобы «Обновить данные» докачивало.
-    DATALOG_ROOT.mkdir(parents=True, exist_ok=True)
-    save_ftp_source_config(DATALOG_ROOT, config)
-    return DATALOG_ROOT, format_ftp_display_label(config)
+def create_ftp_workspace(config: dict[str, Any], label: str = "") -> tuple[Path, str]:
+    # Подключение сохраняется в реестре (temp/wash_ftp_sources.json, пароль
+    # зашифрован DPAPI), а каждой панели выделяется своя папка с архивами:
+    #   datalog/<id>/<дата>/...
+    # Это позволяет хранить несколько панелей и переключаться между ними, не
+    # смешивая их данные.
+    entry = upsert_ftp_connection(config, label=label)
+    profile_dir = DATALOG_ROOT / entry["id"]
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    return profile_dir.resolve(), entry["label"]
 
 
 def open_ftp_connection(config: dict[str, Any]) -> ftplib.FTP:
@@ -593,15 +733,25 @@ def materialize_ftp_sources(
     progress_callback: core.ProgressCallback | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> int:
-    """Скачивает архивы с FTP в `datalog/<дата-скачивания>/` (постоянное
-    хранилище рядом с приложением) и возвращает число скачанных файлов.
+    """Скачивает архивы активной FTP-панели в `datalog/<id>/<дата>/` и
+    возвращает число скачанных файлов.
 
-    Папка не очищается: каждая загрузка добавляет новую подпапку по дате, а
-    повторяющиеся мойки убираются позже на этапе анализа. Если FTP недоступен,
-    но локальные архивы уже есть — продолжаем работу с ними."""
-    config = load_ftp_source_config(root_path)
-    if config is None:
+    Папка профиля определяется по `root_path` (это `datalog/<id>`); параметры
+    подключения берутся из реестра по `id`. Папка не очищается: каждая загрузка
+    добавляет новую подпапку по дате, а повторяющиеся мойки убираются позже на
+    этапе анализа. Если FTP недоступен, но локальные архивы уже есть — работаем
+    с ними. Для обычной папки (folder mode) функция ничего не делает."""
+    try:
+        is_ftp_profile = root_path.resolve().parent == DATALOG_ROOT
+    except OSError:
+        is_ftp_profile = False
+    if not is_ftp_profile:
         return 0
+
+    connection = find_ftp_connection(root_path.name)
+    if connection is None:
+        return 0
+    config = connection_to_config(connection)
 
     date_folder = time.strftime(FTP_DOWNLOAD_DATE_FORMAT, time.localtime())
     download_dir = root_path / date_folder
@@ -1776,6 +1926,8 @@ def page_context(request: Request, snapshot: AppStateSnapshot) -> dict[str, Any]
         "workspace_input_value": workspace_input_value,
         "workspace_path_placeholder": resolve_workspace_path_placeholder(),
         "ftp_form_defaults": dict(DEFAULT_FTP_FORM_VALUES),
+        "ftp_sources": list_ftp_sources_public(),
+        "app_version": APP_VERSION,
         "summary": workspace_payload["summary"],
         "error": workspace_payload["error"],
         "asset_versions": asset_versions,
@@ -1819,32 +1971,56 @@ def open_workspace(path: str = Form(...)) -> RedirectResponse:
 
 @app.post("/workspace/open-ftp")
 def open_ftp_workspace(
-    host: str = Form(...),
+    source_id: str = Form(""),
+    host: str = Form(""),
     port: str = Form("21"),
     username: str = Form(""),
     password: str = Form(""),
-    path: str = Form("/"),
+    path: str = Form("/datalog"),
     passive: str = Form(""),
+    label: str = Form(""),
 ) -> RedirectResponse:
     try:
-        config = normalize_ftp_connection_settings(
-            {
-                "host": host,
-                "port": port,
-                "username": username,
-                "password": password,
-                "path": path,
-                "passive": passive,
-            }
-        )
+        saved_id = source_id.strip()
+        if saved_id:
+            connection = find_ftp_connection(saved_id)
+            if connection is None:
+                raise ValueError("Сохранённое подключение не найдено.")
+            config = connection_to_config(connection)
+            connection_label = connection.get("label") or ""
+        else:
+            config = normalize_ftp_connection_settings(
+                {
+                    "host": host,
+                    "port": port,
+                    "username": username,
+                    "password": password,
+                    "path": path,
+                    "passive": passive,
+                }
+            )
+            connection_label = label
     except ValueError as exc:
         with state_lock:
             state.error = str(exc)
         return RedirectResponse(url="/", status_code=303)
 
-    workspace_dir, display_label = create_ftp_workspace(config)
+    workspace_dir, display_label = create_ftp_workspace(config, label=connection_label)
     with state_lock:
         start_workspace_job(workspace_dir, display_target=display_label)
+    return RedirectResponse(url="/", status_code=303)
+
+
+@app.post("/workspace/ftp-source/delete")
+def delete_ftp_source(source_id: str = Form(...)) -> RedirectResponse:
+    saved_id = source_id.strip()
+    if saved_id:
+        with state_lock:
+            current_root = state.selected_root or state.pending_root
+            clears_active = current_root is not None and current_root.name == saved_id
+            if clears_active:
+                reset_workspace()
+        delete_ftp_connection(saved_id)
     return RedirectResponse(url="/", status_code=303)
 
 

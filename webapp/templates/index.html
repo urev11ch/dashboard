@@ -29,36 +29,69 @@
           <h2 class="welcome-source-title">FTP сервер</h2>
           <p class="welcome-source-copy">
             Приложение скачает архивы с сервера в локальную папку <code>datalog</code> (подпапки по дате
-            скачивания), объединит их, уберёт повторяющиеся мойки и построит журнал.
+            скачивания), объединит их, уберёт повторяющиеся мойки и построит журнал. Сохранённые панели
+            можно переключать; пароли хранятся в зашифрованном виде.
           </p>
-          <form method="post" action="/workspace/open-ftp" class="folder-form folder-form--ftp">
-            <div class="welcome-ftp-panel">
-            <div class="welcome-form-grid">
-              <label>
-                <span>Host или ссылка</span>
-                <input type="text" name="host" value="{{ ftp_form_defaults.host }}" placeholder="IP панели или ftp://uploadhis:111111@IP/datalog" autocomplete="off" spellcheck="false" required>
-              </label>
-              <label>
-                <span>Port</span>
-                <input type="number" name="port" value="{{ ftp_form_defaults.port }}" min="1" max="65535" step="1" autocomplete="off" required>
-              </label>
-              <label>
-                <span>Пользователь</span>
-                <input type="text" name="username" value="{{ ftp_form_defaults.username }}" placeholder="anonymous" autocomplete="username" spellcheck="false">
-              </label>
-              <label>
-                <span>Папка на сервере</span>
-                <input type="text" name="path" value="{{ ftp_form_defaults.path }}" placeholder="/" autocomplete="off" spellcheck="false">
-              </label>
-            </div>
-            <label for="ftpPassword">Пароль</label>
-            <input id="ftpPassword" type="password" name="password" value="{{ ftp_form_defaults.password }}" placeholder="Пароль FTP" autocomplete="current-password">
-            <input type="hidden" name="passive" value="on">
-            <div class="folder-actions">
-              <button type="submit">Подключиться к FTP</button>
-            </div>
-            </div>
-          </form>
+
+          {% if ftp_sources %}
+          <div class="ftp-saved">
+            <div class="eyebrow">Сохранённые панели</div>
+            <ul class="ftp-source-list">
+              {% for src in ftp_sources %}
+              <li class="ftp-source-item{% if src.active %} is-active{% endif %}">
+                <div class="ftp-source-info">
+                  <span class="ftp-source-label">{{ src.label }}</span>
+                  <span class="ftp-source-meta">{{ src.host }}:{{ src.port }}{{ src.path }}</span>
+                </div>
+                <div class="ftp-source-actions">
+                  <form method="post" action="/workspace/open-ftp">
+                    <input type="hidden" name="source_id" value="{{ src.id }}">
+                    <button type="submit">Подключиться</button>
+                  </form>
+                  <form method="post" action="/workspace/ftp-source/delete" onsubmit="return confirm('Удалить сохранённую панель?');">
+                    <input type="hidden" name="source_id" value="{{ src.id }}">
+                    <button type="submit" class="ghost">Удалить</button>
+                  </form>
+                </div>
+              </li>
+              {% endfor %}
+            </ul>
+          </div>
+          {% endif %}
+
+          <details class="welcome-ftp-add"{% if not ftp_sources %} open{% endif %}>
+            <summary>Добавить панель</summary>
+            <form method="post" action="/workspace/open-ftp" class="folder-form folder-form--ftp">
+              <div class="welcome-ftp-panel">
+              <div class="welcome-form-grid">
+                <label>
+                  <span>Host или ссылка</span>
+                  <input type="text" name="host" value="{{ ftp_form_defaults.host }}" placeholder="IP панели или ftp://user:pass@IP/datalog" autocomplete="off" spellcheck="false" required>
+                </label>
+                <label>
+                  <span>Port</span>
+                  <input type="number" name="port" value="{{ ftp_form_defaults.port }}" min="1" max="65535" step="1" autocomplete="off" required>
+                </label>
+                <label>
+                  <span>Пользователь</span>
+                  <input type="text" name="username" value="{{ ftp_form_defaults.username }}" placeholder="anonymous" autocomplete="username" spellcheck="false">
+                </label>
+                <label>
+                  <span>Папка на сервере</span>
+                  <input type="text" name="path" value="{{ ftp_form_defaults.path }}" placeholder="/datalog" autocomplete="off" spellcheck="false">
+                </label>
+              </div>
+              <label for="ftpLabel">Название панели (необязательно)</label>
+              <input id="ftpLabel" type="text" name="label" placeholder="Например: Цех 1" autocomplete="off" spellcheck="false">
+              <label for="ftpPassword">Пароль</label>
+              <input id="ftpPassword" type="password" name="password" value="{{ ftp_form_defaults.password }}" placeholder="Пароль FTP" autocomplete="current-password">
+              <input type="hidden" name="passive" value="on">
+              <div class="folder-actions">
+                <button type="submit">Добавить и подключить</button>
+              </div>
+              </div>
+            </form>
+          </details>
         </section>
 
         <section class="welcome-source-panel" data-source-panel="folder" hidden>

@@ -1,0 +1,31 @@
+# PyInstaller version resource for OptiCIP-Dashboard.exe (Windows "Properties" tab).
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 0, 0, 0),
+    prodvers=(1, 0, 0, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0),
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable(
+        '040904B0',
+        [
+          StringStruct('CompanyName', 'OptiCIP'),
+          StringStruct('FileDescription', 'OptiCIP Dashboard — отчёты по мойкам CIP'),
+          StringStruct('FileVersion', '1.0.0.0'),
+          StringStruct('InternalName', 'OptiCIP-Dashboard'),
+          StringStruct('OriginalFilename', 'OptiCIP-Dashboard.exe'),
+          StringStruct('ProductName', 'OptiCIP Dashboard'),
+          StringStruct('ProductVersion', '1.0.0.0'),
+          StringStruct('LegalCopyright', '(c) OptiCIP'),
+        ],
+      )
+    ]),
+    VarFileInfo([VarStruct('Translation', [0x0409, 1200])]),
+  ],
+)

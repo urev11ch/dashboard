@@ -3033,3 +3033,70 @@ body.modal-export-mode .chart-print-document {
     width: 100%;
   }
 }
+
+/* Сохранённые FTP-панели на экране выбора источника */
+.ftp-saved {
+  margin-top: 6px;
+}
+.ftp-source-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.ftp-source-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--panel-soft);
+}
+.ftp-source-item.is-active {
+  border-color: rgba(23, 87, 255, 0.4);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.ftp-source-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.ftp-source-label {
+  font-weight: 700;
+  color: var(--text);
+}
+.ftp-source-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ftp-source-actions {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.ftp-source-actions form {
+  margin: 0;
+}
+.welcome-ftp-add {
+  margin-top: 14px;
+}
+.welcome-ftp-add > summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--accent);
+  padding: 6px 0;
+  list-style: none;
+}
+.welcome-ftp-add > summary::-webkit-details-marker {
+  display: none;
+}
+.welcome-ftp-add[open] > summary {
+  margin-bottom: 8px;
+}
