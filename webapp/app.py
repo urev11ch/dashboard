@@ -1610,10 +1610,20 @@ def build_wash_rows(analysis: core.AnalysisResult) -> list[dict[str, Any]]:
 
 def build_object_rows(
     overrides: dict[tuple[int, int], str] | None = None,
+    analysis: core.AnalysisResult | None = None,
 ) -> list[dict[str, Any]]:
     overrides = overrides or {}
+    # Показываем не только уже переименованные объекты, но и все обнаруженные в
+    # данных — чтобы их можно было назвать (и тем самым создать json), даже если
+    # файла имён ещё нет.
+    keys: set[tuple[int, int]] = set(overrides)
+    if analysis is not None:
+        for overview in analysis.overviews:
+            if overview.object_id > 0:
+                keys.add((overview.channel, overview.object_id))
+
     rows: list[dict[str, Any]] = []
-    for channel, object_id in sorted(overrides):
+    for channel, object_id in sorted(keys):
         if object_id <= 0:
             continue
         base_name = fallback_object_name(object_id)
@@ -1732,7 +1742,7 @@ def build_workspace_payload(
     }
     if include_rows:
         payload["wash_rows"] = build_wash_rows(analysis) if analysis else []
-        payload["object_rows"] = build_object_rows(snapshot.object_name_overrides)
+        payload["object_rows"] = build_object_rows(snapshot.object_name_overrides, analysis)
     return payload
 
 
@@ -2016,7 +2026,7 @@ async def update_object_name(request: Request) -> JSONResponse:
             "object_name": resolved_name,
             "has_json_name": (channel, object_id) in overrides,
             "is_custom_name": resolved_name != fallback_object_name(object_id),
-            "object_rows": build_object_rows(state.object_name_overrides),
+            "object_rows": build_object_rows(state.object_name_overrides, state.analysis),
         }
     )
 
@@ -2053,7 +2063,7 @@ def sync_object_names_file() -> JSONResponse:
                 "file_path": str(path),
                 "entry_count": len(next_overrides),
                 "added_entry_count": added_entry_count,
-                "object_rows": build_object_rows(state.object_name_overrides),
+                "object_rows": build_object_rows(state.object_name_overrides, state.analysis),
             }
         )
 
