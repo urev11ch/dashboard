@@ -476,7 +476,13 @@
       return true;
     };
 
-    startStream() || (initialJobStatus.active && startPollingFallback());
+    // Подписываемся на поток только если задача реально выполняется при загрузке
+    // страницы. Иначе уже завершённый (failed/cancelled) статус сразу считался бы
+    // «терминальным» и вызывал бы window.location.reload() — бесконечная
+    // перезагрузка после неудачного подключения к FTP.
+    if (initialJobStatus.active) {
+      startStream() || startPollingFallback();
+    }
 
     window.addEventListener("beforeunload", () => {
       closeStream();

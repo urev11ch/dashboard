@@ -27,6 +27,7 @@ Thumbs.db
 
 # Local sample/operator data
 Архивы/
+temp/
 datalog/
 
 # PyInstaller output

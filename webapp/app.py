@@ -124,10 +124,10 @@ def resolve_app_data_root() -> Path:
     return PROJECT_ROOT
 
 
-def resolve_datalog_root() -> Path:
-    """Постоянная папка `datalog` в каталоге приложения (с запасным вариантом,
+def resolve_app_subdir(name: str) -> Path:
+    """Создаёт подпапку `name` в каталоге приложения (с запасным вариантом,
     если каталог приложения недоступен для записи — например, Program Files)."""
-    candidate = resolve_app_data_root() / "datalog"
+    candidate = resolve_app_data_root() / name
     try:
         candidate.mkdir(parents=True, exist_ok=True)
         probe = candidate / ".write-test"
@@ -135,12 +135,15 @@ def resolve_datalog_root() -> Path:
         probe.unlink()
         return candidate.resolve()
     except OSError:
-        fallback = resolve_runtime_root() / "datalog"
+        fallback = resolve_runtime_root() / name
         fallback.mkdir(parents=True, exist_ok=True)
         return fallback.resolve()
 
 
-DATALOG_ROOT = resolve_datalog_root()
+# datalog — постоянное хранилище скачанных архивов (подпапки по дате).
+# temp — служебные файлы приложения (имена объектов и т. п.).
+DATALOG_ROOT = resolve_app_subdir("datalog")
+TEMP_ROOT = resolve_app_subdir("temp")
 
 ARCHIVE_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 ANALYSIS_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
@@ -1465,7 +1468,7 @@ def run_workspace_job(job_id: str, target_root: Path) -> None:
             progress_callback=progress_callback,
             cancel_check=cancel_check,
         )
-        object_name_overrides = load_object_name_overrides(target_root)
+        object_name_overrides = load_object_name_overrides(TEMP_ROOT)
         apply_object_name_overrides(analysis, object_name_overrides)
 
         snapshot: dict[str, Any] | None = None
@@ -1987,8 +1990,7 @@ async def update_object_name(request: Request) -> JSONResponse:
             raise HTTPException(status_code=400, detail="Название объекта не должно быть длиннее 120 символов.")
 
     with state_lock:
-        root_path = state.selected_root or state.pending_root
-        if root_path is None:
+        if state.selected_root is None and state.pending_root is None:
             raise HTTPException(status_code=400, detail="Сначала выберите источник данных.")
 
         overrides = dict(state.object_name_overrides)
@@ -2008,7 +2010,7 @@ async def update_object_name(request: Request) -> JSONResponse:
             overrides.pop((channel, object_id), None)
 
         try:
-            save_object_name_overrides(root_path, overrides)
+            save_object_name_overrides(TEMP_ROOT, overrides)
         except OSError as exc:
             raise HTTPException(status_code=500, detail=f"Не удалось сохранить файл переименований: {exc}") from exc
 
@@ -2035,12 +2037,9 @@ async def update_object_name(request: Request) -> JSONResponse:
 def sync_object_names_file() -> JSONResponse:
     with state_lock:
         analysis = require_analysis()
-        root_path = state.selected_root
-        if root_path is None:
-            raise HTTPException(status_code=400, detail="Сначала выберите источник данных.")
 
         existing_overrides = dict(state.object_name_overrides)
-        path = object_name_overrides_path(root_path)
+        path = object_name_overrides_path(TEMP_ROOT)
         file_existed = path.exists()
         next_overrides = build_seed_object_name_overrides(analysis, existing_overrides)
         added_entry_count = len(set(next_overrides.keys()) - set(existing_overrides.keys()))
@@ -2048,7 +2047,7 @@ def sync_object_names_file() -> JSONResponse:
 
         if changed:
             try:
-                save_object_name_overrides(root_path, next_overrides)
+                save_object_name_overrides(TEMP_ROOT, next_overrides)
             except OSError as exc:
                 raise HTTPException(status_code=500, detail=f"Не удалось сохранить файл переименований: {exc}") from exc
 
