@@ -51,20 +51,9 @@
                 <input type="text" name="path" value="{{ ftp_form_defaults.path }}" placeholder="/" autocomplete="off" spellcheck="false">
               </label>
             </div>
-            <div class="welcome-ftp-hint">
-              <strong>Быстрый старт</strong>
-              <span>
-                Укажите IP панели оператора — пользователь <code>uploadhis</code>, пароль <code>111111</code> и
-                папка <code>/datalog</code> уже подставлены. Можно вставить ссылку целиком в поле Host:
-                <code>ftp://uploadhis:111111@IP/datalog</code>.
-              </span>
-            </div>
             <label for="ftpPassword">Пароль</label>
             <input id="ftpPassword" type="password" name="password" value="{{ ftp_form_defaults.password }}" placeholder="Пароль FTP" autocomplete="current-password">
-            <label class="welcome-ftp-passive">
-              <input type="checkbox" name="passive" value="on" checked>
-              <span>Пассивный режим (PASV) — рекомендуется для большинства серверов</span>
-            </label>
+            <input type="hidden" name="passive" value="on">
             <div class="folder-actions">
               <button type="submit">Подключиться к FTP</button>
             </div>
