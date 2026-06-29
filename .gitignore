@@ -15,7 +15,6 @@ env/
 # Build artifacts
 build/
 dist/
-*.spec
 
 # OS / editor
 .DS_Store
@@ -25,3 +24,10 @@ Thumbs.db
 
 # Runtime caches
 *.tmp
+
+# Local sample/operator data
+Архивы/
+datalog/
+
+# PyInstaller output
+*.spec.bak

@@ -1,0 +1,7 @@
+# Дополнительные зависимости для сборки Windows-приложения (десктоп-режим).
+# Ставить поверх requirements.txt:  pip install -r requirements.txt -r requirements-windows.txt
+-r requirements.txt
+
+pywebview>=5.0      # окно приложения (бэкенд edgechromium / WebView2)
+pythonnet>=3.0.3    # мост .NET для WebView2 и нативного сохранения PDF
+pyinstaller>=6.6    # упаковщик в .exe
