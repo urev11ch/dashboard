@@ -52,11 +52,9 @@ Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags
 function WebView2Installed(): Boolean;
 var
   Value: String;
-const
-  ClientKey = 'Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
 begin
   Result :=
-    (RegQueryStringValue(HKLM, 'SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\' + ClientKey, 'pv', Value) and (Value <> '') and (Value <> '0.0.0.0'))
-    or (RegQueryStringValue(HKLM, 'SOFTWARE\Microsoft\EdgeUpdate\' + ClientKey, 'pv', Value) and (Value <> '') and (Value <> '0.0.0.0'))
-    or (RegQueryStringValue(HKCU, 'SOFTWARE\Microsoft\EdgeUpdate\' + ClientKey, 'pv', Value) and (Value <> '') and (Value <> '0.0.0.0'));
+    (RegQueryStringValue(HKLM, 'SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}', 'pv', Value) and (Value <> '') and (Value <> '0.0.0.0'))
+    or (RegQueryStringValue(HKLM, 'SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}', 'pv', Value) and (Value <> '') and (Value <> '0.0.0.0'))
+    or (RegQueryStringValue(HKCU, 'SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}', 'pv', Value) and (Value <> '') and (Value <> '0.0.0.0'));
 end;
