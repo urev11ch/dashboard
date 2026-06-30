@@ -481,12 +481,6 @@ class DesktopBridge:
                 task.GetAwaiter().OnCompleted(Action(complete))
                 waiting_for_pdf = True
                 return
-                task.Wait()
-
-                if not task.Result:
-                    raise RuntimeError("WebView2 не смог сохранить PDF.")
-
-                result["ok"] = True
             except Exception as exc:  # pragma: no cover - Windows-specific bridge failure
                 result["error"] = str(exc)
             finally:

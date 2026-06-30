@@ -87,7 +87,7 @@ COMPLETED_PROCESS_NAME = PROCESS_NAMES[21]
 class AnalysisCancelledError(RuntimeError):
     pass
 
-@dataclass
+@dataclass(slots=True)
 class Sample:
     ts: float
     concentration_return: float
@@ -99,7 +99,7 @@ class Sample:
     program: int
     object_id: int
 
-@dataclass
+@dataclass(slots=True)
 class StatsBundle:
     count: int = 0
     total: float = 0.0
@@ -126,7 +126,7 @@ class StatsBundle:
             return None
         return self.total / self.count
 
-@dataclass
+@dataclass(slots=True)
 class Segment:
     source_db: str
     channel: int
@@ -149,7 +149,7 @@ class Segment:
     def duration_seconds(self) -> float:
         return max(0.0, self.end_ts - self.start_ts)
 
-@dataclass
+@dataclass(slots=True)
 class Cycle:
     source_db: str
     channel: int
@@ -171,7 +171,7 @@ class Cycle:
     def duration_seconds(self) -> float:
         return max(0.0, self.end_ts - self.start_ts)
 
-@dataclass
+@dataclass(slots=True)
 class WashInterval:
     source_db: str
     channel: int
@@ -192,7 +192,7 @@ class WashInterval:
     def duration_seconds(self) -> float:
         return max(0.0, self.end_ts - self.start_ts)
 
-@dataclass
+@dataclass(slots=True)
 class ObjectOverview:
     source_db: str
     channel: int
@@ -213,7 +213,7 @@ class ObjectOverview:
     def duration_seconds(self) -> float:
         return max(0.0, self.end_ts - self.start_ts)
 
-@dataclass
+@dataclass(slots=True)
 class AnalysisResult:
     db_files: list[Path]
     output_dir: Path
@@ -232,7 +232,7 @@ class AnalysisResult:
     cycle_results_by_key: dict[str, str]
     analysis_cache_key: str = ""
 
-@dataclass
+@dataclass(slots=True)
 class DbAnalysisChunk:
     db_path: Path
     channel: int

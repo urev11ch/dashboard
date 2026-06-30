@@ -23,7 +23,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import date, datetime, time as datetime_time
 from pathlib import Path, PurePosixPath
-from queue import Empty, Full, Queue
 from typing import Any, Callable
 
 from fastapi import FastAPI, Form, HTTPException, Request
@@ -82,8 +81,8 @@ ANALYSIS_CACHE_ROOT = resolve_cache_root("wash_journal_analysis_cache")
 WEB_RUNTIME_OUTPUT_DIR = ANALYSIS_CACHE_ROOT / "generated"
 ARCHIVE_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 ANALYSIS_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
-DB_ANALYSIS_CACHE_VERSION = 1
-WORKSPACE_ANALYSIS_CACHE_VERSION = 2
+DB_ANALYSIS_CACHE_VERSION = 2
+WORKSPACE_ANALYSIS_CACHE_VERSION = 3
 CHART_PAYLOAD_DISK_CACHE_VERSION = 1
 CHART_PAYLOAD_CACHE_LIMIT = 64
 DB_ANALYSIS_MAX_WORKERS = 4
@@ -212,10 +211,8 @@ state_lock = threading.Lock()
 archive_cache_lock = threading.Lock()
 analysis_cache_lock = threading.Lock()
 chart_payload_cache_lock = threading.Lock()
-workspace_job_stream_lock = threading.Lock()
 archive_cache_keys_by_source: dict[str, str] = {}
 chart_payload_cache: OrderedDict[tuple[int, str], dict[str, Any]] = OrderedDict()
-workspace_job_stream_subscribers: set[Queue[str]] = set()
 
 
 def format_source_label(value: str) -> str:
@@ -982,46 +979,7 @@ def serialize_job(job: WorkspaceJob | None) -> dict[str, Any]:
     }
 
 
-def broadcast_workspace_job_payload(payload: dict[str, Any]) -> None:
-    message = json.dumps(payload, ensure_ascii=False)
-    with workspace_job_stream_lock:
-        subscribers = tuple(workspace_job_stream_subscribers)
-
-    for subscriber in subscribers:
-        try:
-            subscriber.put_nowait(message)
-            continue
-        except Full:
-            pass
-
-        try:
-            subscriber.get_nowait()
-        except Empty:
-            pass
-
-        try:
-            subscriber.put_nowait(message)
-        except Full:
-            continue
-
-
-def register_workspace_job_stream() -> Queue[str]:
-    subscriber: Queue[str] = Queue(maxsize=8)
-    with state_lock:
-        snapshot = serialize_job(state.workspace_job)
-    with workspace_job_stream_lock:
-        workspace_job_stream_subscribers.add(subscriber)
-    subscriber.put_nowait(json.dumps(snapshot, ensure_ascii=False))
-    return subscriber
-
-
-def unregister_workspace_job_stream(subscriber: Queue[str]) -> None:
-    with workspace_job_stream_lock:
-        workspace_job_stream_subscribers.discard(subscriber)
-
-
 def push_job_progress(job_id: str, payload: dict[str, object]) -> None:
-    snapshot: dict[str, Any] | None = None
     with state_lock:
         job = state.workspace_job
         if job is None or job.id != job_id:
@@ -1041,14 +999,9 @@ def push_job_progress(job_id: str, payload: dict[str, object]) -> None:
         if job.cancel_requested:
             job.status = "cancelling"
             job.message = "Отменяю открытие папки."
-            snapshot = serialize_job(job)
         else:
             job.status = "running"
             job.message = message
-            snapshot = serialize_job(job)
-
-    if snapshot is not None:
-        broadcast_workspace_job_payload(snapshot)
 
 
 def job_cancel_requested(job_id: str) -> bool:
@@ -1621,7 +1574,6 @@ def run_workspace_job(job_id: str, target_root: Path) -> None:
         object_name_overrides = load_object_name_overrides(TEMP_ROOT)
         apply_object_name_overrides(analysis, object_name_overrides)
 
-        snapshot: dict[str, Any] | None = None
         with state_lock:
             job = state.workspace_job
             if job is None or job.id != job_id:
@@ -1644,22 +1596,13 @@ def run_workspace_job(job_id: str, target_root: Path) -> None:
             job.message = "Данные успешно обновлены."
             job.current = max(job.current, job.total)
             job.finished_at = time.time()
-            snapshot = serialize_job(job)
-        if snapshot is not None:
-            broadcast_workspace_job_payload(snapshot)
     except core.AnalysisCancelledError:
-        snapshot = finish_workspace_job_cancelled(job_id, "Обработка источника отменена.")
-        if snapshot is not None:
-            broadcast_workspace_job_payload(snapshot)
+        finish_workspace_job_cancelled(job_id, "Обработка источника отменена.")
     except SystemExit as exc:
         message = str(exc) or "Не удалось открыть выбранный источник."
-        snapshot = finish_workspace_job_failed(job_id, message)
-        if snapshot is not None:
-            broadcast_workspace_job_payload(snapshot)
+        finish_workspace_job_failed(job_id, message)
     except Exception as exc:  # pragma: no cover - safety net for background worker
-        snapshot = finish_workspace_job_failed(job_id, f"Не удалось открыть источник: {exc}")
-        if snapshot is not None:
-            broadcast_workspace_job_payload(snapshot)
+        finish_workspace_job_failed(job_id, f"Не удалось открыть источник: {exc}")
 
 
 def start_workspace_job(candidate: Path, *, display_target: str | None = None) -> None:
@@ -1692,7 +1635,6 @@ def start_workspace_job(candidate: Path, *, display_target: str | None = None) -
         daemon=True,
     )
     thread.start()
-    broadcast_workspace_job_payload(serialize_job(job))
 
 
 def parse_cycle_key(key: str) -> tuple[str, int, int, int, int, int]:
@@ -2117,7 +2059,6 @@ async def workspace_job_status_stream() -> StreamingResponse:
 
 @app.post("/api/workspace-job/cancel")
 def cancel_workspace_job() -> JSONResponse:
-    snapshot: dict[str, Any] | None = None
     with state_lock:
         if state.workspace_job is None or state.workspace_job.status not in {"running", "cancelling"}:
             return JSONResponse({"ok": False, "active": False})
@@ -2125,9 +2066,6 @@ def cancel_workspace_job() -> JSONResponse:
         state.workspace_job.cancel_requested = True
         state.workspace_job.status = "cancelling"
         state.workspace_job.message = "Отменяю открытие папки."
-        snapshot = serialize_job(state.workspace_job)
-    if snapshot is not None:
-        broadcast_workspace_job_payload(snapshot)
     return JSONResponse({"ok": True, "active": True})
 
 

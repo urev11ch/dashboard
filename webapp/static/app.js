@@ -149,42 +149,6 @@
     return Math.max(12, Math.min(100, (current / total) * 100));
   }
 
-  function updateWorkspaceJobUi(status) {
-    if (!workspaceJobRoot) {
-      return;
-    }
-
-    if (workspaceJobMessage) {
-      workspaceJobMessage.textContent = status.message || "Обрабатываю источник";
-    }
-    if (workspaceJobTarget) {
-      workspaceJobTarget.textContent = status.display_target || status.target_root || "";
-    }
-    if (workspaceJobPhase) {
-      workspaceJobPhase.textContent = status.phase || "queued";
-    }
-    if (workspaceJobCount) {
-      workspaceJobCount.textContent = formatWorkspaceJobCount(status);
-    }
-    if (workspaceJobBar) {
-      workspaceJobBar.style.width = `${workspaceJobProgressWidth(status)}%`;
-      const progressRoot = workspaceJobBar.parentElement;
-      if (progressRoot) {
-        progressRoot.setAttribute("aria-valuemax", String(Number(status.total || 0)));
-        progressRoot.setAttribute("aria-valuenow", String(Number(status.current || 0)));
-      }
-    }
-    if (workspaceJobItem) {
-      workspaceJobItem.textContent = status.item || "";
-      workspaceJobItem.hidden = !status.item;
-    }
-    if (workspaceJobCancelButton) {
-      const isCancelling = status.status === "cancelling";
-      workspaceJobCancelButton.disabled = isCancelling;
-      workspaceJobCancelButton.textContent = isCancelling ? "Отменяю..." : "Отменить";
-    }
-  }
-
   async function fetchWorkspaceJobStatus() {
     const response = await fetch("/api/workspace-job");
     if (!response.ok) {
@@ -195,108 +159,6 @@
 
   function isTerminalWorkspaceJobStatus(status) {
     return ["completed", "failed", "cancelled"].includes(String(status?.status || ""));
-  }
-
-  function initWorkspaceJobStatusFeed() {
-    if (!workspaceJobRoot) {
-      return;
-    }
-
-    updateWorkspaceJobUi(initialJobStatus);
-
-    if (workspaceJobCancelButton) {
-      workspaceJobCancelButton.addEventListener("click", async () => {
-        if (workspaceJobCancelButton.disabled) {
-          return;
-        }
-
-        workspaceJobCancelButton.disabled = true;
-        workspaceJobCancelButton.textContent = "Отменяю...";
-
-        try {
-          await fetch("/api/workspace-job/cancel", { method: "POST" });
-        } catch (_error) {
-          workspaceJobCancelButton.disabled = false;
-          workspaceJobCancelButton.textContent = "Отменить";
-        }
-      });
-    }
-
-    let eventSource = null;
-    let pollTimer = 0;
-    let fallbackStarted = false;
-
-    const scheduleNextPoll = () => {
-      pollTimer = window.setTimeout(tick, 1000);
-    };
-
-    const tick = async () => {
-      try {
-        const status = await fetchWorkspaceJobStatus();
-        updateWorkspaceJobUi(status);
-
-        if (!status.active && isTerminalWorkspaceJobStatus(status)) {
-          if (eventSource) {
-            eventSource.close();
-            eventSource = null;
-          }
-          window.location.reload();
-          return;
-        }
-
-        if (!status.active) {
-          return;
-        }
-      } catch (_error) {
-        // Leave the current overlay state intact and retry on the next tick.
-      }
-
-      scheduleNextPoll();
-    };
-
-    const startPollingFallback = () => {
-      if (fallbackStarted) {
-        return;
-      }
-      fallbackStarted = true;
-      if (initialJobStatus.active) {
-        scheduleNextPoll();
-      }
-    };
-
-    if (initialJobStatus.active && typeof window.EventSource === "function") {
-      eventSource = new window.EventSource("/api/workspace-job/stream");
-      eventSource.onmessage = (event) => {
-        try {
-          const status = JSON.parse(event.data);
-          updateWorkspaceJobUi(status);
-          if (!status.active && isTerminalWorkspaceJobStatus(status)) {
-            eventSource?.close();
-            eventSource = null;
-            window.location.reload();
-          }
-        } catch (_error) {
-          // Fall back to polling on malformed messages.
-          eventSource?.close();
-          eventSource = null;
-          startPollingFallback();
-        }
-      };
-      eventSource.onerror = () => {
-        eventSource?.close();
-        eventSource = null;
-        startPollingFallback();
-      };
-    } else if (initialJobStatus.active) {
-      startPollingFallback();
-    }
-
-    window.addEventListener("beforeunload", () => {
-      eventSource?.close();
-      if (pollTimer) {
-        window.clearTimeout(pollTimer);
-      }
-    });
   }
 
   function setWorkspaceJobVisible(isVisible) {
@@ -522,6 +384,20 @@
   const detailRequestCache = new Map();
   const chartPayloadCache = new Map();
   const chartPayloadRequestCache = new Map();
+  const DETAIL_CACHE_LIMIT = 200;
+  const CHART_PAYLOAD_CACHE_LIMIT = 80;
+
+  function setBoundedCacheEntry(cache, key, value, limit) {
+    // Простая LRU-эвикция: не даём кэшам расти неограниченно между обновлениями данных.
+    if (cache.has(key)) {
+      cache.delete(key);
+    }
+    cache.set(key, value);
+    while (cache.size > limit) {
+      const oldestKey = cache.keys().next().value;
+      cache.delete(oldestKey);
+    }
+  }
   let modalRequestId = 0;
   let activeModalKey = "";
   let restoreDocumentTitle = null;
@@ -938,8 +814,8 @@
     }
 
     return {
-      previous: rows[currentIndex + 1] ?? null,
-      next: rows[currentIndex - 1] ?? null,
+      previous: rows[currentIndex - 1] ?? null,
+      next: rows[currentIndex + 1] ?? null,
     };
   }
 
@@ -1136,7 +1012,7 @@
         return response.json();
       })
       .then((payload) => {
-        detailCache.set(key, payload);
+        setBoundedCacheEntry(detailCache, key, payload, DETAIL_CACHE_LIMIT);
         return payload;
       })
       .finally(() => {
@@ -1168,7 +1044,7 @@
         return response.json();
       })
       .then((payload) => {
-        chartPayloadCache.set(url, payload);
+        setBoundedCacheEntry(chartPayloadCache, url, payload, CHART_PAYLOAD_CACHE_LIMIT);
         return payload;
       })
       .finally(() => {
