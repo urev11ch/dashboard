@@ -1135,10 +1135,13 @@ def materialize_ftp_sources(
         ) from exc
 
     # Автоочистка архивов старше срока хранения (только для FTP-зеркала).
+    # «Последнюю очистку» отмечаем только если реально что-то удалили — иначе
+    # поле показывало бы время каждого подключения, хотя ничего не чистилось.
     settings = load_app_settings()
     if settings["archive_retention_enabled"]:
-        cleanup_old_archives(root_path, settings["archive_retention_days"])
-        state.last_cleanup_ts = time.time()
+        result = cleanup_old_archives(root_path, settings["archive_retention_days"])
+        if result["removed"]:
+            state.last_cleanup_ts = time.time()
 
     return len(downloaded_files)
 
@@ -2989,7 +2992,8 @@ def cleanup_archives_now() -> JSONResponse:
         )
 
     result = cleanup_old_archives(target_root, days)
-    state.last_cleanup_ts = time.time()
+    if result["removed"]:
+        state.last_cleanup_ts = time.time()
     return JSONResponse({"ok": True, "days": days, **result})
 
 
