@@ -23,6 +23,7 @@ SERIES_CONFIG = (
         "unit": "C",
         "color": "#dc2626",
         "panel": 0,
+        "line_style": "dashed",
     },
     {
         "id": "concentration_return",
@@ -127,6 +128,7 @@ def build_cycle_chart_payload(
                 "unit": config["unit"],
                 "color": config["color"],
                 "panel": config["panel"],
+                "line_style": config.get("line_style", "solid"),
                 "points": points,
             }
         )

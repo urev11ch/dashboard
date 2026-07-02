@@ -16,7 +16,11 @@
   const MODAL_CHART_TOP = 82;
   const MODAL_CHART_BOTTOM = 64;
   const MODAL_PANEL_GAP = 16;
-  const SERIES_STYLE_STORAGE_KEY = "washChartSeriesStylesV1";
+  const SERIES_STYLE_ENDPOINT = "/api/chart-styles";
+  let serverHydrationPromise = null;
+  // Кэш стилей серий в памяти вкладки; единственное постоянное хранилище — файл
+  // на локальном сервере (см. /api/chart-styles). Заполняется при гидрации.
+  let serverSeriesStyles = {};
   const LINE_STYLE_OPTIONS = [
     { id: "solid", label: "Сплошная", dasharray: "" },
     { id: "dashed", label: "Штриховая", dasharray: "12 8" },
@@ -46,33 +50,94 @@
       .replace(/'/g, "&#39;");
   }
 
-  function loadStoredSeriesStyles() {
-    try {
-      const parsed = JSON.parse(window.localStorage.getItem(SERIES_STYLE_STORAGE_KEY) || "{}");
-      return parsed && typeof parsed === "object" ? parsed : {};
-    } catch (_error) {
-      return {};
+  function normalizeStoredStyleEntry(entry) {
+    const normalized = {};
+    if (entry && typeof entry === "object") {
+      if (isValidHexColor(entry.color)) {
+        normalized.color = entry.color;
+      }
+      if (entry.lineStyle) {
+        normalized.lineStyle = getLineStyleOption(entry.lineStyle).id;
+      }
     }
+    return normalized;
   }
 
-  function saveStoredSeriesStyles(styles) {
+  async function fetchServerSeriesStyles() {
+    const response = await fetch(SERIES_STYLE_ENDPOINT, {
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error("chart-styles-fetch-failed");
+    }
+    const payload = await response.json();
+    return payload && typeof payload === "object" && payload.series && typeof payload.series === "object"
+      ? payload.series
+      : {};
+  }
+
+  // Подтягивает сохранённые на сервере стили в кэш `serverSeriesStyles`.
+  // Идемпотентна: результат кэшируется в промисе, поэтому вызывается перед
+  // каждым построением графика без лишних запросов.
+  function hydrateSeriesStylesFromServer() {
+    if (serverHydrationPromise) {
+      return serverHydrationPromise;
+    }
+    serverHydrationPromise = (async () => {
+      try {
+        const serverStyles = await fetchServerSeriesStyles();
+        const normalized = {};
+        Object.entries(serverStyles).forEach(([seriesId, entry]) => {
+          const entryStyles = normalizeStoredStyleEntry(entry);
+          if (Object.keys(entryStyles).length) {
+            normalized[seriesId] = entryStyles;
+          }
+        });
+        serverSeriesStyles = normalized;
+      } catch (_error) {
+        // Сервер недоступен — оставляем стили по умолчанию из payload.
+      }
+    })();
+    return serverHydrationPromise;
+  }
+
+  // Позволяет панели настроек обновить кэш стилей без перезагрузки страницы —
+  // следующий открытый график сразу применит новые цвета/линии.
+  function setSeriesStyles(series) {
+    const normalized = {};
+    if (series && typeof series === "object") {
+      Object.entries(series).forEach(([seriesId, entry]) => {
+        const entryStyles = normalizeStoredStyleEntry(entry);
+        if (Object.keys(entryStyles).length) {
+          normalized[seriesId] = entryStyles;
+        }
+      });
+    }
+    serverSeriesStyles = normalized;
+  }
+
+  async function pushServerSeriesStyles(styles) {
     try {
-      window.localStorage.setItem(SERIES_STYLE_STORAGE_KEY, JSON.stringify(styles));
+      await fetch(SERIES_STYLE_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ series: styles }),
+      });
     } catch (_error) {
-      // Ignore storage failures and keep in-memory behavior.
+      // Игнорируем сбой запроса — стили применены в текущей сессии, повторная
+      // попытка произойдёт при следующем изменении.
     }
   }
 
   function buildSeriesStyleState(seriesList) {
-    const stored = loadStoredSeriesStyles();
     return Object.fromEntries(
       seriesList.map((series) => {
-        const saved = stored[series.id] || {};
+        const saved = serverSeriesStyles[series.id] || {};
         return [
           series.id,
           {
             color: isValidHexColor(saved.color) ? saved.color : series.color,
-            lineStyle: getLineStyleOption(saved.lineStyle).id,
+            lineStyle: getLineStyleOption(saved.lineStyle || series.line_style).id,
           },
         ];
       })
@@ -536,14 +601,13 @@
     const styleState = buildSeriesStyleState(payload.series);
 
     function persistSeriesStyleState() {
-      const stored = loadStoredSeriesStyles();
       payload.series.forEach((series) => {
-        stored[series.id] = {
+        serverSeriesStyles[series.id] = {
           color: styleState[series.id]?.color || series.color,
           lineStyle: styleState[series.id]?.lineStyle || "solid",
         };
       });
-      saveStoredSeriesStyles(stored);
+      void pushServerSeriesStyles(serverSeriesStyles);
     }
 
     function render() {
@@ -1030,5 +1094,9 @@
     return render();
   }
 
-  window.WashChart = { mount };
+  window.WashChart = {
+    mount,
+    hydrate: hydrateSeriesStylesFromServer,
+    setSeriesStyles,
+  };
 })();

@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import csv
+import io
 import json
 import hashlib
 import ftplib
+import logging
 import os
 import pickle
 import posixpath
@@ -33,7 +36,7 @@ from fastapi.templating import Jinja2Templates
 
 from runtime_paths import resolve_cache_root, resolve_runtime_root
 import wash_report as core
-from webapp.chart_payload import build_cycle_chart_payload
+from webapp.chart_payload import SERIES_CONFIG, build_cycle_chart_payload
 
 
 def resolve_project_root() -> Path:
@@ -52,15 +55,29 @@ def resolve_workspace_input_value(
     if current_root is not None:
         return str(current_root)
 
-    # По умолчанию — локальная папка со скачанными архивами (datalog). Она
-    # определяется per-user (%LOCALAPPDATA%\OptiCIP Dashboard\datalog на Windows),
-    # поэтому на каждом ПК подставляется путь текущего пользователя автоматически.
-    return str(DATALOG_ROOT)
+    # После перезапуска активного источника ещё нет — подставляем последний
+    # открытый путь к папке, если он сохранён.
+    last_path = load_last_folder_path()
+    if last_path:
+        return last_path
+
+    # Иначе — путь по умолчанию: заданный в настройках, а при его отсутствии —
+    # локальная папка со скачанными архивами (datalog). Она определяется per-user
+    # (%LOCALAPPDATA%\OptiCIP Dashboard\datalog на Windows), поэтому на каждом ПК
+    # подставляется путь текущего пользователя.
+    return resolve_default_folder_path()
+
+
+def resolve_default_folder_path() -> str:
+    """Путь по умолчанию для поля «Папка»: заданный пользователем в настройках,
+    а при его отсутствии — встроенная папка datalog."""
+    configured = load_app_settings().get("default_folder_path") or ""
+    return configured or str(DATALOG_ROOT)
 
 
 def resolve_workspace_path_placeholder() -> str:
-    # Подсказка = фактическая папка со скачанными архивами текущего пользователя.
-    return str(DATALOG_ROOT)
+    # Подсказка = путь по умолчанию (настройка или встроенная папка datalog).
+    return resolve_default_folder_path()
 
 
 PROJECT_ROOT = resolve_project_root()
@@ -103,6 +120,24 @@ IGNORED_WORKSPACE_DIR_NAMES = frozenset(
 APP_VERSION = "1.0.0"
 OBJECT_NAME_OVERRIDES_FILENAME = core.OBJECT_NAMES_FILENAME
 OBJECT_NAME_OVERRIDES_VERSION = 1
+CHART_STYLE_SETTINGS_FILENAME = "wash_chart_styles.json"
+CHART_STYLE_SETTINGS_VERSION = 1
+FOLDER_SOURCE_SETTINGS_FILENAME = "wash_folder_source.json"
+FOLDER_SOURCE_SETTINGS_VERSION = 1
+APP_SETTINGS_FILENAME = "wash_app_settings.json"
+APP_SETTINGS_VERSION = 1
+FTP_AUTO_REFRESH_MIN_MINUTES = 1
+FTP_AUTO_REFRESH_MAX_MINUTES = 1440
+DEFAULT_APP_SETTINGS: dict[str, Any] = {
+    "ftp_auto_refresh_enabled": True,
+    "ftp_auto_refresh_minutes": 5,
+    "default_folder_path": "",
+}
+# Как часто фоновый цикл просыпается, чтобы сверить, не пора ли обновлять FTP.
+FTP_AUTO_REFRESH_POLL_SECONDS = 20.0
+# Идентификаторы стилей линий должны совпадать с LINE_STYLE_OPTIONS в wash-chart.js.
+CHART_LINE_STYLE_IDS = frozenset({"solid", "dashed", "dashdot", "dotted", "longdash"})
+CHART_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 FTP_SOURCE_CONFIG_VERSION = 1
 FTP_SOURCES_FILENAME = "wash_ftp_sources.json"
 FTP_SOURCES_VERSION = 1
@@ -153,12 +188,29 @@ ARCHIVE_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 ANALYSIS_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 WEB_RUNTIME_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+_auto_refresh_task: "asyncio.Task[None] | None" = None
+
+
 @asynccontextmanager
 async def _app_lifespan(_app: FastAPI):
-    # startup — ничего дополнительно не требуется (папки уже созданы выше)
-    yield
-    # shutdown — чистим дисковый кэш, чтобы следующий запуск строил всё заново
-    clear_disk_caches()
+    # startup — поднимаем фоновый цикл автообновления FTP (папки уже созданы выше)
+    global _auto_refresh_task
+    _auto_refresh_task = asyncio.create_task(ftp_auto_refresh_loop())
+    try:
+        yield
+    finally:
+        # shutdown — останавливаем фоновую задачу и чистим дисковый кэш, чтобы
+        # следующий запуск строил всё заново
+        if _auto_refresh_task is not None:
+            _auto_refresh_task.cancel()
+            try:
+                await _auto_refresh_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # pragma: no cover - защита остановки
+                logging.exception("Ошибка при остановке фонового автообновления")
+            _auto_refresh_task = None
+        clear_disk_caches()
 
 
 app = FastAPI(title="Отчеты по мойкам", lifespan=_app_lifespan)
@@ -185,6 +237,7 @@ class WorkspaceJob:
     item: str = ""
     error: str | None = None
     cancel_requested: bool = False
+    background: bool = False
     started_at: float = field(default_factory=time.time)
     finished_at: float | None = None
 
@@ -1047,6 +1100,150 @@ def resolve_object_name(channel: int, object_id: int, overrides: dict[tuple[int,
     return overrides.get((channel, object_id)) or fallback_object_name(object_id)
 
 
+# ---- стили кривых графика (цвет + тип линии), общие для всех источников -----
+def chart_style_settings_path() -> Path:
+    return TEMP_ROOT / CHART_STYLE_SETTINGS_FILENAME
+
+
+def _normalize_chart_style_entry(raw_entry: Any) -> dict[str, str]:
+    if not isinstance(raw_entry, dict):
+        return {}
+    entry: dict[str, str] = {}
+    color = str(raw_entry.get("color") or "").strip()
+    if CHART_COLOR_RE.fullmatch(color):
+        entry["color"] = color.lower()
+    line_style = str(raw_entry.get("lineStyle") or "").strip()
+    if line_style in CHART_LINE_STYLE_IDS:
+        entry["lineStyle"] = line_style
+    return entry
+
+
+def normalize_chart_style_series(raw_series: Any) -> dict[str, dict[str, str]]:
+    if not isinstance(raw_series, dict):
+        return {}
+    normalized: dict[str, dict[str, str]] = {}
+    for raw_id, raw_entry in raw_series.items():
+        series_id = str(raw_id).strip()
+        if not series_id:
+            continue
+        entry = _normalize_chart_style_entry(raw_entry)
+        if entry:
+            normalized[series_id] = entry
+    return normalized
+
+
+def load_chart_style_settings() -> dict[str, dict[str, str]]:
+    try:
+        payload = json.loads(chart_style_settings_path().read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return normalize_chart_style_series(payload.get("series"))
+
+
+def save_chart_style_settings(series_styles: dict[str, dict[str, str]]) -> None:
+    path = chart_style_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": CHART_STYLE_SETTINGS_VERSION,
+        "series": series_styles,
+    }
+    temp_path = path.with_suffix(f"{path.suffix}.tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path.replace(path)
+
+
+# ---- последний открытый путь к папке (режим «Папка и архивы») ---------------
+def folder_source_settings_path() -> Path:
+    return TEMP_ROOT / FOLDER_SOURCE_SETTINGS_FILENAME
+
+
+def load_last_folder_path() -> str:
+    try:
+        payload = json.loads(folder_source_settings_path().read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    value = payload.get("last_path")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def save_last_folder_path(path: str) -> None:
+    value = str(path or "").strip()
+    if not value:
+        return
+    target = folder_source_settings_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"version": FOLDER_SOURCE_SETTINGS_VERSION, "last_path": value}
+    temp_path = target.with_suffix(f"{target.suffix}.tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path.replace(target)
+
+
+# ---- общие настройки приложения (автообновление FTP и т. п.) ----------------
+def app_settings_path() -> Path:
+    return TEMP_ROOT / APP_SETTINGS_FILENAME
+
+
+def _coerce_auto_refresh_minutes(value: Any, fallback: int) -> int:
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return max(FTP_AUTO_REFRESH_MIN_MINUTES, min(FTP_AUTO_REFRESH_MAX_MINUTES, minutes))
+
+
+def normalize_app_settings(raw: Any) -> dict[str, Any]:
+    data = raw if isinstance(raw, dict) else {}
+
+    enabled = data.get("ftp_auto_refresh_enabled", DEFAULT_APP_SETTINGS["ftp_auto_refresh_enabled"])
+    if isinstance(enabled, str):
+        enabled = enabled.strip().lower() not in {"", "0", "false", "no", "off"}
+    else:
+        enabled = bool(enabled)
+
+    minutes = _coerce_auto_refresh_minutes(
+        data.get("ftp_auto_refresh_minutes"),
+        DEFAULT_APP_SETTINGS["ftp_auto_refresh_minutes"],
+    )
+
+    default_folder_path = data.get("default_folder_path", DEFAULT_APP_SETTINGS["default_folder_path"])
+    if not isinstance(default_folder_path, str):
+        default_folder_path = ""
+    default_folder_path = default_folder_path.strip()
+
+    return {
+        "ftp_auto_refresh_enabled": enabled,
+        "ftp_auto_refresh_minutes": minutes,
+        "default_folder_path": default_folder_path,
+    }
+
+
+def load_app_settings() -> dict[str, Any]:
+    try:
+        payload = json.loads(app_settings_path().read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    # Поддерживаем как «плоский» объект, так и обёртку {"settings": {...}}.
+    source = payload.get("settings") if isinstance(payload.get("settings"), dict) else payload
+    return normalize_app_settings(source)
+
+
+def save_app_settings(raw: Any) -> dict[str, Any]:
+    settings = normalize_app_settings(raw)
+    path = app_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"version": APP_SETTINGS_VERSION, "settings": settings}
+    temp_path = path.with_suffix(f"{path.suffix}.tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path.replace(path)
+    return settings
+
+
 def apply_object_name_overrides(
     analysis: core.AnalysisResult | None,
     overrides: dict[tuple[int, int], str],
@@ -1157,6 +1354,7 @@ def finish_workspace_job_failed(job_id: str, message: str) -> dict[str, Any] | N
 def serialize_job(job: WorkspaceJob | None) -> dict[str, Any]:
     if job is None:
         return {
+            "id": "",
             "active": False,
             "status": "idle",
             "phase": "idle",
@@ -1167,9 +1365,11 @@ def serialize_job(job: WorkspaceJob | None) -> dict[str, Any]:
             "target_root": "",
             "display_target": "",
             "error": "",
+            "background": False,
         }
 
     return {
+        "id": job.id,
         "active": job.status in {"running", "cancelling"},
         "status": job.status,
         "phase": job.phase,
@@ -1180,6 +1380,7 @@ def serialize_job(job: WorkspaceJob | None) -> dict[str, Any]:
         "target_root": str(job.target_root) if job.target_root is not None else "",
         "display_target": job.display_target or (str(job.target_root) if job.target_root is not None else ""),
         "error": job.error or "",
+        "background": bool(job.background),
     }
 
 
@@ -1809,7 +2010,12 @@ def run_workspace_job(job_id: str, target_root: Path) -> None:
         finish_workspace_job_failed(job_id, f"Не удалось открыть источник: {exc}")
 
 
-def start_workspace_job(candidate: Path, *, display_target: str | None = None) -> None:
+def start_workspace_job(
+    candidate: Path,
+    *,
+    display_target: str | None = None,
+    background: bool = False,
+) -> None:
     if state.workspace_job is not None and state.workspace_job.status in {"running", "cancelling"}:
         state.workspace_job.cancel_requested = True
         state.workspace_job.status = "cancelling"
@@ -1820,6 +2026,7 @@ def start_workspace_job(candidate: Path, *, display_target: str | None = None) -
         id=uuid.uuid4().hex,
         target_root=resolved_candidate,
         display_target=display_target or str(resolved_candidate),
+        background=background,
     )
     state.workspace_job = job
     state.pending_root = resolved_candidate
@@ -1839,6 +2046,64 @@ def start_workspace_job(candidate: Path, *, display_target: str | None = None) -
         daemon=True,
     )
     thread.start()
+
+
+def trigger_ftp_auto_refresh() -> bool:
+    """Запускает фоновое обновление активной FTP-панели, если сейчас нет другой
+    обработки. Папочный (folder) источник и отсутствие анализа пропускаются."""
+    with state_lock:
+        job = state.workspace_job
+        if job is not None and job.status in {"running", "cancelling"}:
+            return False
+
+        target_root = state.selected_root or state.pending_root
+        if target_root is None or state.analysis is None:
+            return False
+
+        try:
+            is_ftp_profile = target_root.resolve().parent == DATALOG_ROOT
+        except OSError:
+            is_ftp_profile = False
+        if not is_ftp_profile:
+            return False
+
+        display_target = (
+            state.selected_display_root
+            or state.pending_display_root
+            or str(target_root.resolve())
+        )
+        start_workspace_job(target_root.resolve(), display_target=display_target, background=True)
+        return True
+
+
+async def ftp_auto_refresh_loop() -> None:
+    """Фоновый цикл: пока приложение запущено, периодически (интервал из настроек)
+    докачивает архивы с активной FTP-панели и обновляет данные без блокирующего
+    оверлея. Интервал и включение читаются из настроек на каждом тике."""
+    last_run = time.monotonic()
+    while True:
+        try:
+            await asyncio.sleep(FTP_AUTO_REFRESH_POLL_SECONDS)
+
+            settings = load_app_settings()
+            if not settings["ftp_auto_refresh_enabled"]:
+                # При выключенном автообновлении откладываем следующий запуск на
+                # полный интервал после повторного включения.
+                last_run = time.monotonic()
+                continue
+
+            interval_seconds = settings["ftp_auto_refresh_minutes"] * 60
+            now = time.monotonic()
+            if now - last_run < interval_seconds:
+                continue
+
+            last_run = now
+            if trigger_ftp_auto_refresh():
+                logging.info("Фоновое автообновление FTP запущено.")
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # pragma: no cover - защита фонового цикла
+            logging.exception("Сбой фонового автообновления FTP")
 
 
 def parse_cycle_key(key: str) -> tuple[str, int, int, int, int, int]:
@@ -2071,6 +2336,7 @@ def page_context(request: Request, snapshot: AppStateSnapshot) -> dict[str, Any]
         "project_root": str(PROJECT_ROOT),
         "workspace_input_value": workspace_input_value,
         "workspace_path_placeholder": resolve_workspace_path_placeholder(),
+        "workspace_default_path": resolve_default_folder_path(),
         "ftp_form_defaults": dict(DEFAULT_FTP_FORM_VALUES),
         "ftp_sources": list_ftp_sources_public(),
         "app_version": APP_VERSION,
@@ -2111,7 +2377,9 @@ def open_workspace(path: str = Form(...)) -> RedirectResponse:
                 state.pending_display_root = ""
             return RedirectResponse(url="/", status_code=303)
 
-        start_workspace_job(candidate.resolve(), display_target=str(candidate.resolve()))
+        resolved = candidate.resolve()
+        save_last_folder_path(str(resolved))
+        start_workspace_job(resolved, display_target=str(resolved))
     return RedirectResponse(url="/", status_code=303)
 
 
@@ -2383,6 +2651,173 @@ def sync_object_names_file() -> JSONResponse:
                 "object_rows": build_object_rows(state.object_name_overrides, state.analysis),
             }
         )
+
+
+def chart_style_defaults() -> list[dict[str, str]]:
+    """Стандартные оформления серий графика (id, подпись, цвет, тип линии) из
+    SERIES_CONFIG — чтобы фронтенд мог показать их в панели настроек."""
+    return [
+        {
+            "id": cfg["id"],
+            "label": cfg["label"],
+            "color": cfg["color"],
+            "lineStyle": cfg.get("line_style", "solid"),
+        }
+        for cfg in SERIES_CONFIG
+    ]
+
+
+@app.get("/api/chart-styles")
+def get_chart_styles() -> JSONResponse:
+    return JSONResponse(
+        {
+            "series": load_chart_style_settings(),
+            "defaults": chart_style_defaults(),
+        }
+    )
+
+
+@app.post("/api/chart-styles")
+async def update_chart_styles(request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Некорректное тело запроса.") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Некорректное тело запроса.")
+
+    series_styles = normalize_chart_style_series(payload.get("series"))
+    try:
+        save_chart_style_settings(series_styles)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Не удалось сохранить настройки графика: {exc}"
+        ) from exc
+
+    return JSONResponse({"ok": True, "series": series_styles})
+
+
+@app.get("/api/settings")
+def get_app_settings_route() -> JSONResponse:
+    return JSONResponse({"settings": load_app_settings()})
+
+
+@app.post("/api/settings")
+async def update_app_settings_route(request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Некорректное тело запроса.") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Некорректное тело запроса.")
+
+    source = payload.get("settings") if isinstance(payload.get("settings"), dict) else payload
+    if not isinstance(source, dict):
+        raise HTTPException(status_code=400, detail="Некорректное тело запроса.")
+
+    # Частичное обновление: переданные поля накладываются поверх сохранённых,
+    # чтобы можно было менять настройки по одной, не сбрасывая остальные.
+    merged = {**load_app_settings(), **source}
+    try:
+        settings = save_app_settings(merged)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Не удалось сохранить настройки: {exc}"
+        ) from exc
+
+    return JSONResponse({"ok": True, "settings": settings})
+
+
+# ---- экспорт в CSV (открывается в Excel) ------------------------------------
+def _format_csv_number(value: Any) -> str:
+    """Число с десятичной запятой (как ожидает Excel в русской локали)."""
+    if value is None:
+        return ""
+    try:
+        return f"{float(value):.2f}".replace(".", ",")
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _build_csv_bytes(header: list[str], rows: list[list[Any]]) -> bytes:
+    buffer = io.StringIO()
+    # Разделитель `;` + BOM — так Excel в русской локали открывает файл сразу
+    # корректно, без «Мастера импорта текста».
+    writer = csv.writer(buffer, delimiter=";", lineterminator="\r\n")
+    writer.writerow(header)
+    writer.writerows(rows)
+    return ("﻿" + buffer.getvalue()).encode("utf-8")
+
+
+def _csv_download_response(filename: str, data: bytes) -> StreamingResponse:
+    return StreamingResponse(
+        iter([data]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/export/washes.csv")
+def export_washes_csv() -> StreamingResponse:
+    with state_lock:
+        analysis = require_analysis()
+        rows = build_wash_rows(analysis)
+
+    header = [
+        "Дата и время",
+        "Канал",
+        "Объект",
+        "Программа",
+        "Результат",
+        "Длительность",
+        "Начало",
+        "Окончание",
+        "Источник",
+    ]
+    table = [
+        [
+            row["date_time"],
+            row["channel"],
+            row["object"],
+            row["program"],
+            row["status"],
+            row["duration"],
+            core.format_ts(row["start_ts"]),
+            core.format_ts(row["end_ts"]),
+            row["source_name"],
+        ]
+        for row in rows
+    ]
+    return _csv_download_response("opticip-moyki.csv", _build_csv_bytes(header, table))
+
+
+@app.get("/api/export/cycle.csv")
+def export_cycle_csv(key: str) -> StreamingResponse:
+    with state_lock:
+        analysis = require_analysis()
+        cycle = find_cycle(analysis, key)
+        samples = core.analysis_samples_for_cycle(analysis, cycle)
+
+    header = [
+        "Время",
+        "Температура подачи, C",
+        "Температура возврата, C",
+        "Концентрация возврата, %",
+        "Расход подачи, м3/ч",
+    ]
+    table = [
+        [
+            core.format_ts(sample.ts),
+            _format_csv_number(sample.temperature_supply),
+            _format_csv_number(sample.temperature_return),
+            _format_csv_number(max(sample.concentration_return, 0.0)),
+            _format_csv_number(sample.flow_supply),
+        ]
+        for sample in samples
+    ]
+    return _csv_download_response("opticip-cikl.csv", _build_csv_bytes(header, table))
 
 
 @app.get("/api/wash-details")

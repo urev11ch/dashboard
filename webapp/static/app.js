@@ -1,6 +1,15 @@
 (function () {
   const appState = window.__WASH_APP__ || {};
   const folderPickerButtons = Array.from(document.querySelectorAll("[data-folder-picker]"));
+  const folderDefaultButtons = Array.from(document.querySelectorAll("[data-folder-default]"));
+  // Должно совпадать с LINE_STYLE_OPTIONS в wash-chart.js и CHART_LINE_STYLE_IDS на сервере.
+  const CHART_LINE_STYLE_OPTIONS = [
+    { id: "solid", label: "Сплошная" },
+    { id: "dashed", label: "Штриховая" },
+    { id: "dashdot", label: "Штрих-пунктир" },
+    { id: "dotted", label: "Точечная" },
+    { id: "longdash", label: "Длинный штрих" },
+  ];
   const initialJobStatus =
     appState.jobStatus && typeof appState.jobStatus === "object"
       ? appState.jobStatus
@@ -116,8 +125,28 @@
     });
   }
 
+  function initFolderDefaultButtons() {
+    if (!folderDefaultButtons.length) {
+      return;
+    }
+
+    folderDefaultButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        const targetInputId = button.dataset.targetInput;
+        const targetInput = targetInputId ? document.getElementById(targetInputId) : null;
+        const defaultPath = button.dataset.defaultPath || "";
+        if (!targetInput || !defaultPath) {
+          return;
+        }
+        targetInput.value = defaultPath;
+        targetInput.focus();
+      });
+    });
+  }
+
   initWelcomeSourceTabs();
   initFolderPickerButtons();
+  initFolderDefaultButtons();
 
   const workspaceJobRoot = document.querySelector("[data-workspace-job]");
   const workspaceJobMessage = workspaceJobRoot?.querySelector("[data-workspace-job-message]");
@@ -174,7 +203,9 @@
     }
 
     const { keepVisible = false } = options;
-    setWorkspaceJobVisible(keepVisible || Boolean(status?.active));
+    // Фоновое автообновление FTP не показывает блокирующий оверлей.
+    const isBackground = Boolean(status?.background);
+    setWorkspaceJobVisible(!isBackground && (keepVisible || Boolean(status?.active)));
 
     if (workspaceJobMessage) {
       workspaceJobMessage.textContent = status.message || "Обрабатываю источник";
@@ -209,6 +240,12 @@
   }
 
   async function handleTerminalWorkspaceJob(status) {
+    // Фоновое автообновление обрабатывается отдельным поллером (без оверлея и
+    // перезагрузки), поэтому здесь его игнорируем.
+    if (status.background) {
+      return;
+    }
+
     updateWorkspaceJobUi(status, { keepVisible: true });
 
     if (!appState.hasWorkspace) {
@@ -367,6 +404,51 @@
   if (!appState.hasWorkspace) {
     return;
   }
+
+  // Фоновое автообновление FTP: отдельный лёгкий поллер. Когда серверная фоновая
+  // задача завершается, тихо подтягиваем свежие данные — без оверлея и перезагрузки.
+  (function initBackgroundRefreshWatcher() {
+    const POLL_MS = 15000;
+    let lastHandledJobId =
+      initialJobStatus?.background && initialJobStatus?.status === "completed"
+        ? initialJobStatus.id || ""
+        : "";
+    let timer = 0;
+
+    const schedule = () => {
+      timer = window.setTimeout(tick, POLL_MS);
+    };
+
+    async function tick() {
+      timer = 0;
+      try {
+        const status = await fetchWorkspaceJobStatus();
+        if (
+          status &&
+          status.background &&
+          status.status === "completed" &&
+          (status.id || "") !== lastHandledJobId
+        ) {
+          lastHandledJobId = status.id || "";
+          try {
+            await hydrateWorkspaceData({ resetScroll: false });
+          } catch (_error) {
+            // Оставляем текущие данные, если результат обновления не удалось получить.
+          }
+        }
+      } catch (_error) {
+        // Игнорируем сбой опроса и повторяем на следующем тике.
+      }
+      schedule();
+    }
+
+    window.addEventListener("beforeunload", () => {
+      if (timer) {
+        window.clearTimeout(timer);
+      }
+    });
+    schedule();
+  })();
 
   const WASH_LIST_ROW_HEIGHT = 69;
   const WASH_LIST_OVERSCAN = 8;
@@ -1458,7 +1540,10 @@
     setEmptyState(false);
 
     try {
-      const payload = await getChartPayload(detail.chart_data_url);
+      const [payload] = await Promise.all([
+        getChartPayload(detail.chart_data_url),
+        window.WashChart.hydrate ? window.WashChart.hydrate() : Promise.resolve(),
+      ]);
 
       if (requestId !== null && requestId !== modalRequestId) {
         return false;
@@ -1501,7 +1586,89 @@
     syncOverlayState();
   }
 
-  function openSettings() {
+  async function fetchAppSettings() {
+    const response = await fetch("/api/settings", { headers: { Accept: "application/json" } });
+    if (!response.ok) {
+      throw new Error("settings-fetch-failed");
+    }
+    const payload = await response.json();
+    return payload && typeof payload.settings === "object" ? payload.settings : {};
+  }
+
+  async function saveAppSettings(patch) {
+    const response = await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ settings: patch }),
+    });
+    if (!response.ok) {
+      throw new Error("settings-save-failed");
+    }
+    const payload = await response.json();
+    return payload && typeof payload.settings === "object" ? payload.settings : patch;
+  }
+
+  async function fetchChartStyles() {
+    const response = await fetch("/api/chart-styles", { headers: { Accept: "application/json" } });
+    if (!response.ok) {
+      throw new Error("chart-styles-fetch-failed");
+    }
+    const payload = await response.json();
+    return {
+      series: payload && typeof payload.series === "object" ? payload.series : {},
+      defaults: Array.isArray(payload?.defaults) ? payload.defaults : [],
+    };
+  }
+
+  async function saveChartStyles(series) {
+    const response = await fetch("/api/chart-styles", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ series }),
+    });
+    if (!response.ok) {
+      throw new Error("chart-styles-save-failed");
+    }
+    const payload = await response.json();
+    return payload && typeof payload.series === "object" ? payload.series : series;
+  }
+
+  function renderChartStyleControls(defaults, series) {
+    if (!defaults.length) {
+      return '<div class="settings-chart-empty">Нет настраиваемых кривых.</div>';
+    }
+    return defaults
+      .map((def) => {
+        const saved = series[def.id] || {};
+        const color = isValidHexColorLike(saved.color) ? saved.color : def.color;
+        const lineStyle = CHART_LINE_STYLE_OPTIONS.some((option) => option.id === saved.lineStyle)
+          ? saved.lineStyle
+          : def.lineStyle;
+        const options = CHART_LINE_STYLE_OPTIONS.map(
+          (option) =>
+            `<option value="${option.id}" ${option.id === lineStyle ? "selected" : ""}>${escapeHtml(option.label)}</option>`
+        ).join("");
+        return `
+          <div class="settings-chart-row" style="--settings-chart-color: ${escapeHtml(color)};">
+            <span class="settings-chart-swatch" aria-hidden="true"></span>
+            <span class="settings-chart-name">${escapeHtml(def.label)}</span>
+            <span class="wash-chart-color-input-shell">
+              <input type="color" value="${escapeHtml(color)}" data-chart-style-color="${escapeHtml(def.id)}" aria-label="Цвет: ${escapeHtml(def.label)}">
+            </span>
+            <span class="wash-chart-select-shell">
+              <select data-chart-style-line="${escapeHtml(def.id)}" aria-label="Тип линии: ${escapeHtml(def.label)}">${options}</select>
+            </span>
+          </div>
+        `;
+      })
+      .join("");
+  }
+
+  function isValidHexColorLike(value) {
+    return /^#[0-9a-f]{6}$/i.test(String(value || ""));
+  }
+
+  async function openSettings() {
     if (!modalRoot.hidden) {
       closeChartModal();
     }
@@ -1510,6 +1677,26 @@
     }
     settingsRoot.hidden = false;
     syncOverlayState();
+
+    let settings = { ftp_auto_refresh_enabled: true, ftp_auto_refresh_minutes: 5, default_folder_path: "" };
+    try {
+      settings = { ...settings, ...(await fetchAppSettings()) };
+    } catch (_error) {
+      // Не удалось получить настройки — показываем значения по умолчанию.
+    }
+
+    let chartStyles = { series: {}, defaults: [] };
+    try {
+      chartStyles = await fetchChartStyles();
+    } catch (_error) {
+      // Стили графика недоступны — секцию покажем пустой.
+    }
+
+    // Пользователь мог закрыть окно, пока грузились настройки.
+    if (settingsRoot.hidden) {
+      return;
+    }
+
     settingsRoot.innerHTML = `
       <div class="object-editor-backdrop" data-close-settings></div>
       <section class="object-editor-panel object-editor-panel--settings" role="dialog" aria-modal="true" aria-label="Настройки">
@@ -1530,6 +1717,37 @@
             </span>
             <input type="checkbox" data-setting-wash-result ${isWashResultVisible() ? "checked" : ""}>
           </label>
+          <label class="settings-option">
+            <span class="settings-option-text">
+              <strong>Автообновление с FTP</strong>
+              <span class="settings-option-hint">Пока приложение открыто, периодически докачивать новые архивы с FTP и обновлять данные в фоне.</span>
+            </span>
+            <input type="checkbox" data-setting-ftp-auto-refresh ${settings.ftp_auto_refresh_enabled ? "checked" : ""}>
+          </label>
+          <label class="settings-option">
+            <span class="settings-option-text">
+              <strong>Интервал автообновления</strong>
+              <span class="settings-option-hint">Как часто проверять FTP, в минутах (1–1440).</span>
+            </span>
+            <input type="number" min="1" max="1440" step="1" data-setting-ftp-auto-refresh-minutes value="${Number(settings.ftp_auto_refresh_minutes) || 5}">
+          </label>
+          <div class="settings-option settings-option--stacked">
+            <span class="settings-option-text">
+              <strong>Папка по умолчанию</strong>
+              <span class="settings-option-hint">Подставляется в поле «Папка», если нет последнего открытого пути. Оставьте пустым — будет использоваться встроенная папка datalog.</span>
+            </span>
+            <input type="text" class="settings-text-input" data-setting-default-folder placeholder="Встроенная папка datalog" value="${escapeHtml(settings.default_folder_path || "")}" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="settings-option settings-option--stacked">
+            <span class="settings-option-text">
+              <strong>Цвета и линии графика</strong>
+              <span class="settings-option-hint">Оформление кривых по умолчанию. Применяется к следующему открытому графику.</span>
+            </span>
+            <div class="settings-chart-grid" data-chart-style-grid>${renderChartStyleControls(chartStyles.defaults, chartStyles.series)}</div>
+            <div class="settings-chart-actions">
+              <button type="button" class="ghost" data-chart-style-reset>Сбросить к стандартным</button>
+            </div>
+          </div>
         </div>
       </section>
     `;
@@ -1540,6 +1758,109 @@
     if (washResultToggle) {
       washResultToggle.addEventListener("change", (event) => {
         setWashResultVisible(event.currentTarget.checked);
+      });
+    }
+
+    const autoRefreshToggle = settingsRoot.querySelector("[data-setting-ftp-auto-refresh]");
+    const autoRefreshMinutes = settingsRoot.querySelector("[data-setting-ftp-auto-refresh-minutes]");
+
+    const persistAutoRefresh = async () => {
+      const minutesRaw = Number(autoRefreshMinutes?.value);
+      const minutes = Number.isFinite(minutesRaw) ? Math.min(1440, Math.max(1, Math.round(minutesRaw))) : 5;
+      try {
+        const saved = await saveAppSettings({
+          ftp_auto_refresh_enabled: Boolean(autoRefreshToggle?.checked),
+          ftp_auto_refresh_minutes: minutes,
+        });
+        // Нормализованное сервером значение возвращаем в поле.
+        if (autoRefreshMinutes && saved && Number.isFinite(Number(saved.ftp_auto_refresh_minutes))) {
+          autoRefreshMinutes.value = Number(saved.ftp_auto_refresh_minutes);
+        }
+      } catch (_error) {
+        setScreenError("Не удалось сохранить настройки.");
+      }
+    };
+
+    if (autoRefreshToggle) {
+      autoRefreshToggle.addEventListener("change", persistAutoRefresh);
+    }
+    if (autoRefreshMinutes) {
+      autoRefreshMinutes.addEventListener("change", persistAutoRefresh);
+    }
+
+    const defaultFolderInput = settingsRoot.querySelector("[data-setting-default-folder]");
+    if (defaultFolderInput) {
+      defaultFolderInput.addEventListener("change", async (event) => {
+        try {
+          const saved = await saveAppSettings({ default_folder_path: String(event.currentTarget.value || "").trim() });
+          if (saved && typeof saved.default_folder_path === "string") {
+            event.currentTarget.value = saved.default_folder_path;
+          }
+        } catch (_error) {
+          setScreenError("Не удалось сохранить настройки.");
+        }
+      });
+    }
+
+    const chartStyleGrid = settingsRoot.querySelector("[data-chart-style-grid]");
+    const chartStyleReset = settingsRoot.querySelector("[data-chart-style-reset]");
+
+    const collectChartStyleSeries = () => {
+      const series = {};
+      if (!chartStyleGrid) {
+        return series;
+      }
+      chartStyleGrid.querySelectorAll("[data-chart-style-color]").forEach((input) => {
+        const id = input.dataset.chartStyleColor;
+        const lineSelect = chartStyleGrid.querySelector(`[data-chart-style-line="${id}"]`);
+        series[id] = {
+          color: input.value,
+          lineStyle: lineSelect ? lineSelect.value : "solid",
+        };
+      });
+      return series;
+    };
+
+    const persistChartStyles = async () => {
+      try {
+        const saved = await saveChartStyles(collectChartStyleSeries());
+        // Применяем к кэшу графиков, чтобы следующий открытый график сразу учёл изменения.
+        window.WashChart?.setSeriesStyles?.(saved);
+      } catch (_error) {
+        setScreenError("Не удалось сохранить оформление графика.");
+      }
+    };
+
+    if (chartStyleGrid) {
+      chartStyleGrid.addEventListener("change", (event) => {
+        const target = event.target;
+        if (!target?.dataset) {
+          return;
+        }
+        if ("chartStyleColor" in target.dataset) {
+          const row = target.closest(".settings-chart-row");
+          if (row) {
+            row.style.setProperty("--settings-chart-color", target.value);
+          }
+        }
+        if ("chartStyleColor" in target.dataset || "chartStyleLine" in target.dataset) {
+          void persistChartStyles();
+        }
+      });
+    }
+
+    if (chartStyleReset) {
+      chartStyleReset.addEventListener("click", async () => {
+        try {
+          await saveChartStyles({});
+          const fresh = await fetchChartStyles();
+          if (chartStyleGrid) {
+            chartStyleGrid.innerHTML = renderChartStyleControls(fresh.defaults, fresh.series);
+          }
+          window.WashChart?.setSeriesStyles?.(fresh.series);
+        } catch (_error) {
+          setScreenError("Не удалось сбросить оформление графика.");
+        }
       });
     }
   }
@@ -2013,6 +2334,7 @@
             <div class="chart-modal-actions chart-modal-actions--top">
               <button type="button" class="chart-modal-button chart-modal-button--primary" data-download-pdf>Сохранить как PDF</button>
               <button type="button" class="chart-modal-button chart-modal-button--secondary" data-print-wash>Печать</button>
+              <a class="chart-modal-button chart-modal-button--secondary" href="/api/export/cycle.csv?key=${encodeURIComponent(detail.key)}" download="opticip-cikl.csv" role="button">Экспорт CSV</a>
               <button
                 type="button"
                 class="chart-modal-icon-button chart-modal-icon-button--danger"

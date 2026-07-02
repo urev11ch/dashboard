@@ -114,6 +114,16 @@
               >
                 Выбрать папку
               </button>
+              <button
+                type="button"
+                class="ghost"
+                data-folder-default
+                data-target-input="workspacePath"
+                data-default-path="{{ workspace_default_path }}"
+                title="Подставить путь по умолчанию ({{ workspace_default_path }})"
+              >
+                Путь по умолчанию
+              </button>
               <button type="submit">Открыть папку</button>
             </div>
           </form>
@@ -161,6 +171,7 @@
           <form method="post" action="/workspace/refresh" id="workspaceRefreshForm">
             <button type="submit">Обновить данные</button>
           </form>
+          <a class="ghost screen-header-link" href="/api/export/washes.csv" download="opticip-moyki.csv" role="button">Экспорт CSV</a>
           <form method="post" action="/workspace/reset">
             <button type="submit" class="ghost">Сменить источник</button>
           </form>
