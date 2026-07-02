@@ -144,9 +144,43 @@
     });
   }
 
+  // Кастомная шапка окна (frameless desktop-режим). В обычном браузере
+  // window.pywebview отсутствует — шапка остаётся скрытой, лейаут не меняется.
+  function initDesktopTitlebar() {
+    const titlebar = document.querySelector("[data-app-titlebar]");
+    if (!titlebar) {
+      return;
+    }
+
+    const callWindowApi = (method) => {
+      const api = window.pywebview && window.pywebview.api;
+      if (api && typeof api[method] === "function") {
+        Promise.resolve(api[method]()).catch(() => {});
+      }
+    };
+
+    titlebar.querySelector("[data-window-min]")?.addEventListener("click", () => callWindowApi("minimize_window"));
+    titlebar.querySelector("[data-window-max]")?.addEventListener("click", () => callWindowApi("toggle_maximize"));
+    titlebar.querySelector("[data-window-close]")?.addEventListener("click", () => callWindowApi("close_window"));
+    titlebar.querySelector("[data-titlebar-drag]")?.addEventListener("dblclick", () => callWindowApi("toggle_maximize"));
+
+    const enableDesktopShell = () => {
+      document.body.classList.add("desktop-shell");
+      titlebar.hidden = false;
+    };
+
+    if (window.pywebview && window.pywebview.api) {
+      enableDesktopShell();
+    } else {
+      // pywebview внедряет мост чуть позже загрузки страницы.
+      window.addEventListener("pywebviewready", enableDesktopShell, { once: true });
+    }
+  }
+
   initWelcomeSourceTabs();
   initFolderPickerButtons();
   initFolderDefaultButtons();
+  initDesktopTitlebar();
 
   const workspaceJobRoot = document.querySelector("[data-workspace-job]");
   const workspaceJobMessage = workspaceJobRoot?.querySelector("[data-workspace-job-message]");

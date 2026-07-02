@@ -8,6 +8,23 @@
   <link rel="stylesheet" href="{{ request.url_for('static', path='style.css') }}?v={{ asset_versions.style_css }}">
 </head>
 <body>
+  <div class="app-titlebar" data-app-titlebar hidden>
+    <div class="app-titlebar-drag pywebview-drag-region" data-titlebar-drag>
+      <img class="app-titlebar-icon" src="{{ request.url_for('static', path='washjournal-icon.svg') }}" alt="" aria-hidden="true">
+      <span class="app-titlebar-title">OptiCIP Dashboard</span>
+    </div>
+    <div class="app-titlebar-controls">
+      <button type="button" class="app-titlebar-button" data-window-min aria-label="Свернуть" title="Свернуть">
+        <svg viewBox="0 0 12 12" aria-hidden="true"><rect x="2" y="6" width="8" height="1"></rect></svg>
+      </button>
+      <button type="button" class="app-titlebar-button" data-window-max aria-label="Развернуть / восстановить" title="Развернуть / восстановить">
+        <svg viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="2.5" width="7" height="7" fill="none"></rect></svg>
+      </button>
+      <button type="button" class="app-titlebar-button app-titlebar-button--close" data-window-close aria-label="Закрыть" title="Закрыть">
+        <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 2.5L9.5 9.5M9.5 2.5L2.5 9.5"></path></svg>
+      </button>
+    </div>
+  </div>
   {% if not has_analysis %}
   <main class="welcome-shell">
     <section class="welcome-card">

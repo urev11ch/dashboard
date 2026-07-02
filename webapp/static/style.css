@@ -45,6 +45,110 @@ body {
   background-size: 24px 24px, 24px 24px, 100% 100%;
 }
 
+/* ---- Кастомная шапка окна (frameless desktop-режим) ---------------------- */
+/* В браузере шапка скрыта (атрибут hidden) и лейаут не меняется. В desktop
+   JS снимает hidden и добавляет body.desktop-shell. */
+body.desktop-shell {
+  --titlebar-h: 36px;
+}
+
+body.desktop-shell .app-titlebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--titlebar-h);
+  display: flex;
+  align-items: stretch;
+  z-index: 500;
+  background: var(--panel-strong);
+  border-bottom: 1px solid var(--line);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.app-titlebar-drag {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  -webkit-app-region: drag;
+}
+
+.app-titlebar-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.app-titlebar-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.app-titlebar-controls {
+  display: flex;
+  align-items: stretch;
+  flex: none;
+}
+
+.app-titlebar-button {
+  width: 46px;
+  height: var(--titlebar-h);
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  display: inline-grid;
+  place-items: center;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.app-titlebar-button svg {
+  width: 12px;
+  height: 12px;
+}
+
+.app-titlebar-button svg rect {
+  fill: currentColor;
+}
+
+.app-titlebar-button svg path {
+  stroke: currentColor;
+  stroke-width: 1.3;
+  fill: none;
+}
+
+.app-titlebar-button:hover {
+  background: rgba(40, 58, 96, 0.08);
+  color: var(--text);
+}
+
+.app-titlebar-button--close:hover {
+  background: var(--warn);
+  border-color: var(--warn);
+  color: #fff;
+}
+
+/* Сдвигаем контент главных экранов под фиксированную шапку (box-sizing: border-box). */
+body.desktop-shell .welcome-shell {
+  padding-top: calc(32px + var(--titlebar-h));
+}
+
+body.desktop-shell .wash-screen {
+  padding-top: calc(28px + var(--titlebar-h));
+}
+
 button,
 input,
 select,

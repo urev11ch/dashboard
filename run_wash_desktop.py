@@ -20,6 +20,10 @@ from runtime_paths import resolve_log_root
 
 HOST = "127.0.0.1"
 APP_TITLE = "OptiCIP Dashboard"
+# Минимальный размер окна. Ниже него уменьшённый режим не опускается — иначе на
+# Full HD «половина экрана» (960×540) была бы тесна для интерфейса по высоте.
+MIN_WINDOW_WIDTH = 960
+MIN_WINDOW_HEIGHT = 600
 
 
 def configure_runtime_environment() -> None:
@@ -113,9 +117,44 @@ def build_desktop_loading_html() -> str:
       min-height: 100vh;
       display: grid;
       place-items: center;
+      padding-top: 36px;
       background:
         radial-gradient(circle at top, rgba(53, 122, 184, 0.18), transparent 38%),
         linear-gradient(180deg, #f9fbfd 0%, #edf3f8 100%);
+    }
+    .boot-titlebar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 36px;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      padding-left: 14px;
+      z-index: 10;
+    }
+    .boot-titlebar .boot-drag {
+      flex: 1;
+      align-self: stretch;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      color: #5b7b96;
+      letter-spacing: 0.04em;
+    }
+    .boot-titlebar button {
+      width: 46px;
+      height: 36px;
+      border: 0;
+      background: transparent;
+      color: #46637c;
+      font-size: 15px;
+      cursor: pointer;
+    }
+    .boot-titlebar button:hover {
+      background: rgba(200, 68, 55, 0.14);
+      color: #b5271a;
     }
     .card {
       width: min(520px, calc(100vw - 48px));
@@ -167,6 +206,10 @@ def build_desktop_loading_html() -> str:
   </style>
 </head>
 <body>
+  <div class="boot-titlebar">
+    <div class="boot-drag pywebview-drag-region">OptiCIP Dashboard</div>
+    <button type="button" title="Закрыть" onclick="window.pywebview&&window.pywebview.api&&window.pywebview.api.close_window()">&#10005;</button>
+  </div>
   <main class="card">
     <div class="eyebrow">OptiCIP Dashboard</div>
     <h1>Запускаю интерфейс</h1>
@@ -288,9 +331,84 @@ class DesktopServer:
 class DesktopBridge:
     def __init__(self) -> None:
         self._window: webview.Window | None = None
+        # Окно создаётся развёрнутым (maximized=True), поэтому стартовое состояние
+        # — «развёрнуто». Используется кастомной кнопкой «развернуть/восстановить».
+        self._maximized = True
 
     def bind_window(self, window: webview.Window) -> None:
         self._window = window
+
+    # ---- управление кастомным окном (frameless titlebar) -------------------
+    def minimize_window(self, *_args) -> dict[str, bool]:
+        if self._window is None:
+            return {"ok": False}
+        try:
+            self._window.minimize()
+        except Exception:
+            logging.exception("Не удалось свернуть окно")
+            return {"ok": False}
+        return {"ok": True}
+
+    def toggle_maximize(self, *_args) -> dict[str, bool]:
+        """Переключает окно между двумя режимами: полностью развёрнуто ↔
+        уменьшенное окно (~½ размеров экрана по пропорциям, по центру)."""
+        if self._window is None:
+            return {"ok": False}
+        try:
+            if self._maximized:
+                self._apply_windowed_geometry()
+                self._maximized = False
+            else:
+                maximize = getattr(self._window, "maximize", None)
+                if callable(maximize):
+                    maximize()
+                    self._maximized = True
+                else:  # запасной путь для старых версий pywebview
+                    logging.warning("pywebview.Window.maximize недоступен")
+        except Exception:
+            logging.exception("Не удалось переключить размер окна")
+            return {"ok": False, "maximized": self._maximized}
+        return {"ok": True, "maximized": self._maximized}
+
+    def _primary_screen_size(self) -> tuple[int, int, int, int]:
+        """Возвращает (x, y, width, height) основного экрана; при недоступности —
+        запасные значения для Full HD."""
+        try:
+            screens = webview.screens or []
+            screen = screens[0] if screens else None
+        except Exception:
+            screen = None
+        if screen is None:
+            return 0, 0, 1920, 1080
+        return (
+            int(getattr(screen, "x", 0) or 0),
+            int(getattr(screen, "y", 0) or 0),
+            int(getattr(screen, "width", 1920) or 1920),
+            int(getattr(screen, "height", 1080) or 1080),
+        )
+
+    def _apply_windowed_geometry(self) -> None:
+        """Уменьшенный режим: половина размеров экрана по пропорциям, по центру.
+        Ширина/высота не опускаются ниже минимально пригодных для интерфейса."""
+        win = self._window
+        assert win is not None
+        screen_x, screen_y, screen_w, screen_h = self._primary_screen_size()
+        width = max(screen_w // 2, MIN_WINDOW_WIDTH)
+        height = max(screen_h // 2, MIN_WINDOW_HEIGHT)
+        # Сначала выходим из развёрнутого состояния — иначе resize игнорируется.
+        win.restore()
+        win.resize(width, height)
+        win.move(screen_x + (screen_w - width) // 2, screen_y + (screen_h - height) // 2)
+
+    def close_window(self, *_args) -> dict[str, bool]:
+        if self._window is None:
+            return {"ok": False}
+        try:
+            self._window.destroy()
+        except Exception:
+            logging.exception("Не удалось закрыть окно")
+            return {"ok": False}
+        return {"ok": True}
 
     def choose_folder(self, payload: dict | None = None) -> dict[str, str | bool]:
         if self._window is None:
@@ -586,9 +704,15 @@ def main() -> int:
             js_api=bridge,
             width=1680,
             height=1040,
-            min_size=(1200, 760),
+            min_size=(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT),
             maximized=True,
             text_select=True,
+            # Кастомное окно: убираем стандартную рамку Windows, свою «шапку»
+            # (перетаскивание, свернуть/развернуть/закрыть) рисуем в веб-интерфейсе.
+            # easy_drag=False — перетаскивание только за область pywebview-drag-region,
+            # чтобы не мешать взаимодействию с контентом.
+            frameless=True,
+            easy_drag=False,
         )
         if window is not None:
             bridge.bind_window(window)
