@@ -1608,8 +1608,13 @@ body.desktop-shell .object-editor-panel {
   border: 1px solid rgba(40, 58, 96, 0.12);
   box-shadow: var(--shadow);
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 14px;
+}
+
+.object-editor-footer {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .object-editor-header {
@@ -1628,13 +1633,67 @@ body.desktop-shell .object-editor-panel {
 
 .object-editor-panel--settings {
   width: min(560px, calc(100vw - 32px));
-  grid-template-rows: auto auto;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.settings-header-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.settings-header-title h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.settings-header-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: rgba(23, 87, 255, 0.1);
+  color: var(--accent);
+  flex: none;
+}
+
+.settings-header-icon svg {
+  width: 22px;
+  height: 22px;
+  fill: currentColor;
 }
 
 .settings-body {
   display: grid;
-  gap: 12px;
-  padding: 2px;
+  gap: 18px;
+  padding: 2px 4px 2px 2px;
+  overflow: auto;
+  min-height: 0;
+}
+
+.settings-section {
+  display: grid;
+  gap: 10px;
+}
+
+.settings-section-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
 }
 
 .settings-option--stacked {
@@ -1947,7 +2006,9 @@ body.desktop-shell .object-editor-panel {
 .object-editor-create-panel {
   position: relative;
   width: min(560px, calc(100% - 32px));
-  margin: 56px auto 0;
+  margin: 40px auto 0;
+  max-height: calc(100% - 56px);
+  overflow: auto;
   padding: 16px;
   border-radius: 18px;
   background: #ffffff;
@@ -2413,6 +2474,14 @@ body.desktop-shell .chart-host--modal {
 body.desktop-shell .chart-host--modal .wash-chart-svg {
   height: 100%;
   min-height: 0;
+}
+
+/* В уменьшённом окне (desktop, окно не развёрнуто) в модалке графика показываем
+   только сам график — без сводки и без параметров кривых. Печатную сводку
+   (.chart-print-root) не затрагиваем, т.к. она вне .chart-modal-panel. */
+body.desktop-shell:not(.window-maximized) .chart-modal-panel .chart-modal-summary-card,
+body.desktop-shell:not(.window-maximized) .chart-modal-panel .wash-chart-controls {
+  display: none;
 }
 
 .detail-bottom-grid {

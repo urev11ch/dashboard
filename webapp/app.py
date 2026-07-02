@@ -133,6 +133,17 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
 }
 # Как часто фоновый цикл просыпается, чтобы сверить, не пора ли обновлять FTP.
 FTP_AUTO_REFRESH_POLL_SECONDS = 20.0
+# Настраиваемые подписи результата мойки. Ядро (wash_report) считает результат
+# в виде строк по умолчанию; здесь их можно переопределить в настройках.
+RESULT_LABEL_CATEGORIES = ("completed_clean", "completed_pause", "check_pause", "check")
+RESULT_LABEL_DEFAULTS: dict[str, str] = {
+    "completed_clean": "Завершено штатно",
+    "completed_pause": "Завершено, были паузы",
+    "check_pause": "Требует проверки, были паузы",
+    "check": "Требует проверки",
+}
+RESULT_LABEL_MAX_LEN = 120
+_RESULT_CATEGORY_BY_DEFAULT = {value: key for key, value in RESULT_LABEL_DEFAULTS.items()}
 # Идентификаторы стилей линий должны совпадать с LINE_STYLE_OPTIONS в wash-chart.js.
 CHART_LINE_STYLE_IDS = frozenset({"solid", "dashed", "dashdot", "dotted", "longdash"})
 CHART_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -1212,11 +1223,31 @@ def normalize_app_settings(raw: Any) -> dict[str, Any]:
         default_folder_path = ""
     default_folder_path = default_folder_path.strip()
 
+    raw_labels = data.get("result_labels")
+    raw_labels = raw_labels if isinstance(raw_labels, dict) else {}
+    result_labels: dict[str, str] = {}
+    for category in RESULT_LABEL_CATEGORIES:
+        value = raw_labels.get(category)
+        value = value.strip() if isinstance(value, str) else ""
+        # Пустая строка означает «использовать значение по умолчанию».
+        result_labels[category] = value[:RESULT_LABEL_MAX_LEN]
+
     return {
         "ftp_auto_refresh_enabled": enabled,
         "ftp_auto_refresh_minutes": minutes,
         "default_folder_path": default_folder_path,
+        "result_labels": result_labels,
     }
+
+
+def resolve_result_label(default_label: str, result_labels: dict[str, str] | None) -> str:
+    """Переводит стандартную подпись результата мойки в пользовательскую, если та
+    задана в настройках. Незнакомые строки возвращаются как есть."""
+    category = _RESULT_CATEGORY_BY_DEFAULT.get(default_label)
+    if category is None:
+        return default_label
+    custom = (result_labels or {}).get(category) or ""
+    return custom or RESULT_LABEL_DEFAULTS[category]
 
 
 def load_app_settings() -> dict[str, Any]:
@@ -2131,13 +2162,17 @@ def find_cycle(analysis: core.AnalysisResult, key: str) -> core.Cycle:
 
 
 def build_wash_rows(analysis: core.AnalysisResult) -> list[dict[str, Any]]:
+    result_labels = load_app_settings()["result_labels"]
     rows: list[dict[str, Any]] = []
     for cycle in analysis.sorted_cycles:
         cycle_key = core.make_cycle_key(cycle)
         date_time = core.format_ts(cycle.start_ts)
-        status = analysis.cycle_results_by_key.get(
-            cycle_key,
-            core.cycle_result_label_from_operations(cycle.operations),
+        status = resolve_result_label(
+            analysis.cycle_results_by_key.get(
+                cycle_key,
+                core.cycle_result_label_from_operations(cycle.operations),
+            ),
+            result_labels,
         )
         source_name = format_source_label(cycle.source_db)
         rows.append(
@@ -2258,9 +2293,12 @@ def build_wash_detail(analysis: core.AnalysisResult, key: str) -> dict[str, Any]
         "object_name": cycle.object_name,
         "program": cycle.program_name,
         "channel": cycle.channel,
-        "status": analysis.cycle_results_by_key.get(
-            key,
-            core.cycle_result_label_from_operations(cycle.operations),
+        "status": resolve_result_label(
+            analysis.cycle_results_by_key.get(
+                key,
+                core.cycle_result_label_from_operations(cycle.operations),
+            ),
+            load_app_settings()["result_labels"],
         ),
         "duration": core.format_duration(cycle.duration_seconds),
         "chart_data_url": f"/api/wash-chart-data?key={quote(key, safe='')}",

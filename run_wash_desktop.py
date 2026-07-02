@@ -220,13 +220,19 @@ def build_desktop_loading_html() -> str:
 </html>"""
 
 
-def load_desktop_window_url(window: webview.Window, target_url: str) -> None:
+def load_desktop_window_url(bridge: "DesktopBridge", window: webview.Window, target_url: str) -> None:
     logging.info("Waiting for desktop window before loading %s", target_url)
     if not window.events.shown.wait(20):
         logging.error("Desktop window was not shown in time; cannot load %s", target_url)
         return
 
     time.sleep(0.35)
+
+    # Открываем окно по центру экрана в уменьшённом размере (не на весь экран).
+    try:
+        bridge.center_on_open()
+    except Exception:
+        logging.exception("Не удалось центрировать окно при открытии")
 
     try:
         window.load_url(target_url)
@@ -331,12 +337,20 @@ class DesktopServer:
 class DesktopBridge:
     def __init__(self) -> None:
         self._window: webview.Window | None = None
-        # Окно создаётся развёрнутым (maximized=True), поэтому стартовое состояние
-        # — «развёрнуто». Используется кастомной кнопкой «развернуть/восстановить».
-        self._maximized = True
+        # Окно открывается в уменьшённом (не развёрнутом) режиме — см. center_on_open.
+        # Состояние используется кастомной кнопкой «развернуть/восстановить».
+        self._maximized = False
 
     def bind_window(self, window: webview.Window) -> None:
         self._window = window
+
+    def center_on_open(self) -> None:
+        """Приводит окно к уменьшённому размеру и центрирует его на экране.
+        Вызывается после показа окна при запуске приложения."""
+        if self._window is None:
+            return
+        self._apply_windowed_geometry()
+        self._maximized = False
 
     # ---- управление кастомным окном (frameless titlebar) -------------------
     def minimize_window(self, *_args) -> dict[str, bool]:
@@ -765,7 +779,9 @@ def main() -> int:
             width=1680,
             height=1040,
             min_size=(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT),
-            maximized=True,
+            # Открываем не на весь экран — после показа окно центрируется и
+            # приводится к уменьшённому размеру (см. center_on_open).
+            maximized=False,
             text_select=True,
             # Кастомное окно: убираем стандартную рамку Windows, свою «шапку»
             # (перетаскивание, свернуть/развернуть/закрыть) рисуем в веб-интерфейсе.
@@ -779,7 +795,7 @@ def main() -> int:
 
         webview.start(
             load_desktop_window_url,
-            args=(window, server.url),
+            args=(bridge, window, server.url),
             gui="edgechromium",
             private_mode=False,
             storage_path=str(resolve_webview_storage_path()),

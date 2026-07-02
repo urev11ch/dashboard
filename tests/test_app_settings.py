@@ -22,6 +22,7 @@ def test_defaults_when_missing(tmp_path, monkeypatch):
         "ftp_auto_refresh_enabled": True,
         "ftp_auto_refresh_minutes": 5,
         "default_folder_path": "",
+        "result_labels": {c: "" for c in app.RESULT_LABEL_CATEGORIES},
     }
 
 
@@ -34,6 +35,7 @@ def test_save_load_roundtrip(tmp_path, monkeypatch):
         "ftp_auto_refresh_enabled": False,
         "ftp_auto_refresh_minutes": 12,
         "default_folder_path": "",
+        "result_labels": {c: "" for c in app.RESULT_LABEL_CATEGORIES},
     }
 
     payload = json.loads(app.app_settings_path().read_text(encoding="utf-8"))
@@ -91,6 +93,33 @@ def test_settings_route_merges_partial(tmp_path, monkeypatch):
     result = app.load_app_settings()
     assert result["default_folder_path"] == "/data/x"
     assert result["ftp_auto_refresh_minutes"] == 9
+
+
+# ---- подписи результата мойки -----------------------------------------------
+def test_result_labels_default_empty_and_resolve_to_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    labels = app.load_app_settings()["result_labels"]
+    assert labels == {c: "" for c in app.RESULT_LABEL_CATEGORIES}
+    # пустая настройка -> стандартная подпись
+    assert app.resolve_result_label("Завершено штатно", labels) == "Завершено штатно"
+
+
+def test_result_labels_custom_override(tmp_path, monkeypatch):
+    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    app.save_app_settings({"result_labels": {"completed_clean": "OK", "check": "Проверить"}})
+    labels = app.load_app_settings()["result_labels"]
+    assert app.resolve_result_label("Завершено штатно", labels) == "OK"
+    assert app.resolve_result_label("Требует проверки", labels) == "Проверить"
+    # незаданная категория -> стандарт; неизвестная строка -> без изменений
+    assert app.resolve_result_label("Завершено, были паузы", labels) == "Завершено, были паузы"
+    assert app.resolve_result_label("прочее", labels) == "прочее"
+
+
+def test_result_labels_length_capped(tmp_path, monkeypatch):
+    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    long_value = "я" * 500
+    saved = app.save_app_settings({"result_labels": {"check": long_value}})
+    assert len(saved["result_labels"]["check"]) == app.RESULT_LABEL_MAX_LEN
 
 
 # ---- дефолты оформления графика ---------------------------------------------

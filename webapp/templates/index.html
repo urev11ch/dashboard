@@ -29,11 +29,7 @@
   <main class="welcome-shell">
     <section class="welcome-card">
       <div class="eyebrow">OptiCIP Dashboard</div>
-      <h1>Выберите источник данных</h1>
-      <p class="welcome-copy">
-        Приложение поддерживает два режима: основной вход через FTP-сервер и дополнительную работу
-        с папкой, архивами и файлами <code>.db</code>.
-      </p>
+      <h1>Источник данных</h1>
 
       <div class="welcome-source-switcher" role="tablist" aria-label="Источник данных">
         <button type="button" class="welcome-source-tab is-active" data-source-tab="ftp" aria-pressed="true">FTP сервер</button>
@@ -42,14 +38,6 @@
 
       <div class="welcome-source-stack">
         <section class="welcome-source-panel welcome-source-panel--primary" data-source-panel="ftp">
-          <div class="eyebrow">Основной режим</div>
-          <h2 class="welcome-source-title">FTP сервер</h2>
-          <p class="welcome-source-copy">
-            Приложение скачает архивы с сервера в локальную папку <code>datalog</code> (подпапки по дате
-            скачивания), объединит их, уберёт повторяющиеся мойки и построит журнал. Сохранённые панели
-            можно переключать; пароли хранятся в зашифрованном виде.
-          </p>
-
           {% if ftp_sources %}
           <div class="ftp-saved">
             <div class="eyebrow">Сохранённые панели</div>
@@ -112,12 +100,6 @@
         </section>
 
         <section class="welcome-source-panel" data-source-panel="folder" hidden>
-          <div class="eyebrow">Дополнительный режим</div>
-          <h2 class="welcome-source-title">Папка и архивы</h2>
-          <p class="welcome-source-copy">
-            Если нужно работать не с FTP, а с локальными файлами, укажите корневую папку. Приложение само найдёт базы
-            <code>.db</code> во вложенных каталогах и внутри поддерживаемых архивов <code>.zip</code> и <code>.tar.*</code>.
-          </p>
           <form method="post" action="/workspace/open" class="folder-form" id="workspaceOpenForm">
             <label for="workspacePath">Путь к папке</label>
             <input id="workspacePath" type="text" name="path" value="{{ workspace_input_value }}" placeholder="{{ workspace_path_placeholder }}" autocomplete="off" spellcheck="false" required>
@@ -150,19 +132,6 @@
       {% if error %}
       <div class="notice error">{{ error }}</div>
       {% endif %}
-
-      <div class="welcome-hints">
-        <div class="hint-card">
-          <span>01</span>
-          <strong>FTP по умолчанию</strong>
-          <p>Основной сценарий запуска рассчитан на подключение к FTP-серверу: приложение само скачает архивы Weintek и файлы <code>.db</code>.</p>
-        </div>
-        <div class="hint-card">
-          <span>02</span>
-          <strong>Файловый fallback</strong>
-          <p>Если базы лежат на диске или в архиве, можно в один клик переключиться на выбор папки и открыть их без отдельной настройки.</p>
-        </div>
-      </div>
     </section>
   </main>
   {% else %}

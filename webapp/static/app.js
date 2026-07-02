@@ -2,6 +2,13 @@
   const appState = window.__WASH_APP__ || {};
   const folderPickerButtons = Array.from(document.querySelectorAll("[data-folder-picker]"));
   const folderDefaultButtons = Array.from(document.querySelectorAll("[data-folder-default]"));
+  // Подписи результата мойки (ключи/значения по умолчанию совпадают с сервером).
+  const RESULT_LABEL_FIELDS = [
+    { key: "completed_clean", label: "Завершено без пауз", def: "Завершено штатно" },
+    { key: "completed_pause", label: "Завершено с паузами", def: "Завершено, были паузы" },
+    { key: "check_pause", label: "Не завершено, с паузами", def: "Требует проверки, были паузы" },
+    { key: "check", label: "Не завершено", def: "Требует проверки" },
+  ];
   // Должно совпадать с LINE_STYLE_OPTIONS в wash-chart.js и CHART_LINE_STYLE_IDS на сервере.
   const CHART_LINE_STYLE_OPTIONS = [
     { id: "solid", label: "Сплошная" },
@@ -159,14 +166,35 @@
       }
     };
 
+    // Признак развёрнутого окна на body — по нему в уменьшённом режиме модалка
+    // графика показывает только сам график (без сводки и параметров кривых).
+    const setMaximizedState = (maximized) => {
+      document.body.classList.toggle("window-maximized", Boolean(maximized));
+    };
+
+    const toggleMaximize = () => {
+      const api = window.pywebview && window.pywebview.api;
+      if (api && typeof api.toggle_maximize === "function") {
+        Promise.resolve(api.toggle_maximize())
+          .then((result) => {
+            if (result && typeof result.maximized === "boolean") {
+              setMaximizedState(result.maximized);
+            }
+          })
+          .catch(() => {});
+      }
+    };
+
     titlebar.querySelector("[data-window-min]")?.addEventListener("click", () => callWindowApi("minimize_window"));
-    titlebar.querySelector("[data-window-max]")?.addEventListener("click", () => callWindowApi("toggle_maximize"));
+    titlebar.querySelector("[data-window-max]")?.addEventListener("click", toggleMaximize);
     titlebar.querySelector("[data-window-close]")?.addEventListener("click", () => callWindowApi("close_window"));
-    titlebar.querySelector("[data-titlebar-drag]")?.addEventListener("dblclick", () => callWindowApi("toggle_maximize"));
+    titlebar.querySelector("[data-titlebar-drag]")?.addEventListener("dblclick", toggleMaximize);
 
     const enableDesktopShell = () => {
       document.body.classList.add("desktop-shell");
       titlebar.hidden = false;
+      // Приложение открывается в уменьшённом окне (не развёрнуто).
+      setMaximizedState(false);
     };
 
     if (window.pywebview && window.pywebview.api) {
@@ -1731,62 +1759,69 @@
       return;
     }
 
+    const resultLabels = settings.result_labels || {};
     settingsRoot.innerHTML = `
       <div class="object-editor-backdrop" data-close-settings></div>
       <section class="object-editor-panel object-editor-panel--settings" role="dialog" aria-modal="true" aria-label="Настройки">
-        <header class="object-editor-header">
-          <div>
-            <div class="eyebrow">Настройки</div>
-            <p class="object-editor-copy">Параметры оформления и работы приложения.</p>
+        <header class="settings-header">
+          <div class="settings-header-title">
+            <span class="settings-header-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.48.48 0 0 0-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87a.49.49 0 0 0 .12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2z"></path></svg>
+            </span>
+            <h2>Настройки</h2>
           </div>
-          <div class="object-editor-header-actions">
-            <button type="button" class="chart-modal-icon-button chart-modal-icon-button--danger" data-close-settings aria-label="Закрыть настройки" title="Закрыть">
-              <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-                <path d="M5 5L15 15"></path>
-                <path d="M15 5L5 15"></path>
-              </svg>
-            </button>
-          </div>
+          <button type="button" class="chart-modal-icon-button chart-modal-icon-button--danger" data-close-settings aria-label="Закрыть настройки" title="Закрыть">
+            <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <path d="M5 5L15 15"></path>
+              <path d="M15 5L5 15"></path>
+            </svg>
+          </button>
         </header>
         <div class="settings-body">
-          <label class="settings-option">
-            <span class="settings-option-text">
-              <strong>Результат мойки</strong>
-              <span class="settings-option-hint">Показывать «Результат» в списке моек, в окне графика и в отчётах. Если выключить — не отображается нигде.</span>
-            </span>
-            <input type="checkbox" data-setting-wash-result ${isWashResultVisible() ? "checked" : ""}>
-          </label>
-          <label class="settings-option">
-            <span class="settings-option-text">
-              <strong>Автообновление с FTP</strong>
-              <span class="settings-option-hint">Пока приложение открыто, периодически докачивать новые архивы с FTP и обновлять данные в фоне.</span>
-            </span>
-            <input type="checkbox" data-setting-ftp-auto-refresh ${settings.ftp_auto_refresh_enabled ? "checked" : ""}>
-          </label>
-          <label class="settings-option">
-            <span class="settings-option-text">
-              <strong>Интервал автообновления</strong>
-              <span class="settings-option-hint">Как часто проверять FTP, в минутах (1–1440).</span>
-            </span>
-            <input type="number" min="1" max="1440" step="1" data-setting-ftp-auto-refresh-minutes value="${Number(settings.ftp_auto_refresh_minutes) || 5}">
-          </label>
-          <div class="settings-option settings-option--stacked">
-            <span class="settings-option-text">
-              <strong>Папка по умолчанию</strong>
-              <span class="settings-option-hint">Подставляется в поле «Папка», если нет последнего открытого пути. Оставьте пустым — будет использоваться встроенная папка datalog.</span>
-            </span>
-            <input type="text" class="settings-text-input" data-setting-default-folder placeholder="Встроенная папка datalog" value="${escapeHtml(settings.default_folder_path || "")}" autocomplete="off" spellcheck="false">
-          </div>
-          <div class="settings-option settings-option--stacked">
-            <span class="settings-option-text">
-              <strong>Цвета и линии графика</strong>
-              <span class="settings-option-hint">Оформление кривых по умолчанию. Применяется к следующему открытому графику.</span>
-            </span>
-            <div class="settings-chart-grid" data-chart-style-grid>${renderChartStyleControls(chartStyles.defaults, chartStyles.series)}</div>
-            <div class="settings-chart-actions">
-              <button type="button" class="ghost" data-chart-style-reset>Сбросить к стандартным</button>
+          <section class="settings-section">
+            <h3 class="settings-section-title">Отображение</h3>
+            <label class="settings-option">
+              <span class="settings-option-text"><strong>Результат мойки</strong></span>
+              <input type="checkbox" data-setting-wash-result ${isWashResultVisible() ? "checked" : ""}>
+            </label>
+          </section>
+          <section class="settings-section">
+            <h3 class="settings-section-title">Подписи результата</h3>
+            ${RESULT_LABEL_FIELDS.map((field) => `
+              <div class="settings-option settings-option--stacked">
+                <span class="settings-option-text"><strong>${escapeHtml(field.label)}</strong></span>
+                <input type="text" class="settings-text-input" data-setting-result-label="${field.key}" maxlength="120" placeholder="${escapeHtml(field.def)}" value="${escapeHtml(resultLabels[field.key] || field.def)}" autocomplete="off" spellcheck="false">
+              </div>
+            `).join("")}
+          </section>
+          <section class="settings-section">
+            <h3 class="settings-section-title">Источник данных</h3>
+            <div class="settings-option settings-option--stacked">
+              <span class="settings-option-text"><strong>Папка по умолчанию</strong></span>
+              <input type="text" class="settings-text-input" data-setting-default-folder placeholder="Встроенная папка datalog" value="${escapeHtml(settings.default_folder_path || "")}" autocomplete="off" spellcheck="false">
             </div>
-          </div>
+          </section>
+          <section class="settings-section">
+            <h3 class="settings-section-title">Автообновление FTP</h3>
+            <label class="settings-option">
+              <span class="settings-option-text"><strong>Включено</strong></span>
+              <input type="checkbox" data-setting-ftp-auto-refresh ${settings.ftp_auto_refresh_enabled ? "checked" : ""}>
+            </label>
+            <label class="settings-option">
+              <span class="settings-option-text"><strong>Интервал, мин</strong></span>
+              <input type="number" min="1" max="1440" step="1" data-setting-ftp-auto-refresh-minutes value="${Number(settings.ftp_auto_refresh_minutes) || 5}">
+            </label>
+          </section>
+          <section class="settings-section">
+            <h3 class="settings-section-title">График</h3>
+            <div class="settings-option settings-option--stacked">
+              <span class="settings-option-text"><strong>Цвета и линии</strong></span>
+              <div class="settings-chart-grid" data-chart-style-grid>${renderChartStyleControls(chartStyles.defaults, chartStyles.series)}</div>
+              <div class="settings-chart-actions">
+                <button type="button" class="ghost" data-chart-style-reset>Сбросить</button>
+              </div>
+            </div>
+          </section>
         </div>
       </section>
     `;
@@ -1902,6 +1937,26 @@
         }
       });
     }
+
+    const resultLabelInputs = settingsRoot.querySelectorAll("[data-setting-result-label]");
+    const persistResultLabels = async () => {
+      const labels = {};
+      resultLabelInputs.forEach((input) => {
+        labels[input.dataset.settingResultLabel] = String(input.value || "").trim();
+      });
+      try {
+        await saveAppSettings({ result_labels: labels });
+        // Обновляем список моек, чтобы новые подписи применились сразу.
+        if (appState.hasWorkspace) {
+          hydrateWorkspaceData({ resetScroll: false }).catch(() => {});
+        }
+      } catch (_error) {
+        setScreenError("Не удалось сохранить настройки.");
+      }
+    };
+    resultLabelInputs.forEach((input) => {
+      input.addEventListener("change", persistResultLabels);
+    });
   }
 
   function renderObjectEditorRows() {
@@ -2096,16 +2151,10 @@
       <section class="object-editor-panel" role="dialog" aria-modal="true" aria-label="Редактор названий объектов">
         <header class="object-editor-header">
           <div>
-            <div class="eyebrow">Редактор объектов</div>
-            <p class="object-editor-copy">
-              Измени название прямо в строке нужного канала и объекта, затем нажми <strong>Сохранить</strong>.
-              Кнопка <strong>Сбросить</strong> удаляет запись из <code>wash_object_names.json</code> для выбранной пары
-              <code>канал : object id</code>. Для добавления новой записи нажми <strong>Добавить объект</strong>,
-              выбери канал, object id и укажи понятное имя. Объекты с <code>object id = 0</code> в редакторе не показываются.
-            </p>
+            <h2>Редактор объектов</h2>
+            <p class="object-editor-copy">Названия объектов по каналам.</p>
           </div>
           <div class="object-editor-header-actions">
-            <button type="button" class="object-editor-toolbar-button object-editor-toolbar-button--success" data-open-add-object>Добавить объект</button>
             <button type="button" class="chart-modal-icon-button chart-modal-icon-button--danger" data-close-object-editor aria-label="Закрыть редактор объектов" title="Закрыть">
               <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
                 <path d="M5 5L15 15"></path>
@@ -2115,6 +2164,9 @@
           </div>
         </header>
         <div class="object-editor-list" id="objectEditorList">${renderObjectEditorRows()}</div>
+        <footer class="object-editor-footer">
+          <button type="button" class="object-editor-toolbar-button object-editor-toolbar-button--success" data-open-add-object>Добавить объект</button>
+        </footer>
         <div class="object-editor-create" data-object-editor-create hidden>
           <div class="object-editor-create-backdrop" data-close-add-object></div>
           <section class="object-editor-create-panel" role="dialog" aria-modal="true" aria-label="Добавить объект" data-state="neutral">
