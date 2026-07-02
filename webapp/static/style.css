@@ -927,6 +927,7 @@ body.wash-result-hidden [data-wash-result-row] {
   width: 48px;
   height: 32px;
   flex: 0 0 auto;
+  margin-left: auto;
   padding: 0;
   border-radius: var(--radius-control);
   border-color: rgba(23, 87, 255, 0.28);
@@ -1911,7 +1912,7 @@ body.modal-open {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 16px;
-  overflow: visible;
+  overflow: hidden;
 }
 
 .chart-modal-header,
@@ -1920,24 +1921,6 @@ body.modal-open {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-}
-
-/* Кнопка закрытия — вынесена чуть за пределы окна графика */
-.chart-modal-close-floating {
-  position: absolute;
-  top: -16px;
-  right: -16px;
-  z-index: 5;
-  background: #d5483b;
-  border-color: #d5483b;
-  color: #fff;
-  box-shadow: 0 12px 26px rgba(213, 72, 59, 0.38);
-}
-
-.chart-modal-close-floating:hover {
-  background: #c23a2e;
-  border-color: #c23a2e;
-  color: #fff;
 }
 
 .chart-modal-header,

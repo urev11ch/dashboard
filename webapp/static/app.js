@@ -2009,22 +2009,22 @@
       modalRoot.innerHTML = `
         <div class="chart-modal-backdrop" data-close-chart-modal></div>
         <section class="chart-modal-panel" role="dialog" aria-modal="true" aria-label="Полноэкранный график мойки">
-          <button
-            type="button"
-            class="chart-modal-icon-button chart-modal-icon-button--danger chart-modal-close-floating"
-            data-close-chart-modal
-            aria-label="Закрыть окно графика"
-            title="Закрыть"
-          >
-            <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-              <path d="M5 5L15 15"></path>
-              <path d="M15 5L5 15"></path>
-            </svg>
-          </button>
           <header class="chart-modal-header chart-modal-header--table">
             <div class="chart-modal-actions chart-modal-actions--top">
               <button type="button" class="chart-modal-button chart-modal-button--primary" data-download-pdf>Сохранить как PDF</button>
               <button type="button" class="chart-modal-button chart-modal-button--secondary" data-print-wash>Печать</button>
+              <button
+                type="button"
+                class="chart-modal-icon-button chart-modal-icon-button--danger"
+                data-close-chart-modal
+                aria-label="Закрыть окно графика"
+                title="Закрыть"
+              >
+                <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                  <path d="M5 5L15 15"></path>
+                  <path d="M15 5L5 15"></path>
+                </svg>
+              </button>
             </div>
             <div class="chart-modal-summary-card">
               <table class="chart-modal-table" aria-label="Параметры мойки">
