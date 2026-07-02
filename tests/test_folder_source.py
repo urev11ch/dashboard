@@ -38,9 +38,12 @@ def test_load_ignores_corrupt_file(tmp_path, monkeypatch):
 def test_resolve_prefers_active_session(tmp_path, monkeypatch):
     monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
     app.save_last_folder_path("/data/archive")
-    # активный выбранный/ожидающий источник имеет приоритет над сохранённым
-    assert app.resolve_workspace_input_value(Path("/active"), None) == "/active"
-    assert app.resolve_workspace_input_value(None, Path("/pending")) == "/pending"
+    # активный выбранный/ожидающий источник имеет приоритет над сохранённым.
+    # Сравниваем со str(Path(...)), чтобы тест не зависел от разделителя ОС.
+    active = Path("/active")
+    pending = Path("/pending")
+    assert app.resolve_workspace_input_value(active, None) == str(active)
+    assert app.resolve_workspace_input_value(None, pending) == str(pending)
 
 
 def test_resolve_uses_last_path_without_session(tmp_path, monkeypatch):
