@@ -495,30 +495,6 @@ code {
   margin: 0;
 }
 
-.screen-header-link {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  height: 46px;
-  padding: 0 18px;
-  border-radius: var(--radius-control);
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.92);
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  text-decoration: none;
-  cursor: pointer;
-  transition: border-color 140ms ease, color 140ms ease;
-}
-
-.screen-header-link:hover {
-  border-color: rgba(23, 87, 255, 0.3);
-  color: var(--accent);
-}
-
 .screen-settings-button {
   width: 46px;
   min-width: 46px;
@@ -2052,16 +2028,6 @@ body.modal-open {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-}
-
-/* Ссылка-кнопка (тег <a>) не наследует базовые стили button — задаём рамку и
-   убираем подчёркивание, цвет рамки приходит из модификатора --secondary. */
-a.chart-modal-button {
-  border-style: solid;
-  border-width: 1px;
-  text-decoration: none;
-  cursor: pointer;
-  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 
 .chart-modal-button--primary {

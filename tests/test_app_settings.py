@@ -109,20 +109,6 @@ def test_chart_style_defaults():
     assert ret["label"]
 
 
-# ---- CSV --------------------------------------------------------------------
-def test_csv_bytes_have_bom_and_semicolons():
-    data = app._build_csv_bytes(["A", "Б"], [[1, "x"], [2, "y"]])
-    assert data.startswith(b"\xef\xbb\xbf")  # UTF-8 BOM для Excel
-    text = data.decode("utf-8-sig")
-    assert text.splitlines()[0] == "A;Б"
-
-
-def test_csv_number_uses_decimal_comma():
-    assert app._format_csv_number(23.456) == "23,46"
-    assert app._format_csv_number(None) == ""
-    assert app._format_csv_number("n/a") == "n/a"
-
-
 # ---- триггер автообновления -------------------------------------------------
 @pytest.fixture(autouse=True)
 def _reset_state():

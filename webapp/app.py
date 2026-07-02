@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import csv
-import io
 import json
 import hashlib
 import ftplib
@@ -2728,96 +2726,6 @@ async def update_app_settings_route(request: Request) -> JSONResponse:
         ) from exc
 
     return JSONResponse({"ok": True, "settings": settings})
-
-
-# ---- экспорт в CSV (открывается в Excel) ------------------------------------
-def _format_csv_number(value: Any) -> str:
-    """Число с десятичной запятой (как ожидает Excel в русской локали)."""
-    if value is None:
-        return ""
-    try:
-        return f"{float(value):.2f}".replace(".", ",")
-    except (TypeError, ValueError):
-        return str(value)
-
-
-def _build_csv_bytes(header: list[str], rows: list[list[Any]]) -> bytes:
-    buffer = io.StringIO()
-    # Разделитель `;` + BOM — так Excel в русской локали открывает файл сразу
-    # корректно, без «Мастера импорта текста».
-    writer = csv.writer(buffer, delimiter=";", lineterminator="\r\n")
-    writer.writerow(header)
-    writer.writerows(rows)
-    return ("﻿" + buffer.getvalue()).encode("utf-8")
-
-
-def _csv_download_response(filename: str, data: bytes) -> StreamingResponse:
-    return StreamingResponse(
-        iter([data]),
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
-
-
-@app.get("/api/export/washes.csv")
-def export_washes_csv() -> StreamingResponse:
-    with state_lock:
-        analysis = require_analysis()
-        rows = build_wash_rows(analysis)
-
-    header = [
-        "Дата и время",
-        "Канал",
-        "Объект",
-        "Программа",
-        "Результат",
-        "Длительность",
-        "Начало",
-        "Окончание",
-        "Источник",
-    ]
-    table = [
-        [
-            row["date_time"],
-            row["channel"],
-            row["object"],
-            row["program"],
-            row["status"],
-            row["duration"],
-            core.format_ts(row["start_ts"]),
-            core.format_ts(row["end_ts"]),
-            row["source_name"],
-        ]
-        for row in rows
-    ]
-    return _csv_download_response("opticip-moyki.csv", _build_csv_bytes(header, table))
-
-
-@app.get("/api/export/cycle.csv")
-def export_cycle_csv(key: str) -> StreamingResponse:
-    with state_lock:
-        analysis = require_analysis()
-        cycle = find_cycle(analysis, key)
-        samples = core.analysis_samples_for_cycle(analysis, cycle)
-
-    header = [
-        "Время",
-        "Температура подачи, C",
-        "Температура возврата, C",
-        "Концентрация возврата, %",
-        "Расход подачи, м3/ч",
-    ]
-    table = [
-        [
-            core.format_ts(sample.ts),
-            _format_csv_number(sample.temperature_supply),
-            _format_csv_number(sample.temperature_return),
-            _format_csv_number(max(sample.concentration_return, 0.0)),
-            _format_csv_number(sample.flow_supply),
-        ]
-        for sample in samples
-    ]
-    return _csv_download_response("opticip-cikl.csv", _build_csv_bytes(header, table))
 
 
 @app.get("/api/wash-details")

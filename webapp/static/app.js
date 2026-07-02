@@ -2334,7 +2334,6 @@
             <div class="chart-modal-actions chart-modal-actions--top">
               <button type="button" class="chart-modal-button chart-modal-button--primary" data-download-pdf>Сохранить как PDF</button>
               <button type="button" class="chart-modal-button chart-modal-button--secondary" data-print-wash>Печать</button>
-              <a class="chart-modal-button chart-modal-button--secondary" href="/api/export/cycle.csv?key=${encodeURIComponent(detail.key)}" download="opticip-cikl.csv" role="button">Экспорт CSV</a>
               <button
                 type="button"
                 class="chart-modal-icon-button chart-modal-icon-button--danger"
