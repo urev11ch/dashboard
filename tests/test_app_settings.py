@@ -106,12 +106,14 @@ def test_result_labels_default_empty_and_resolve_to_default(tmp_path, monkeypatc
 
 def test_result_labels_custom_override(tmp_path, monkeypatch):
     monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
-    app.save_app_settings({"result_labels": {"completed_clean": "OK", "check": "Проверить"}})
+    app.save_app_settings({"result_labels": {"completed": "OK", "check": "Проверить"}})
     labels = app.load_app_settings()["result_labels"]
     assert app.resolve_result_label("Завершено штатно", labels) == "OK"
     assert app.resolve_result_label("Требует проверки", labels) == "Проверить"
-    # незаданная категория -> стандарт; неизвестная строка -> без изменений
-    assert app.resolve_result_label("Завершено, были паузы", labels) == "Завершено, были паузы"
+    # варианты «были паузы» сводятся к тем же двум категориям
+    assert app.resolve_result_label("Завершено, были паузы", labels) == "OK"
+    assert app.resolve_result_label("Требует проверки, были паузы", labels) == "Проверить"
+    # неизвестная строка -> без изменений
     assert app.resolve_result_label("прочее", labels) == "прочее"
 
 

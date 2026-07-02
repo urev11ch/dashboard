@@ -135,15 +135,20 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
 FTP_AUTO_REFRESH_POLL_SECONDS = 20.0
 # Настраиваемые подписи результата мойки. Ядро (wash_report) считает результат
 # в виде строк по умолчанию; здесь их можно переопределить в настройках.
-RESULT_LABEL_CATEGORIES = ("completed_clean", "completed_pause", "check_pause", "check")
+RESULT_LABEL_CATEGORIES = ("completed", "check")
 RESULT_LABEL_DEFAULTS: dict[str, str] = {
-    "completed_clean": "Завершено штатно",
-    "completed_pause": "Завершено, были паузы",
-    "check_pause": "Требует проверки, были паузы",
+    "completed": "Завершено штатно",
     "check": "Требует проверки",
 }
 RESULT_LABEL_MAX_LEN = 120
-_RESULT_CATEGORY_BY_DEFAULT = {value: key for key, value in RESULT_LABEL_DEFAULTS.items()}
+# Все стандартные строки результата из ядра сводятся к двум категориям
+# (варианты «были паузы» тоже попадают в «завершено»/«требует проверки»).
+_RESULT_CATEGORY_BY_DEFAULT = {
+    "Завершено штатно": "completed",
+    "Завершено, были паузы": "completed",
+    "Требует проверки": "check",
+    "Требует проверки, были паузы": "check",
+}
 # Идентификаторы стилей линий должны совпадать с LINE_STYLE_OPTIONS в wash-chart.js.
 CHART_LINE_STYLE_IDS = frozenset({"solid", "dashed", "dashdot", "dotted", "longdash"})
 CHART_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")

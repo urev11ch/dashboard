@@ -1676,24 +1676,63 @@ body.desktop-shell .object-editor-panel {
 
 .settings-body {
   display: grid;
-  gap: 18px;
+  gap: 10px;
   padding: 2px 4px 2px 2px;
   overflow: auto;
   min-height: 0;
 }
 
+/* Раскрывающиеся секции (аккордеон) на базе <details>/<summary>. */
 .settings-section {
-  display: grid;
-  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  background: rgba(255, 255, 255, 0.72);
+  overflow: hidden;
 }
 
 .settings-section-title {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   margin: 0;
-  font-size: 11px;
+  padding: 13px 15px;
+  font-size: 13px;
   font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
+  color: var(--text);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.settings-section-title::-webkit-details-marker {
+  display: none;
+}
+
+.settings-section-title::after {
+  content: "";
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg);
+  transition: transform 140ms ease;
+}
+
+.settings-section[open] > .settings-section-title::after {
+  transform: rotate(-135deg);
+}
+
+.settings-section-title:hover {
+  background: rgba(23, 87, 255, 0.05);
+}
+
+.settings-section-body {
+  display: grid;
+  gap: 10px;
+  padding: 0 15px 14px;
 }
 
 .settings-option--stacked {
@@ -2349,6 +2388,7 @@ body.desktop-shell .object-editor-panel {
 }
 
 .chart-modal-frame {
+  position: relative;
   display: grid;
   height: 100%;
   min-height: 0;
@@ -2482,6 +2522,41 @@ body.desktop-shell .chart-host--modal .wash-chart-svg {
 body.desktop-shell:not(.window-maximized) .chart-modal-panel .chart-modal-summary-card,
 body.desktop-shell:not(.window-maximized) .chart-modal-panel .wash-chart-controls {
   display: none;
+}
+
+/* Компактная подпись (объект + мойка) поверх графика — только в уменьшённом окне.
+   Абсолютное позиционирование, поэтому график не сдвигается. */
+.chart-modal-mini-title {
+  display: none;
+}
+
+body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: absolute;
+  top: 10px;
+  left: 14px;
+  z-index: 3;
+  max-width: 62%;
+  pointer-events: none;
+}
+
+.chart-modal-mini-object {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chart-modal-mini-wash {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .detail-bottom-grid {

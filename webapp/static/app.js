@@ -4,10 +4,8 @@
   const folderDefaultButtons = Array.from(document.querySelectorAll("[data-folder-default]"));
   // Подписи результата мойки (ключи/значения по умолчанию совпадают с сервером).
   const RESULT_LABEL_FIELDS = [
-    { key: "completed_clean", label: "Завершено без пауз", def: "Завершено штатно" },
-    { key: "completed_pause", label: "Завершено с паузами", def: "Завершено, были паузы" },
-    { key: "check_pause", label: "Не завершено, с паузами", def: "Требует проверки, были паузы" },
-    { key: "check", label: "Не завершено", def: "Требует проверки" },
+    { key: "completed", label: "Завершено штатно", def: "Завершено штатно" },
+    { key: "check", label: "Требует проверки", def: "Требует проверки" },
   ];
   // Должно совпадать с LINE_STYLE_OPTIONS в wash-chart.js и CHART_LINE_STYLE_IDS на сервере.
   const CHART_LINE_STYLE_OPTIONS = [
@@ -1778,50 +1776,60 @@
           </button>
         </header>
         <div class="settings-body">
-          <section class="settings-section">
-            <h3 class="settings-section-title">Отображение</h3>
-            <label class="settings-option">
-              <span class="settings-option-text"><strong>Результат мойки</strong></span>
-              <input type="checkbox" data-setting-wash-result ${isWashResultVisible() ? "checked" : ""}>
-            </label>
-          </section>
-          <section class="settings-section">
-            <h3 class="settings-section-title">Подписи результата</h3>
-            ${RESULT_LABEL_FIELDS.map((field) => `
+          <details class="settings-section">
+            <summary class="settings-section-title">Отображение</summary>
+            <div class="settings-section-body">
+              <label class="settings-option">
+                <span class="settings-option-text"><strong>Результат мойки</strong></span>
+                <input type="checkbox" data-setting-wash-result ${isWashResultVisible() ? "checked" : ""}>
+              </label>
+            </div>
+          </details>
+          <details class="settings-section">
+            <summary class="settings-section-title">Подписи результата</summary>
+            <div class="settings-section-body">
+              ${RESULT_LABEL_FIELDS.map((field) => `
+                <div class="settings-option settings-option--stacked">
+                  <span class="settings-option-text"><strong>${escapeHtml(field.label)}</strong></span>
+                  <input type="text" class="settings-text-input" data-setting-result-label="${field.key}" maxlength="120" placeholder="${escapeHtml(field.def)}" value="${escapeHtml(resultLabels[field.key] || field.def)}" autocomplete="off" spellcheck="false">
+                </div>
+              `).join("")}
+            </div>
+          </details>
+          <details class="settings-section">
+            <summary class="settings-section-title">Источник данных</summary>
+            <div class="settings-section-body">
               <div class="settings-option settings-option--stacked">
-                <span class="settings-option-text"><strong>${escapeHtml(field.label)}</strong></span>
-                <input type="text" class="settings-text-input" data-setting-result-label="${field.key}" maxlength="120" placeholder="${escapeHtml(field.def)}" value="${escapeHtml(resultLabels[field.key] || field.def)}" autocomplete="off" spellcheck="false">
-              </div>
-            `).join("")}
-          </section>
-          <section class="settings-section">
-            <h3 class="settings-section-title">Источник данных</h3>
-            <div class="settings-option settings-option--stacked">
-              <span class="settings-option-text"><strong>Папка по умолчанию</strong></span>
-              <input type="text" class="settings-text-input" data-setting-default-folder placeholder="Встроенная папка datalog" value="${escapeHtml(settings.default_folder_path || "")}" autocomplete="off" spellcheck="false">
-            </div>
-          </section>
-          <section class="settings-section">
-            <h3 class="settings-section-title">Автообновление FTP</h3>
-            <label class="settings-option">
-              <span class="settings-option-text"><strong>Включено</strong></span>
-              <input type="checkbox" data-setting-ftp-auto-refresh ${settings.ftp_auto_refresh_enabled ? "checked" : ""}>
-            </label>
-            <label class="settings-option">
-              <span class="settings-option-text"><strong>Интервал, мин</strong></span>
-              <input type="number" min="1" max="1440" step="1" data-setting-ftp-auto-refresh-minutes value="${Number(settings.ftp_auto_refresh_minutes) || 5}">
-            </label>
-          </section>
-          <section class="settings-section">
-            <h3 class="settings-section-title">График</h3>
-            <div class="settings-option settings-option--stacked">
-              <span class="settings-option-text"><strong>Цвета и линии</strong></span>
-              <div class="settings-chart-grid" data-chart-style-grid>${renderChartStyleControls(chartStyles.defaults, chartStyles.series)}</div>
-              <div class="settings-chart-actions">
-                <button type="button" class="ghost" data-chart-style-reset>Сбросить</button>
+                <span class="settings-option-text"><strong>Папка по умолчанию</strong></span>
+                <input type="text" class="settings-text-input" data-setting-default-folder placeholder="Встроенная папка datalog" value="${escapeHtml(settings.default_folder_path || "")}" autocomplete="off" spellcheck="false">
               </div>
             </div>
-          </section>
+          </details>
+          <details class="settings-section">
+            <summary class="settings-section-title">Автообновление FTP</summary>
+            <div class="settings-section-body">
+              <label class="settings-option">
+                <span class="settings-option-text"><strong>Включено</strong></span>
+                <input type="checkbox" data-setting-ftp-auto-refresh ${settings.ftp_auto_refresh_enabled ? "checked" : ""}>
+              </label>
+              <label class="settings-option">
+                <span class="settings-option-text"><strong>Интервал, мин</strong></span>
+                <input type="number" min="1" max="1440" step="1" data-setting-ftp-auto-refresh-minutes value="${Number(settings.ftp_auto_refresh_minutes) || 5}">
+              </label>
+            </div>
+          </details>
+          <details class="settings-section">
+            <summary class="settings-section-title">График</summary>
+            <div class="settings-section-body">
+              <div class="settings-option settings-option--stacked">
+                <span class="settings-option-text"><strong>Цвета и линии</strong></span>
+                <div class="settings-chart-grid" data-chart-style-grid>${renderChartStyleControls(chartStyles.defaults, chartStyles.series)}</div>
+                <div class="settings-chart-actions">
+                  <button type="button" class="ghost" data-chart-style-reset>Сбросить</button>
+                </div>
+              </div>
+            </div>
+          </details>
         </div>
       </section>
     `;
@@ -2475,6 +2483,10 @@
             </div>
           </header>
           <div class="chart-modal-frame">
+            <div class="chart-modal-mini-title" aria-hidden="true">
+              <span class="chart-modal-mini-object">${escapeHtml(detail.object_name)}</span>
+              <span class="chart-modal-mini-wash">${escapeHtml(detail.program)}</span>
+            </div>
             <div class="chart-host chart-host--modal" data-chart-host></div>
             <div class="technical-empty chart-empty" data-chart-empty hidden>
               Подготавливаю данные графика.
