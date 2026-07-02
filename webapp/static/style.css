@@ -495,6 +495,26 @@ code {
   margin: 0;
 }
 
+.screen-settings-button {
+  width: 46px;
+  min-width: 46px;
+  padding-left: 0;
+  padding-right: 0;
+  display: inline-grid;
+  place-items: center;
+}
+
+.screen-settings-button svg {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+}
+
+.screen-settings-button:hover {
+  border-color: rgba(23, 87, 255, 0.3);
+  color: var(--accent);
+}
+
 .screen-stats {
   display: flex;
   gap: 10px;
@@ -893,6 +913,14 @@ code {
   line-height: 1.2;
   text-align: center;
   letter-spacing: 0.03em;
+}
+
+/* Результат мойки скрыт настройкой — прячем везде: заголовок столбца,
+   бейдж в строке (кнопка PDF остаётся), строку «Результат» в сводке и отчёте. */
+body.wash-result-hidden .wash-head-result,
+body.wash-result-hidden .wash-cell--status .badge,
+body.wash-result-hidden [data-wash-result-row] {
+  display: none;
 }
 
 .wash-row-pdf-button {
@@ -1333,20 +1361,6 @@ code {
   position: relative;
   flex: 1;
   min-width: 0;
-  padding-right: 30px;
-}
-
-.wash-chart-select-shell::after {
-  content: "";
-  position: absolute;
-  top: 50%;
-  right: 13px;
-  width: 7px;
-  height: 7px;
-  border-right: 2px solid rgba(26, 36, 48, 0.45);
-  border-bottom: 2px solid rgba(26, 36, 48, 0.45);
-  transform: translateY(-65%) rotate(45deg);
-  pointer-events: none;
 }
 
 .wash-chart-select-shell select {
@@ -1355,13 +1369,12 @@ code {
   border: 0;
   border-radius: inherit;
   background: transparent;
-  padding: 0 10px;
+  padding: 0 8px;
   color: var(--text);
   font-size: 12px;
   font-weight: 600;
-  appearance: none;
-  -webkit-appearance: none;
   box-shadow: none;
+  cursor: pointer;
 }
 
 .wash-chart-color-input-shell:hover,
@@ -1480,6 +1493,95 @@ body.modal-open {
   flex-wrap: wrap;
   gap: 10px;
   justify-content: flex-end;
+}
+
+.object-editor-panel--settings {
+  width: min(560px, calc(100vw - 32px));
+  grid-template-rows: auto auto;
+}
+
+.settings-body {
+  padding: 2px;
+}
+
+.settings-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.settings-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.settings-option-text {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.settings-option-text strong {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.settings-option-hint {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+/* Переключатель в стиле приложения */
+.settings-option input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  width: 46px;
+  min-width: 46px;
+  height: 26px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(40, 58, 96, 0.22);
+  position: relative;
+  cursor: pointer;
+  transition: background-color 140ms ease;
+}
+
+.settings-option input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(18, 28, 45, 0.28);
+  transition: transform 140ms ease;
+}
+
+.settings-option input[type="checkbox"]:checked {
+  background: var(--accent);
+}
+
+.settings-option input[type="checkbox"]:checked::after {
+  transform: translateX(20px);
+}
+
+.settings-option input[type="checkbox"]:focus-visible {
+  outline: 2px solid rgba(23, 87, 255, 0.4);
+  outline-offset: 2px;
 }
 
 .object-editor-header h2 {
@@ -1809,7 +1911,7 @@ body.modal-open {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 16px;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .chart-modal-header,
@@ -1818,6 +1920,24 @@ body.modal-open {
   display: flex;
   align-items: flex-start;
   gap: 10px;
+}
+
+/* Кнопка закрытия — вынесена чуть за пределы окна графика */
+.chart-modal-close-floating {
+  position: absolute;
+  top: -16px;
+  right: -16px;
+  z-index: 5;
+  background: #d5483b;
+  border-color: #d5483b;
+  color: #fff;
+  box-shadow: 0 12px 26px rgba(213, 72, 59, 0.38);
+}
+
+.chart-modal-close-floating:hover {
+  background: #c23a2e;
+  border-color: #c23a2e;
+  color: #fff;
 }
 
 .chart-modal-header,
@@ -1832,10 +1952,18 @@ body.modal-open {
 }
 
 .chart-modal-header--table {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 22px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 14px;
+}
+
+/* Кнопки «Сохранить как PDF» и «Печать» — над сводкой */
+.chart-modal-actions--top {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 12px;
 }
 
 .chart-modal-toolbar {
@@ -1937,6 +2065,7 @@ body.modal-open {
 }
 
 .chart-modal-summary-card {
+  width: 100%;
   border-radius: 18px;
   padding: 16px 18px;
   background:

@@ -448,6 +448,34 @@
   objectEditorRoot.hidden = true;
   document.body.append(objectEditorRoot);
 
+  const settingsRoot = document.createElement("div");
+  settingsRoot.className = "object-editor-modal";
+  settingsRoot.hidden = true;
+  document.body.append(settingsRoot);
+
+  const WASH_RESULT_PREF_KEY = "opticipShowWashResultV1";
+
+  function isWashResultVisible() {
+    try {
+      return window.localStorage.getItem(WASH_RESULT_PREF_KEY) !== "0";
+    } catch (error) {
+      return true;
+    }
+  }
+
+  function applyWashResultVisibility() {
+    document.body.classList.toggle("wash-result-hidden", !isWashResultVisible());
+  }
+
+  function setWashResultVisible(visible) {
+    try {
+      window.localStorage.setItem(WASH_RESULT_PREF_KEY, visible ? "1" : "0");
+    } catch (error) {
+      /* localStorage может быть недоступен — просто применяем к текущей сессии */
+    }
+    applyWashResultVisibility();
+  }
+
   function escapeHtml(value) {
     return String(value ?? "")
       .replaceAll("&", "&amp;")
@@ -1208,7 +1236,7 @@
     ]
       .map(
         ([label, value]) => `
-          <tr>
+          <tr${label === "Результат" ? " data-wash-result-row" : ""}>
             <th scope="row">${escapeHtml(label)}</th>
             <td>${escapeHtml(String(value ?? "").trim() || "—")}</td>
           </tr>
@@ -1316,7 +1344,8 @@
   }
 
   function syncOverlayState() {
-    const hasVisibleOverlay = !modalRoot.hidden || !objectEditorRoot.hidden;
+    const hasVisibleOverlay =
+      !modalRoot.hidden || !objectEditorRoot.hidden || !settingsRoot.hidden;
     document.body.classList.toggle("modal-open", hasVisibleOverlay);
   }
 
@@ -1464,6 +1493,55 @@
     objectEditorRoot.hidden = true;
     objectEditorRoot.innerHTML = "";
     syncOverlayState();
+  }
+
+  function closeSettings() {
+    settingsRoot.hidden = true;
+    settingsRoot.innerHTML = "";
+    syncOverlayState();
+  }
+
+  function openSettings() {
+    if (!modalRoot.hidden) {
+      closeChartModal();
+    }
+    if (!objectEditorRoot.hidden) {
+      closeObjectEditor();
+    }
+    settingsRoot.hidden = false;
+    syncOverlayState();
+    settingsRoot.innerHTML = `
+      <div class="object-editor-backdrop" data-close-settings></div>
+      <section class="object-editor-panel object-editor-panel--settings" role="dialog" aria-modal="true" aria-label="Настройки">
+        <header class="object-editor-header">
+          <div>
+            <div class="eyebrow">Настройки</div>
+            <p class="object-editor-copy">Параметры оформления и работы приложения.</p>
+          </div>
+          <div class="object-editor-header-actions">
+            <button type="button" class="ghost" data-close-settings>Закрыть</button>
+          </div>
+        </header>
+        <div class="settings-body">
+          <label class="settings-option">
+            <span class="settings-option-text">
+              <strong>Результат мойки</strong>
+              <span class="settings-option-hint">Показывать «Результат» в списке моек, в окне графика и в отчётах. Если выключить — не отображается нигде.</span>
+            </span>
+            <input type="checkbox" data-setting-wash-result ${isWashResultVisible() ? "checked" : ""}>
+          </label>
+        </div>
+      </section>
+    `;
+    settingsRoot.querySelectorAll("[data-close-settings]").forEach((element) => {
+      element.addEventListener("click", closeSettings);
+    });
+    const washResultToggle = settingsRoot.querySelector("[data-setting-wash-result]");
+    if (washResultToggle) {
+      washResultToggle.addEventListener("change", (event) => {
+        setWashResultVisible(event.currentTarget.checked);
+      });
+    }
   }
 
   function renderObjectEditorRows() {
@@ -1931,7 +2009,23 @@
       modalRoot.innerHTML = `
         <div class="chart-modal-backdrop" data-close-chart-modal></div>
         <section class="chart-modal-panel" role="dialog" aria-modal="true" aria-label="Полноэкранный график мойки">
+          <button
+            type="button"
+            class="chart-modal-icon-button chart-modal-icon-button--danger chart-modal-close-floating"
+            data-close-chart-modal
+            aria-label="Закрыть окно графика"
+            title="Закрыть"
+          >
+            <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <path d="M5 5L15 15"></path>
+              <path d="M15 5L5 15"></path>
+            </svg>
+          </button>
           <header class="chart-modal-header chart-modal-header--table">
+            <div class="chart-modal-actions chart-modal-actions--top">
+              <button type="button" class="chart-modal-button chart-modal-button--primary" data-download-pdf>Сохранить как PDF</button>
+              <button type="button" class="chart-modal-button chart-modal-button--secondary" data-print-wash>Печать</button>
+            </div>
             <div class="chart-modal-summary-card">
               <table class="chart-modal-table" aria-label="Параметры мойки">
                 <tbody>
@@ -1955,30 +2049,12 @@
                     <th scope="row">Длительность мойки</th>
                     <td>${escapeHtml(detail.duration)}</td>
                   </tr>
-                  <tr>
+                  <tr data-wash-result-row>
                     <th scope="row">Результат</th>
                     <td>${escapeHtml(detail.status)}</td>
                   </tr>
                 </tbody>
               </table>
-            </div>
-            <div class="chart-modal-toolbar">
-              <div class="chart-modal-actions chart-modal-actions--compact">
-                <button type="button" class="chart-modal-button chart-modal-button--primary" data-download-pdf>Сохранить как PDF</button>
-                <button type="button" class="chart-modal-button chart-modal-button--secondary" data-print-wash>Печать</button>
-              </div>
-              <button
-                type="button"
-                class="chart-modal-icon-button chart-modal-icon-button--danger"
-                data-close-chart-modal
-                aria-label="Закрыть окно графика"
-                title="Закрыть"
-              >
-                <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-                  <path d="M5 5L15 15"></path>
-                  <path d="M15 5L5 15"></path>
-                </svg>
-              </button>
             </div>
           </header>
           <div class="chart-modal-frame">
@@ -2071,6 +2147,10 @@
 
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
+      if (!settingsRoot.hidden) {
+        closeSettings();
+        return;
+      }
       if (!objectEditorRoot.hidden) {
         closeObjectEditor();
         return;
@@ -2193,6 +2273,13 @@
     openObjectEditorButton.disabled = true;
     openObjectEditorButton.addEventListener("click", () => openObjectEditor());
   }
+
+  const openSettingsButton = document.querySelector("#openSettings");
+  if (openSettingsButton) {
+    openSettingsButton.addEventListener("click", () => openSettings());
+  }
+
+  applyWashResultVisibility();
 
   periodPresetButtons.forEach((button) => {
     button.addEventListener("click", () => {

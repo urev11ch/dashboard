@@ -18,6 +18,7 @@ import time
 import uuid
 import zipfile
 from collections import OrderedDict
+from contextlib import asynccontextmanager
 from urllib.parse import quote, unquote, urlsplit
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -152,7 +153,15 @@ ARCHIVE_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 ANALYSIS_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 WEB_RUNTIME_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="Отчеты по мойкам")
+@asynccontextmanager
+async def _app_lifespan(_app: FastAPI):
+    # startup — ничего дополнительно не требуется (папки уже созданы выше)
+    yield
+    # shutdown — чистим дисковый кэш, чтобы следующий запуск строил всё заново
+    clear_disk_caches()
+
+
+app = FastAPI(title="Отчеты по мойкам", lifespan=_app_lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
@@ -1061,6 +1070,30 @@ def apply_object_name_overrides(
 def clear_chart_payload_cache() -> None:
     with chart_payload_cache_lock:
         chart_payload_cache.clear()
+
+
+def clear_disk_caches() -> None:
+    """Полностью очищает дисковый кэш приложения: результаты анализа, готовые
+    графики (`chart-*.pkl`) и распакованные из архивов базы. Вызывается при
+    завершении работы, чтобы следующий запуск строил отчёты и графики заново и
+    не отдавал устаревшие данные из кэша."""
+    clear_chart_payload_cache()
+    for cache_root, lock in (
+        (ARCHIVE_CACHE_ROOT, archive_cache_lock),
+        (ANALYSIS_CACHE_ROOT, analysis_cache_lock),
+    ):
+        with lock:
+            try:
+                shutil.rmtree(cache_root, ignore_errors=True)
+                cache_root.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
+    with archive_cache_lock:
+        archive_cache_keys_by_source.clear()
+    try:
+        WEB_RUNTIME_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
 
 
 def reset_workspace() -> None:
