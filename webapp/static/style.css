@@ -30,11 +30,24 @@ body {
   min-height: 100%;
 }
 
+/* Прячем полосу прокрутки основного окна (портит вид), прокрутка колёсиком
+   сохраняется. Внутренние скролл-контейнеры (список моек и т. п.) не затронуты. */
+html,
+body {
+  scrollbar-width: none;
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
 body {
   margin: 0;
   min-height: 100vh;
-  overflow-y: scroll;
-  scrollbar-gutter: stable;
+  overflow-y: auto;
   color: var(--text);
   font-family: var(--font-sans);
   background-color: var(--bg);
@@ -1557,10 +1570,23 @@ body.modal-open {
   position: fixed;
   inset: 0;
   z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
 }
 
 .object-editor-modal[hidden] {
   display: none;
+}
+
+/* В desktop-режиме центрируем под фиксированной шапкой окна. */
+body.desktop-shell .object-editor-modal {
+  padding-top: calc(16px + var(--titlebar-h));
+}
+
+body.desktop-shell .object-editor-panel {
+  max-height: calc(100vh - 32px - var(--titlebar-h));
 }
 
 .object-editor-backdrop {
@@ -1575,7 +1601,7 @@ body.modal-open {
   z-index: 1;
   width: min(1180px, calc(100vw - 32px));
   max-height: calc(100vh - 32px);
-  margin: 16px auto;
+  margin: 0;
   padding: 18px;
   border-radius: var(--radius-panel);
   background: rgba(247, 249, 252, 0.98);
@@ -2371,6 +2397,22 @@ body.modal-open {
 
 .chart-host--modal .wash-chart-controls {
   padding: 0 14px 14px;
+}
+
+/* Desktop-режим: график модалки вписывается в доступную область, чтобы при
+   уменьшённом окне он отображался полностью (без обрезки и фиксированной высоты).
+   Web-вид не затрагиваем. */
+body.desktop-shell .chart-modal-frame {
+  min-height: 0;
+}
+
+body.desktop-shell .chart-host--modal {
+  grid-template-rows: minmax(0, 1fr) auto auto;
+}
+
+body.desktop-shell .chart-host--modal .wash-chart-svg {
+  height: 100%;
+  min-height: 0;
 }
 
 .detail-bottom-grid {

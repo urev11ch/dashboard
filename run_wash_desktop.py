@@ -395,10 +395,70 @@ class DesktopBridge:
         screen_x, screen_y, screen_w, screen_h = self._primary_screen_size()
         width = max(screen_w // 2, MIN_WINDOW_WIDTH)
         height = max(screen_h // 2, MIN_WINDOW_HEIGHT)
-        # Сначала выходим из развёрнутого состояния — иначе resize игнорируется.
+
+        # На Windows центрируем через нативное окно WinForms (CenterToScreen) —
+        # это надёжно с учётом DPI и центрирует по текущему монитору.
+        if sys.platform == "win32" and self._center_windowed_native(width, height):
+            return
+
+        # Кроссплатформенный запасной путь через API pywebview.
         win.restore()
         win.resize(width, height)
         win.move(screen_x + (screen_w - width) // 2, screen_y + (screen_h - height) // 2)
+
+    def _resolve_native_form(self):
+        """Нативная форма WinForms (edgechromium backend) или None."""
+        win = self._window
+        if win is None:
+            return None
+        try:
+            browser_view_class = getattr(win.gui, "BrowserView", None)
+            if browser_view_class is None:
+                return None
+            return browser_view_class.instances.get(win.uid)
+        except Exception:
+            logging.exception("Не удалось получить нативное окно WinForms")
+            return None
+
+    def _center_windowed_native(self, width: int, height: int) -> bool:
+        """Задаёт размер уменьшённого окна и центрирует его через WinForms.
+        Возвращает True при успехе, иначе False (тогда сработает запасной путь)."""
+        form = self._resolve_native_form()
+        if form is None:
+            return False
+
+        try:
+            import clr
+
+            clr.AddReference("System.Windows.Forms")
+            clr.AddReference("System.Drawing")
+
+            from System import Action
+            from System.Drawing import Size
+            from System.Windows.Forms import FormWindowState
+        except Exception:
+            logging.exception("Не удалось загрузить сборки WinForms для центрирования")
+            return False
+
+        result = {"ok": False}
+
+        def apply() -> None:
+            try:
+                form.WindowState = FormWindowState.Normal
+                form.Size = Size(int(width), int(height))
+                form.CenterToScreen()
+                result["ok"] = True
+            except Exception:
+                logging.exception("Нативное центрирование окна не удалось")
+
+        try:
+            # Invoke маршалит вызов в UI-поток окна и ждёт завершения.
+            form.Invoke(Action(apply))
+        except Exception:
+            logging.exception("Не удалось выполнить Invoke для центрирования окна")
+            return False
+
+        return bool(result["ok"])
 
     def close_window(self, *_args) -> dict[str, bool]:
         if self._window is None:

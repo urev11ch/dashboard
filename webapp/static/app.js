@@ -1740,7 +1740,12 @@
             <p class="object-editor-copy">Параметры оформления и работы приложения.</p>
           </div>
           <div class="object-editor-header-actions">
-            <button type="button" class="ghost" data-close-settings>Закрыть</button>
+            <button type="button" class="chart-modal-icon-button chart-modal-icon-button--danger" data-close-settings aria-label="Закрыть настройки" title="Закрыть">
+              <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                <path d="M5 5L15 15"></path>
+                <path d="M15 5L5 15"></path>
+              </svg>
+            </button>
           </div>
         </header>
         <div class="settings-body">
@@ -2101,7 +2106,12 @@
           </div>
           <div class="object-editor-header-actions">
             <button type="button" class="object-editor-toolbar-button object-editor-toolbar-button--success" data-open-add-object>Добавить объект</button>
-            <button type="button" class="ghost" data-close-object-editor>Закрыть</button>
+            <button type="button" class="chart-modal-icon-button chart-modal-icon-button--danger" data-close-object-editor aria-label="Закрыть редактор объектов" title="Закрыть">
+              <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                <path d="M5 5L15 15"></path>
+                <path d="M15 5L5 15"></path>
+              </svg>
+            </button>
           </div>
         </header>
         <div class="object-editor-list" id="objectEditorList">${renderObjectEditorRows()}</div>

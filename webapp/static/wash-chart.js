@@ -634,7 +634,11 @@
       });
 
       if (container.classList.contains("chart-host--modal")) {
-        svg.style.height = `${chartLayout.height}px`;
+        // В desktop-окне график вписывается в свою область (важно для
+        // уменьшённого режима, чтобы он полностью отображался). В web оставляем
+        // прежнюю фиксированную высоту.
+        const fitToFrame = document.body.classList.contains("desktop-shell");
+        svg.style.height = fitToFrame ? "100%" : `${chartLayout.height}px`;
         svg.style.maxWidth = "100%";
       }
 
