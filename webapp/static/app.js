@@ -149,6 +149,23 @@
     });
   }
 
+  // Синхронизирует класс window-maximized с РЕАЛЬНЫМ состоянием окна (на случай
+  // разворачивания средствами ОС — Aero Snap, Win+↑, перетаскивание к верху).
+  async function refreshWindowMaximizedState() {
+    const api = window.pywebview && window.pywebview.api;
+    if (!api || typeof api.get_window_state !== "function") {
+      return;
+    }
+    try {
+      const state = await api.get_window_state();
+      if (state && typeof state.maximized === "boolean") {
+        document.body.classList.toggle("window-maximized", state.maximized);
+      }
+    } catch (_error) {
+      // Оставляем текущее состояние класса.
+    }
+  }
+
   // Кастомная шапка окна (frameless desktop-режим). В обычном браузере
   // window.pywebview отсутствует — шапка остаётся скрытой, лейаут не меняется.
   function initDesktopTitlebar() {
@@ -511,6 +528,7 @@
   })();
 
   const WASH_LIST_ROW_HEIGHT = 69;
+  const WASH_LIST_HEADER_HEIGHT = 38;
   const WASH_LIST_OVERSCAN = 8;
   const SEARCH_INPUT_DEBOUNCE_MS = 180;
   const DEFAULT_PERIOD_PRESET = "7d";
@@ -519,6 +537,9 @@
     washRowIndexesByObjectKey: new Map(),
     objectRows: [],
     filteredRows: [],
+    displayItems: [],
+    displayOffsets: [0],
+    displayTotalHeight: 0,
     dateBounds: null,
     activePeriodPreset: DEFAULT_PERIOD_PRESET,
   };
@@ -594,6 +615,53 @@
   settingsRoot.className = "object-editor-modal";
   settingsRoot.hidden = true;
   document.body.append(settingsRoot);
+
+  const diagnosticsRoot = document.createElement("div");
+  diagnosticsRoot.className = "object-editor-modal";
+  diagnosticsRoot.hidden = true;
+  document.body.append(diagnosticsRoot);
+
+  // ---- Тосты (всплывающие уведомления) ----------------------------------
+  const toastRoot = document.createElement("div");
+  toastRoot.className = "toast-stack";
+  toastRoot.setAttribute("role", "status");
+  toastRoot.setAttribute("aria-live", "polite");
+  document.body.append(toastRoot);
+
+  function showToast(message, type = "info", duration = 4000) {
+    const text = String(message || "").trim();
+    if (!text) {
+      return;
+    }
+    const toast = document.createElement("div");
+    toast.className = `toast toast--${type}`;
+    toast.textContent = text;
+    toastRoot.append(toast);
+    // Запускаем анимацию появления на следующем кадре.
+    requestAnimationFrame(() => toast.classList.add("is-visible"));
+    const remove = () => {
+      toast.classList.remove("is-visible");
+      window.setTimeout(() => toast.remove(), 200);
+    };
+    window.setTimeout(remove, duration);
+    toast.addEventListener("click", remove);
+  }
+
+  // ---- Часы (текущее время) ---------------------------------------------
+  function initClock() {
+    const clock = document.querySelector("#appClock");
+    if (!clock) {
+      return;
+    }
+    const tick = () => {
+      const now = new Date();
+      const date = now.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric" });
+      const time = now.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      clock.textContent = `${date} · ${time}`;
+    };
+    tick();
+    window.setInterval(tick, 1000);
+  }
 
   const WASH_RESULT_PREF_KEY = "opticipShowWashResultV1";
 
@@ -769,6 +837,19 @@
     washList.innerHTML = `<div class="technical-empty">${escapeHtml(message)}</div>`;
   }
 
+  // Скелетон списка моек: серые строки-заготовки в тех же колонках, что и реальные.
+  function setWashListSkeleton(count = 8) {
+    const row = `
+      <div class="wash-row wash-row--skeleton" aria-hidden="true">
+        <div class="wash-cell wash-cell--primary"><span class="skeleton skeleton-line" style="width:72%"></span></div>
+        <div class="wash-cell"><span class="skeleton skeleton-line" style="width:82%"></span></div>
+        <div class="wash-cell"><span class="skeleton skeleton-line" style="width:74%"></span></div>
+        <div class="wash-cell"><span class="skeleton skeleton-line" style="width:48%"></span></div>
+        <div class="wash-cell wash-cell--status"><span class="skeleton skeleton-badge"></span></div>
+      </div>`;
+    washList.innerHTML = `<div class="wash-list-skeleton" role="status" aria-label="Загрузка списка моек">${row.repeat(count)}</div>`;
+  }
+
   function clearWorkspaceDataCaches() {
     detailCache.clear();
     detailRequestCache.clear();
@@ -813,7 +894,11 @@
   }
 
   async function hydrateWorkspaceData({ resetScroll = false } = {}) {
-    setWashListMessage("Загружаю список моек...");
+    // Скелетон — только при первой загрузке (пустой список); при фоновом
+    // обновлении оставляем текущие мойки, чтобы не мигало.
+    if (!state.washRows.length) {
+      setWashListSkeleton();
+    }
     const payload = await fetchWorkspaceData();
     clearWorkspaceDataCaches();
     applyWorkspacePayload(payload, { resetScroll });
@@ -1120,28 +1205,45 @@
       washList.scrollTop = 0;
     }
 
-    if (!state.filteredRows.length) {
+    const items = state.displayItems;
+    if (!items.length) {
       washList.innerHTML = '<div class="technical-empty">Мойки не найдены</div>';
       return;
     }
 
+    const offsets = state.displayOffsets;
+    const totalHeight = state.displayTotalHeight;
     const viewportHeight = Math.max(washList.clientHeight, WASH_LIST_ROW_HEIGHT);
     const scrollTop = washList.scrollTop;
-    const visibleCount = Math.ceil(viewportHeight / WASH_LIST_ROW_HEIGHT) + WASH_LIST_OVERSCAN * 2;
-    const startIndex = Math.max(0, Math.floor(scrollTop / WASH_LIST_ROW_HEIGHT) - WASH_LIST_OVERSCAN);
-    const endIndex = Math.min(state.filteredRows.length, startIndex + visibleCount);
-    const topSpacerHeight = startIndex * WASH_LIST_ROW_HEIGHT;
-    const bottomSpacerHeight = Math.max(0, (state.filteredRows.length - endIndex) * WASH_LIST_ROW_HEIGHT);
+    const overscanPx = WASH_LIST_OVERSCAN * WASH_LIST_ROW_HEIGHT;
+    const windowTop = Math.max(0, scrollTop - overscanPx);
+    const windowBottom = scrollTop + viewportHeight + overscanPx;
 
-    washList.innerHTML = [
-      topSpacerHeight
-        ? `<div class="wash-list-spacer" style="height:${topSpacerHeight}px" aria-hidden="true"></div>`
-        : "",
-      state.filteredRows.slice(startIndex, endIndex).map(renderWashRow).join(""),
-      bottomSpacerHeight
-        ? `<div class="wash-list-spacer" style="height:${bottomSpacerHeight}px" aria-hidden="true"></div>`
-        : "",
-    ].join("");
+    const startIndex = findFirstVisibleItem(offsets, windowTop);
+    let endIndex = startIndex;
+    while (endIndex < items.length && offsets[endIndex] < windowBottom) {
+      endIndex += 1;
+    }
+
+    const topSpacerHeight = offsets[startIndex];
+    const bottomSpacerHeight = Math.max(0, totalHeight - offsets[endIndex]);
+
+    const chunks = [];
+    if (topSpacerHeight) {
+      chunks.push(`<div class="wash-list-spacer" style="height:${topSpacerHeight}px" aria-hidden="true"></div>`);
+    }
+    for (let i = startIndex; i < endIndex; i += 1) {
+      const item = items[i];
+      chunks.push(
+        item.type === "header"
+          ? `<div class="wash-day-header" aria-hidden="true">${escapeHtml(item.label)}</div>`
+          : renderWashRow(item.row)
+      );
+    }
+    if (bottomSpacerHeight) {
+      chunks.push(`<div class="wash-list-spacer" style="height:${bottomSpacerHeight}px" aria-hidden="true"></div>`);
+    }
+    washList.innerHTML = chunks.join("");
   }
 
   function scheduleVirtualizedWashList() {
@@ -1165,7 +1267,60 @@
     const { resetScroll = true } = options;
     state.filteredRows = getFilteredRows();
     updateWashFilterCount(state.filteredRows.length);
+    buildWashDisplayItems();
     renderVirtualizedWashList({ resetScroll });
+  }
+
+  function formatDayHeader(day) {
+    const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(day || ""));
+    if (!parts) {
+      return "Без даты";
+    }
+    const date = new Date(Number(parts[1]), Number(parts[2]) - 1, Number(parts[3]));
+    return date.toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" });
+  }
+
+  // Плоский список элементов для виртуализации: строки + (при сортировке по дате)
+  // заголовки-разделители по дням. Считаем префикс-суммы смещений для смешанных высот.
+  function buildWashDisplayItems() {
+    const rows = state.filteredRows;
+    const groupByDay = sortOrder && (sortOrder.value === "date_desc" || sortOrder.value === "date_asc");
+    const items = [];
+    let lastDay = null;
+    for (const row of rows) {
+      if (groupByDay) {
+        const day = row.start_day || "";
+        if (day !== lastDay) {
+          lastDay = day;
+          items.push({ type: "header", label: formatDayHeader(day), height: WASH_LIST_HEADER_HEIGHT });
+        }
+      }
+      items.push({ type: "row", row, height: WASH_LIST_ROW_HEIGHT });
+    }
+
+    const offsets = new Array(items.length + 1);
+    offsets[0] = 0;
+    for (let i = 0; i < items.length; i += 1) {
+      offsets[i + 1] = offsets[i] + items[i].height;
+    }
+    state.displayItems = items;
+    state.displayOffsets = offsets;
+    state.displayTotalHeight = offsets[items.length];
+  }
+
+  // Первый элемент, нижняя граница которого больше value (бинарный поиск по offsets).
+  function findFirstVisibleItem(offsets, value) {
+    let lo = 0;
+    let hi = offsets.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (offsets[mid + 1] <= value) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+    return lo;
   }
 
   async function getDetail(key) {
@@ -1490,8 +1645,105 @@
 
   function syncOverlayState() {
     const hasVisibleOverlay =
-      !modalRoot.hidden || !objectEditorRoot.hidden || !settingsRoot.hidden;
+      !modalRoot.hidden ||
+      !objectEditorRoot.hidden ||
+      !settingsRoot.hidden ||
+      !diagnosticsRoot.hidden;
     document.body.classList.toggle("modal-open", hasVisibleOverlay);
+  }
+
+  async function fetchDiagnostics() {
+    const response = await fetch("/api/diagnostics", { headers: { Accept: "application/json" } });
+    if (!response.ok) {
+      throw new Error("diagnostics-fetch-failed");
+    }
+    return response.json();
+  }
+
+  function closeDiagnostics() {
+    diagnosticsRoot.hidden = true;
+    diagnosticsRoot.innerHTML = "";
+    syncOverlayState();
+  }
+
+  async function openDiagnostics() {
+    if (!modalRoot.hidden) closeChartModal();
+    if (!objectEditorRoot.hidden) closeObjectEditor();
+    if (!settingsRoot.hidden) closeSettings();
+    diagnosticsRoot.hidden = false;
+    syncOverlayState();
+
+    let data = null;
+    try {
+      data = await fetchDiagnostics();
+    } catch (_error) {
+      showToast("Не удалось получить диагностику.", "error");
+    }
+    if (diagnosticsRoot.hidden) {
+      return;
+    }
+
+    const kindLabel = { ftp: "FTP", folder: "Папка", none: "—" };
+    const counts = data?.counts || {};
+    const rows = data
+      ? [
+          ["Источник", kindLabel[data.source_kind] || "—"],
+          ["Путь", data.display_root || "—"],
+          ["Последняя синхронизация", data.last_sync || "—"],
+          ["Моек", counts.cycles ?? 0],
+          ["Объектов", counts.objects ?? 0],
+          ["Баз данных", counts.databases ?? 0],
+          ["Архивов", counts.archives ?? 0],
+          ["FTP-панелей", counts.ftp_sources ?? 0],
+          [
+            "Автообновление",
+            data.auto_refresh?.enabled ? `вкл · ${data.auto_refresh.minutes} мин` : "выкл",
+          ],
+          ["Объём datalog", formatBytes(data.datalog?.size_bytes || 0)],
+          [
+            "Хранение архивов",
+            data.datalog?.retention_enabled ? `${data.datalog.retention_days} дней` : "выкл",
+          ],
+          ["Последняя очистка", data.datalog?.last_cleanup || "—"],
+          ["Обработка", data.job?.active ? data.job.message || "выполняется" : "нет"],
+          ["Ошибка", data.error || "—"],
+        ]
+      : [["Диагностика", "недоступна"]];
+
+    diagnosticsRoot.innerHTML = `
+      <div class="object-editor-backdrop" data-close-diagnostics></div>
+      <section class="object-editor-panel object-editor-panel--settings" role="dialog" aria-modal="true" aria-label="Диагностика">
+        <header class="settings-header">
+          <div class="settings-header-title">
+            <span class="settings-header-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm0 5a1.3 1.3 0 1 1 0 2.6A1.3 1.3 0 0 1 12 7Zm1.2 11h-2.4v-6.6h2.4V18Z"></path></svg>
+            </span>
+            <h2>Диагностика</h2>
+          </div>
+          <button type="button" class="chart-modal-icon-button chart-modal-icon-button--danger" data-close-diagnostics aria-label="Закрыть" title="Закрыть">
+            <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <path d="M5 5L15 15"></path>
+              <path d="M15 5L5 15"></path>
+            </svg>
+          </button>
+        </header>
+        <div class="diagnostics-body">
+          ${rows
+            .map(
+              ([key, value]) => `
+              <div class="diagnostics-row">
+                <span class="diagnostics-key">${escapeHtml(key)}</span>
+                <span class="diagnostics-value">${escapeHtml(String(value))}</span>
+              </div>
+            `
+            )
+            .join("")}
+        </div>
+      </section>
+    `;
+    diagnosticsRoot.querySelectorAll("[data-close-diagnostics]").forEach((element) => {
+      element.addEventListener("click", closeDiagnostics);
+    });
   }
 
   function hasDesktopPdfApi() {
@@ -1780,17 +2032,12 @@
         </header>
         <div class="settings-body">
           <details class="settings-section">
-            <summary class="settings-section-title">Отображение</summary>
+            <summary class="settings-section-title">Результат мойки</summary>
             <div class="settings-section-body">
               <label class="settings-option">
-                <span class="settings-option-text"><strong>Результат мойки</strong></span>
+                <span class="settings-option-text"><strong>Показывать результат</strong></span>
                 <input type="checkbox" data-setting-wash-result ${isWashResultVisible() ? "checked" : ""}>
               </label>
-            </div>
-          </details>
-          <details class="settings-section">
-            <summary class="settings-section-title">Подписи результата</summary>
-            <div class="settings-section-body">
               ${RESULT_LABEL_FIELDS.map((field) => `
                 <div class="settings-option settings-option--stacked">
                   <span class="settings-option-text"><strong>${escapeHtml(field.label)}</strong></span>
@@ -1819,6 +2066,35 @@
                 <span class="settings-option-text"><strong>Интервал, мин</strong></span>
                 <input type="number" min="1" max="1440" step="1" data-setting-ftp-auto-refresh-minutes value="${Number(settings.ftp_auto_refresh_minutes) || 5}">
               </label>
+            </div>
+          </details>
+          <details class="settings-section">
+            <summary class="settings-section-title">Обновления и запуск</summary>
+            <div class="settings-section-body">
+              <label class="settings-option">
+                <span class="settings-option-text"><strong>Проверять обновления</strong></span>
+                <input type="checkbox" data-setting-check-updates ${settings.check_updates ? "checked" : ""}>
+              </label>
+              <label class="settings-option">
+                <span class="settings-option-text"><strong>Автозапуск с Windows</strong></span>
+                <input type="checkbox" data-setting-autostart ${settings.autostart ? "checked" : ""}>
+              </label>
+            </div>
+          </details>
+          <details class="settings-section">
+            <summary class="settings-section-title">Хранение архивов</summary>
+            <div class="settings-section-body">
+              <label class="settings-option">
+                <span class="settings-option-text"><strong>Автоочистка архивов</strong></span>
+                <input type="checkbox" data-setting-archive-retention ${settings.archive_retention_enabled ? "checked" : ""}>
+              </label>
+              <label class="settings-option">
+                <span class="settings-option-text"><strong>Хранить, дней (1–730)</strong></span>
+                <input type="number" min="1" max="730" step="1" data-setting-retention-days value="${Number(settings.archive_retention_days) || 365}">
+              </label>
+              <div class="settings-chart-actions">
+                <button type="button" class="ghost" data-archive-cleanup-now>Очистить сейчас</button>
+              </div>
             </div>
           </details>
           <details class="settings-section">
@@ -1862,7 +2138,7 @@
           autoRefreshMinutes.value = Number(saved.ftp_auto_refresh_minutes);
         }
       } catch (_error) {
-        setScreenError("Не удалось сохранить настройки.");
+        showToast("Не удалось сохранить настройки.", "error");
       }
     };
 
@@ -1882,7 +2158,7 @@
             event.currentTarget.value = saved.default_folder_path;
           }
         } catch (_error) {
-          setScreenError("Не удалось сохранить настройки.");
+          showToast("Не удалось сохранить настройки.", "error");
         }
       });
     }
@@ -1912,7 +2188,7 @@
         // Применяем к кэшу графиков, чтобы следующий открытый график сразу учёл изменения.
         window.WashChart?.setSeriesStyles?.(saved);
       } catch (_error) {
-        setScreenError("Не удалось сохранить оформление графика.");
+        showToast("Не удалось сохранить оформление графика.", "error");
       }
     };
 
@@ -1943,8 +2219,9 @@
             chartStyleGrid.innerHTML = renderChartStyleControls(fresh.defaults, fresh.series);
           }
           window.WashChart?.setSeriesStyles?.(fresh.series);
+          showToast("Оформление графика сброшено", "success");
         } catch (_error) {
-          setScreenError("Не удалось сбросить оформление графика.");
+          showToast("Не удалось сбросить оформление графика.", "error");
         }
       });
     }
@@ -1962,12 +2239,134 @@
           hydrateWorkspaceData({ resetScroll: false }).catch(() => {});
         }
       } catch (_error) {
-        setScreenError("Не удалось сохранить настройки.");
+        showToast("Не удалось сохранить настройки.", "error");
       }
     };
     resultLabelInputs.forEach((input) => {
       input.addEventListener("change", persistResultLabels);
     });
+
+    const checkUpdatesToggle = settingsRoot.querySelector("[data-setting-check-updates]");
+    if (checkUpdatesToggle) {
+      checkUpdatesToggle.addEventListener("change", async (event) => {
+        const enabled = Boolean(event.currentTarget.checked);
+        try {
+          await saveAppSettings({ check_updates: enabled });
+          if (enabled) {
+            checkForUpdates(true);
+          }
+        } catch (_error) {
+          showToast("Не удалось сохранить настройки.", "error");
+        }
+      });
+    }
+
+    const autostartToggle = settingsRoot.querySelector("[data-setting-autostart]");
+    if (autostartToggle) {
+      autostartToggle.addEventListener("change", async (event) => {
+        const enabled = Boolean(event.currentTarget.checked);
+        try {
+          await saveAppSettings({ autostart: enabled });
+          const api = window.pywebview && window.pywebview.api;
+          if (api && typeof api.set_autostart === "function") {
+            const result = await api.set_autostart({ enabled });
+            if (result && result.supported === false) {
+              showToast("Автозапуск доступен только в приложении Windows.", "info");
+            } else if (result && result.ok) {
+              showToast(enabled ? "Автозапуск включён" : "Автозапуск выключен", "success");
+            } else {
+              showToast("Не удалось изменить автозапуск.", "error");
+            }
+          } else {
+            showToast("Автозапуск доступен только в приложении Windows.", "info");
+          }
+        } catch (_error) {
+          showToast("Не удалось изменить автозапуск.", "error");
+        }
+      });
+    }
+
+    const retentionToggle = settingsRoot.querySelector("[data-setting-archive-retention]");
+    const retentionDays = settingsRoot.querySelector("[data-setting-retention-days]");
+    const persistRetention = async () => {
+      const daysRaw = Number(retentionDays?.value);
+      const days = Number.isFinite(daysRaw) ? Math.min(730, Math.max(1, Math.round(daysRaw))) : 365;
+      try {
+        const saved = await saveAppSettings({
+          archive_retention_enabled: Boolean(retentionToggle?.checked),
+          archive_retention_days: days,
+        });
+        if (retentionDays && saved && Number.isFinite(Number(saved.archive_retention_days))) {
+          retentionDays.value = Number(saved.archive_retention_days);
+        }
+      } catch (_error) {
+        showToast("Не удалось сохранить настройки.", "error");
+      }
+    };
+    if (retentionToggle) {
+      retentionToggle.addEventListener("change", persistRetention);
+    }
+    if (retentionDays) {
+      retentionDays.addEventListener("change", persistRetention);
+    }
+
+    const cleanupButton = settingsRoot.querySelector("[data-archive-cleanup-now]");
+    if (cleanupButton) {
+      cleanupButton.addEventListener("click", async () => {
+        const days = Number(retentionDays?.value) || 365;
+        if (!window.confirm(`Удалить архивы старше ${days} дней? Эти мойки исчезнут из журнала.`)) {
+          return;
+        }
+        cleanupButton.disabled = true;
+        try {
+          const response = await fetch("/api/archives/cleanup", { method: "POST" });
+          if (!response.ok) {
+            throw new Error("cleanup-failed");
+          }
+          const data = await response.json();
+          showToast(
+            `Удалено файлов: ${data.removed || 0}, освобождено ${formatBytes(data.freed_bytes || 0)}`,
+            "success"
+          );
+        } catch (_error) {
+          showToast("Не удалось выполнить очистку.", "error");
+        } finally {
+          cleanupButton.disabled = false;
+        }
+      });
+    }
+  }
+
+  function formatBytes(bytes) {
+    const value = Number(bytes) || 0;
+    if (value < 1024) {
+      return `${value} Б`;
+    }
+    const units = ["КБ", "МБ", "ГБ", "ТБ"];
+    let size = value / 1024;
+    let unitIndex = 0;
+    while (size >= 1024 && unitIndex < units.length - 1) {
+      size /= 1024;
+      unitIndex += 1;
+    }
+    return `${size.toFixed(size >= 10 ? 0 : 1)} ${units[unitIndex]}`;
+  }
+
+  async function checkForUpdates(notifyUpToDate = false) {
+    try {
+      const response = await fetch("/api/update-check", { headers: { Accept: "application/json" } });
+      if (!response.ok) {
+        return;
+      }
+      const data = await response.json();
+      if (data.update_available) {
+        showToast(`Доступно обновление ${data.latest}. Смотрите GitHub Releases.`, "info", 8000);
+      } else if (notifyUpToDate && data.enabled) {
+        showToast("Установлена последняя версия.", "success");
+      }
+    } catch (_error) {
+      // тихо — проверка обновлений не критична
+    }
   }
 
   function renderObjectEditorRows() {
@@ -2408,7 +2807,14 @@
             </svg>
           </button>
         </header>
-        <div class="technical-empty">Подготавливаю данные мойки и строю график.</div>
+        <div class="chart-modal-skeleton" role="status" aria-label="Загрузка графика">
+          <div class="chart-modal-skeleton-summary">
+            <span class="skeleton skeleton-line" style="width:38%"></span>
+            <span class="skeleton skeleton-line" style="width:58%"></span>
+            <span class="skeleton skeleton-line" style="width:30%"></span>
+          </div>
+          <div class="skeleton chart-modal-skeleton-chart"></div>
+        </div>
       </section>
     `;
 
@@ -2428,6 +2834,9 @@
       prefetchChartPayload(detail.chart_data_url);
       prefetchWashContext(navigation.previous?.key || "");
       prefetchWashContext(navigation.next?.key || "");
+      // Уточняем реальное состояние окна, чтобы сводка правильно показывалась/
+      // скрывалась независимо от того, как окно развернули.
+      await refreshWindowMaximizedState();
       if (requestId !== modalRequestId) {
         return;
       }
@@ -2579,6 +2988,10 @@
 
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
+      if (!diagnosticsRoot.hidden) {
+        closeDiagnostics();
+        return;
+      }
       if (!settingsRoot.hidden) {
         closeSettings();
         return;
@@ -2711,6 +3124,13 @@
     openSettingsButton.addEventListener("click", () => openSettings());
   }
 
+  const openDiagnosticsButton = document.querySelector("#openDiagnostics");
+  if (openDiagnosticsButton) {
+    openDiagnosticsButton.addEventListener("click", () => openDiagnostics());
+  }
+
+  initClock();
+  checkForUpdates();
   applyWashResultVisibility();
 
   periodPresetButtons.forEach((button) => {
@@ -2732,7 +3152,7 @@
   });
   syncDayFilterButton();
   syncPeriodPresetButtons();
-  setWashListMessage("Загружаю список моек...");
+  setWashListSkeleton();
   void hydrateWorkspaceData({ resetScroll: true }).catch(() => {
     setScreenError("Не удалось загрузить список моек.");
     setWashListMessage("Не удалось загрузить список моек.");

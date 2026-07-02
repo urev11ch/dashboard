@@ -82,6 +82,47 @@ def resolve_webview_storage_path() -> Path:
     return path
 
 
+AUTOSTART_REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+AUTOSTART_VALUE_NAME = "OptiCIP Dashboard"
+
+
+def _autostart_command() -> str:
+    """Команда запуска приложения для автозапуска. В собранной версии — путь к
+    .exe; в dev — интерпретатор + этот скрипт."""
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}"'
+    return f'"{sys.executable}" "{os.path.abspath(__file__)}"'
+
+
+def apply_windows_autostart(enabled: bool) -> None:
+    """Включает/выключает автозапуск через ключ реестра HKCU..\\Run (только Windows)."""
+    if sys.platform != "win32":
+        return
+    import winreg
+
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_REG_KEY, 0, winreg.KEY_SET_VALUE) as key:
+        if enabled:
+            winreg.SetValueEx(key, AUTOSTART_VALUE_NAME, 0, winreg.REG_SZ, _autostart_command())
+        else:
+            try:
+                winreg.DeleteValue(key, AUTOSTART_VALUE_NAME)
+            except FileNotFoundError:
+                pass
+
+
+def sync_autostart_from_settings() -> None:
+    """Приводит реестр автозапуска в соответствие с сохранённой настройкой при
+    старте приложения (чтобы состояние не рассинхронизировалось)."""
+    if sys.platform != "win32":
+        return
+    try:
+        from webapp.app import load_app_settings
+
+        apply_windows_autostart(bool(load_app_settings().get("autostart")))
+    except Exception:
+        logging.exception("Не удалось синхронизировать автозапуск при старте")
+
+
 def configure_logging() -> Path:
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
@@ -343,6 +384,51 @@ class DesktopBridge:
 
     def bind_window(self, window: webview.Window) -> None:
         self._window = window
+        # Следим за разворачиванием/восстановлением средствами ОС (Aero Snap,
+        # Win+↑ и т. п.), чтобы состояние окна не рассинхронизировалось с UI.
+        for event_name, handler in (
+            ("maximized", self._on_native_maximized),
+            ("restored", self._on_native_restored),
+        ):
+            try:
+                event = getattr(window.events, event_name, None)
+                if event is not None:
+                    event += handler
+            except Exception:
+                logging.exception("Не удалось подписаться на событие окна %s", event_name)
+
+    def _on_native_maximized(self, *_args) -> None:
+        self._maximized = True
+        self._sync_maximized_to_js()
+
+    def _on_native_restored(self, *_args) -> None:
+        self._maximized = False
+        self._sync_maximized_to_js()
+
+    def _sync_maximized_to_js(self) -> None:
+        win = self._window
+        if win is None:
+            return
+        try:
+            js_bool = "true" if self._maximized else "false"
+            win.evaluate_js(
+                f"document.body && document.body.classList.toggle('window-maximized', {js_bool})"
+            )
+        except Exception:
+            logging.exception("Не удалось синхронизировать состояние окна с интерфейсом")
+
+    def get_window_state(self, *_args) -> dict[str, bool]:
+        """Возвращает актуальное состояние окна. Приоритет — реальному состоянию
+        нативной формы WinForms (учитывает разворачивание средствами ОС)."""
+        form = self._resolve_native_form()
+        if form is not None:
+            try:
+                from System.Windows.Forms import FormWindowState
+
+                self._maximized = form.WindowState == FormWindowState.Maximized
+            except Exception:
+                logging.exception("Не удалось прочитать состояние нативного окна")
+        return {"maximized": bool(self._maximized)}
 
     def center_on_open(self) -> None:
         """Приводит окно к уменьшённому размеру и центрирует его на экране.
@@ -351,6 +437,18 @@ class DesktopBridge:
             return
         self._apply_windowed_geometry()
         self._maximized = False
+
+    # ---- автозапуск с Windows ----------------------------------------------
+    def set_autostart(self, payload: dict | None = None) -> dict[str, bool]:
+        if sys.platform != "win32":
+            return {"ok": False, "supported": False}
+        enabled = bool((payload or {}).get("enabled"))
+        try:
+            apply_windows_autostart(enabled)
+        except Exception:
+            logging.exception("Не удалось изменить автозапуск")
+            return {"ok": False, "supported": True}
+        return {"ok": True, "supported": True, "enabled": enabled}
 
     # ---- управление кастомным окном (frameless titlebar) -------------------
     def minimize_window(self, *_args) -> dict[str, bool]:
@@ -747,6 +845,7 @@ def main() -> int:
     try:
         web_app = load_web_app()
         logging.info("ASGI app imported successfully")
+        sync_autostart_from_settings()
     except Exception as exc:
         logging.exception("ASGI app import failed")
         show_fatal_error(

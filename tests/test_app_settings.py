@@ -23,6 +23,10 @@ def test_defaults_when_missing(tmp_path, monkeypatch):
         "ftp_auto_refresh_minutes": 5,
         "default_folder_path": "",
         "result_labels": {c: "" for c in app.RESULT_LABEL_CATEGORIES},
+        "check_updates": False,
+        "autostart": False,
+        "archive_retention_enabled": False,
+        "archive_retention_days": 365,
     }
 
 
@@ -36,6 +40,10 @@ def test_save_load_roundtrip(tmp_path, monkeypatch):
         "ftp_auto_refresh_minutes": 12,
         "default_folder_path": "",
         "result_labels": {c: "" for c in app.RESULT_LABEL_CATEGORIES},
+        "check_updates": False,
+        "autostart": False,
+        "archive_retention_enabled": False,
+        "archive_retention_days": 365,
     }
 
     payload = json.loads(app.app_settings_path().read_text(encoding="utf-8"))
@@ -130,6 +138,57 @@ def test_result_labels_length_capped(tmp_path, monkeypatch):
     long_value = "я" * 500
     saved = app.save_app_settings({"result_labels": {"check": long_value}})
     assert len(saved["result_labels"]["check"]) == app.RESULT_LABEL_MAX_LEN
+
+
+# ---- сравнение версий (проверка обновлений) ---------------------------------
+def test_is_newer_version():
+    assert app._is_newer_version("1.0.1", "1.0.0") is True
+    assert app._is_newer_version("v2.0", "1.9.9") is True
+    assert app._is_newer_version("1.0.0", "1.0.0") is False
+    assert app._is_newer_version("0.9", "1.0.0") is False
+    assert app._is_newer_version("", "1.0.0") is False
+
+
+# ---- хранение архивов (ретеншн) ---------------------------------------------
+def test_archive_retention_days_clamped(tmp_path, monkeypatch):
+    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    assert app.save_app_settings({"archive_retention_days": 0})["archive_retention_days"] == 1
+    assert app.save_app_settings({"archive_retention_days": 99999})["archive_retention_days"] == 730
+    assert app.save_app_settings({"archive_retention_days": "abc"})["archive_retention_days"] == 365
+
+
+def test_archive_month_folder():
+    import time as _time
+
+    ts = _time.mktime(_time.strptime("2026-05-15", "%Y-%m-%d"))
+    assert app.archive_month_folder(ts) == "2026-05"
+    assert app.archive_month_folder(None) == "unknown"
+
+
+def test_cleanup_old_archives(tmp_path):
+    import os
+    import time as _time
+
+    old = tmp_path / "2024-01" / "old.db"
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b"x" * 10)
+    fresh = tmp_path / "2026-07" / "fresh.db"
+    fresh.parent.mkdir(parents=True)
+    fresh.write_bytes(b"y" * 20)
+    service = tmp_path / "wash_object_names.json"  # не архив — не трогаем
+    service.write_text("{}", encoding="utf-8")
+
+    now = _time.time()
+    os.utime(old, (now - 400 * 86400, now - 400 * 86400))
+    os.utime(fresh, (now - 10 * 86400, now - 10 * 86400))
+
+    result = app.cleanup_old_archives(tmp_path, 365)
+    assert result == {"removed": 1, "freed_bytes": 10}
+    assert not old.exists()
+    assert fresh.exists()
+    assert service.exists()
+    # опустевшая папка месяца удалена
+    assert not (tmp_path / "2024-01").exists()
 
 
 # ---- дефолты оформления графика ---------------------------------------------

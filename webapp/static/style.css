@@ -948,6 +948,21 @@ code {
   pointer-events: none;
 }
 
+/* Заголовок-разделитель дня в списке моек (при сортировке по дате). */
+.wash-day-header {
+  height: 38px;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: rgba(23, 87, 255, 0.04);
+  border-bottom: 1px solid var(--line);
+}
+
 .wash-list-head,
 .wash-row {
   display: grid;
@@ -1907,8 +1922,10 @@ body.desktop-shell .object-editor-panel {
 
 .object-editor-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 8px;
+  /* Фиксированная колонка идентификатора — чтобы поля ввода названия во всех
+     строках начинались и заканчивались строго на одной линии. */
+  grid-template-columns: 180px minmax(0, 1fr) auto;
+  gap: 10px;
   align-items: center;
   padding: 8px 10px;
   border-radius: 14px;
@@ -1923,13 +1940,15 @@ body.desktop-shell .object-editor-panel {
 
 .object-editor-row-identity {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
 }
 
 .object-editor-token {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  min-width: 76px;
   min-height: 26px;
   padding: 0 8px;
   border-radius: 999px;
@@ -2654,6 +2673,171 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
   border-radius: var(--radius-panel);
   background: rgba(255, 255, 255, 0.88);
   border: 1px dashed var(--line);
+}
+
+/* ---- Скелетоны загрузки (заглушки-каркасы вместо спиннеров) -------------- */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: rgba(40, 58, 96, 0.08);
+  border-radius: 6px;
+}
+
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.6),
+    transparent
+  );
+  animation: skeleton-shimmer 1.2s ease-in-out infinite;
+}
+
+@keyframes skeleton-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton::after {
+    animation: none;
+  }
+}
+
+.skeleton-line {
+  display: block;
+  height: 12px;
+}
+
+.skeleton-badge {
+  display: inline-block;
+  width: 84px;
+  height: 20px;
+  border-radius: var(--radius-tag);
+}
+
+.wash-row--skeleton {
+  cursor: default;
+  pointer-events: none;
+}
+
+.chart-modal-skeleton {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 16px;
+  height: 100%;
+  min-height: 0;
+}
+
+.chart-modal-skeleton-summary {
+  display: grid;
+  gap: 8px;
+}
+
+.chart-modal-skeleton-chart {
+  width: 100%;
+  height: 100%;
+  min-height: 320px;
+  border-radius: 16px;
+}
+
+/* ---- Часы в шапке -------------------------------------------------------- */
+.screen-clock {
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+
+/* ---- Тосты (всплывающие уведомления) ------------------------------------ */
+.toast-stack {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 600;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(360px, calc(100vw - 36px));
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  padding: 11px 14px;
+  border-radius: var(--radius-panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  background: var(--panel-strong);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.35;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.toast.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.toast--success {
+  border-left-color: var(--success-text);
+}
+
+.toast--error {
+  border-left-color: var(--warn);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    transform: none;
+    transition: opacity 180ms ease;
+  }
+}
+
+/* ---- Диагностика источника ---------------------------------------------- */
+.diagnostics-body {
+  display: grid;
+  gap: 2px;
+  padding: 2px 4px 2px 2px;
+  overflow: auto;
+  min-height: 0;
+}
+
+.diagnostics-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 9px 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.diagnostics-row:last-child {
+  border-bottom: 0;
+}
+
+.diagnostics-key {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.diagnostics-value {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  text-align: right;
+  word-break: break-word;
 }
 
 @page {

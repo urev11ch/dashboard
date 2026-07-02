@@ -16,6 +16,7 @@ import sys
 import tarfile
 import threading
 import time
+import urllib.request
 import uuid
 import zipfile
 from collections import OrderedDict
@@ -130,7 +131,15 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "ftp_auto_refresh_enabled": True,
     "ftp_auto_refresh_minutes": 5,
     "default_folder_path": "",
+    "check_updates": False,
+    "autostart": False,
+    "archive_retention_enabled": False,
+    "archive_retention_days": 365,
 }
+ARCHIVE_RETENTION_MIN_DAYS = 1
+ARCHIVE_RETENTION_MAX_DAYS = 730
+GITHUB_REPO = "urev11ch/dashboard"
+UPDATE_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 # Как часто фоновый цикл просыпается, чтобы сверить, не пора ли обновлять FTP.
 FTP_AUTO_REFRESH_POLL_SECONDS = 20.0
 # Настраиваемые подписи результата мойки. Ядро (wash_report) считает результат
@@ -268,6 +277,8 @@ class AppState:
     error: str | None = None
     scan_summary: ScanSummary = field(default_factory=ScanSummary)
     workspace_job: WorkspaceJob | None = None
+    last_sync_ts: float | None = None
+    last_cleanup_ts: float | None = None
 
 
 @dataclass(frozen=True)
@@ -824,6 +835,91 @@ def _should_skip_download(
     return local_mtime + FTP_MTIME_TOLERANCE_SECONDS >= remote_mtime
 
 
+def archive_month_folder(mtime: float | None) -> str:
+    """Имя папки месяца (ГГГГ-ММ) по времени файла; 'unknown' если времени нет."""
+    if mtime is None:
+        return "unknown"
+    try:
+        return time.strftime("%Y-%m", time.localtime(mtime))
+    except (OverflowError, OSError, ValueError):
+        return "unknown"
+
+
+def _remove_empty_dirs(root_path: Path) -> None:
+    try:
+        directories = sorted(
+            (path for path in root_path.rglob("*") if path.is_dir()),
+            key=lambda path: len(path.parts),
+            reverse=True,
+        )
+    except OSError:
+        return
+    for directory in directories:
+        try:
+            next(directory.iterdir())
+        except StopIteration:
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+        except OSError:
+            pass
+
+
+def cleanup_old_archives(root_path: Path, retention_days: int) -> dict[str, int]:
+    """Удаляет распознанные архивы/`.db` старше `retention_days` (по mtime файла)
+    под `root_path` и убирает опустевшие подпапки. Возвращает статистику
+    {'removed', 'freed_bytes'}. Служебные файлы (wash_*.json, кэш) не трогает."""
+    removed = 0
+    freed = 0
+    days = max(ARCHIVE_RETENTION_MIN_DAYS, min(ARCHIVE_RETENTION_MAX_DAYS, int(retention_days)))
+    cutoff = time.time() - days * 86400
+
+    try:
+        candidates = list(root_path.rglob("*"))
+    except OSError:
+        return {"removed": 0, "freed_bytes": 0}
+
+    for candidate in candidates:
+        try:
+            if not candidate.is_file() or not _is_archive_or_db_name(candidate.name):
+                continue
+            stat_result = candidate.stat()
+            if stat_result.st_mtime >= cutoff:
+                continue
+            size = stat_result.st_size
+            candidate.unlink()
+            removed += 1
+            freed += size
+        except OSError:
+            continue
+
+    _remove_empty_dirs(root_path)
+    if removed:
+        logging.info(
+            "Автоочистка архивов: удалено %d файлов, освобождено %d байт (%s)",
+            removed,
+            freed,
+            root_path,
+        )
+    return {"removed": removed, "freed_bytes": freed}
+
+
+def directory_size_bytes(root_path: Path) -> int:
+    total = 0
+    try:
+        candidates = list(root_path.rglob("*"))
+    except OSError:
+        return 0
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                total += candidate.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
 def download_ftp_files(
     config: dict[str, Any],
     target_dir: Path,
@@ -846,6 +942,15 @@ def download_ftp_files(
     downloaded_count = 0
     skipped_count = 0
     local_index = build_local_archive_index(target_dir)
+
+    # При включённом ретеншне не качаем файлы старше срока хранения — иначе
+    # удалённые очисткой архивы возвращались бы при каждой синхронизации.
+    settings = load_app_settings()
+    retention_cutoff = (
+        time.time() - settings["archive_retention_days"] * 86400
+        if settings["archive_retention_enabled"]
+        else None
+    )
     try:
         try:
             connection.voidcmd("TYPE I")
@@ -865,16 +970,22 @@ def download_ftp_files(
             if cancel_check is not None and cancel_check():
                 raise core.AnalysisCancelledError("Открытие источника было отменено пользователем.")
 
-            relative_target = _ftp_relative_target(remote_root, remote_file)
-            target_path = target_dir / relative_target
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-
             remote_size = meta.get("size")
             if remote_size is None:
                 remote_size = _ftp_remote_size(connection, remote_file)
             remote_mtime = meta.get("mtime")
             if remote_mtime is None:
                 remote_mtime = _ftp_remote_mtime(connection, remote_file)
+
+            # Файлы старше срока хранения не скачиваем (см. retention_cutoff выше).
+            if retention_cutoff is not None and remote_mtime is not None and remote_mtime < retention_cutoff:
+                continue
+
+            # Помесячная раскладка: datalog/<id>/ГГГГ-ММ/<файл> по времени файла.
+            base_target = _ftp_relative_target(remote_root, remote_file)
+            relative_target = Path(archive_month_folder(remote_mtime)) / base_target
+            target_path = target_dir / relative_target
+            target_path.parent.mkdir(parents=True, exist_ok=True)
 
             rel_key = relative_target.as_posix()
             local_meta = local_index.get(rel_key)
@@ -1022,6 +1133,12 @@ def materialize_ftp_sources(
         raise SystemExit(
             f"Не удалось скачать архивы с FTP, и локальных архивов в `datalog` нет: {exc}"
         ) from exc
+
+    # Автоочистка архивов старше срока хранения (только для FTP-зеркала).
+    settings = load_app_settings()
+    if settings["archive_retention_enabled"]:
+        cleanup_old_archives(root_path, settings["archive_retention_days"])
+        state.last_cleanup_ts = time.time()
 
     return len(downloaded_files)
 
@@ -1209,14 +1326,21 @@ def _coerce_auto_refresh_minutes(value: Any, fallback: int) -> int:
     return max(FTP_AUTO_REFRESH_MIN_MINUTES, min(FTP_AUTO_REFRESH_MAX_MINUTES, minutes))
 
 
+def _coerce_bool(value: Any, fallback: bool) -> bool:
+    if value is None:
+        return fallback
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "0", "false", "no", "off"}
+    return bool(value)
+
+
 def normalize_app_settings(raw: Any) -> dict[str, Any]:
     data = raw if isinstance(raw, dict) else {}
 
-    enabled = data.get("ftp_auto_refresh_enabled", DEFAULT_APP_SETTINGS["ftp_auto_refresh_enabled"])
-    if isinstance(enabled, str):
-        enabled = enabled.strip().lower() not in {"", "0", "false", "no", "off"}
-    else:
-        enabled = bool(enabled)
+    enabled = _coerce_bool(
+        data.get("ftp_auto_refresh_enabled"),
+        DEFAULT_APP_SETTINGS["ftp_auto_refresh_enabled"],
+    )
 
     minutes = _coerce_auto_refresh_minutes(
         data.get("ftp_auto_refresh_minutes"),
@@ -1237,11 +1361,23 @@ def normalize_app_settings(raw: Any) -> dict[str, Any]:
         # Пустая строка означает «использовать значение по умолчанию».
         result_labels[category] = value[:RESULT_LABEL_MAX_LEN]
 
+    try:
+        retention_days = int(data.get("archive_retention_days"))
+    except (TypeError, ValueError):
+        retention_days = DEFAULT_APP_SETTINGS["archive_retention_days"]
+    retention_days = max(ARCHIVE_RETENTION_MIN_DAYS, min(ARCHIVE_RETENTION_MAX_DAYS, retention_days))
+
     return {
         "ftp_auto_refresh_enabled": enabled,
         "ftp_auto_refresh_minutes": minutes,
         "default_folder_path": default_folder_path,
         "result_labels": result_labels,
+        "check_updates": _coerce_bool(data.get("check_updates"), DEFAULT_APP_SETTINGS["check_updates"]),
+        "autostart": _coerce_bool(data.get("autostart"), DEFAULT_APP_SETTINGS["autostart"]),
+        "archive_retention_enabled": _coerce_bool(
+            data.get("archive_retention_enabled"), DEFAULT_APP_SETTINGS["archive_retention_enabled"]
+        ),
+        "archive_retention_days": retention_days,
     }
 
 
@@ -2033,6 +2169,7 @@ def run_workspace_job(job_id: str, target_root: Path) -> None:
             state.object_name_overrides = object_name_overrides
             state.scan_summary = scan_summary
             state.error = None
+            state.last_sync_ts = time.time()
             clear_chart_payload_cache()
 
             job.target_root = target_root
@@ -2774,6 +2911,136 @@ async def update_app_settings_route(request: Request) -> JSONResponse:
         ) from exc
 
     return JSONResponse({"ok": True, "settings": settings})
+
+
+@app.get("/api/diagnostics")
+def get_diagnostics() -> JSONResponse:
+    with state_lock:
+        analysis = state.analysis
+        selected_root = state.selected_root or state.pending_root
+        display_root = (
+            state.selected_display_root
+            or state.pending_display_root
+            or (str(selected_root) if selected_root else "")
+        )
+        scan = state.scan_summary
+        last_sync = state.last_sync_ts
+        last_cleanup = state.last_cleanup_ts
+        error = state.error
+        job_payload = serialize_job(state.workspace_job)
+        summary = build_summary_payload(analysis, scan)
+
+    source_kind = "none"
+    if selected_root is not None:
+        try:
+            source_kind = "ftp" if selected_root.resolve().parent == DATALOG_ROOT else "folder"
+        except OSError:
+            source_kind = "folder"
+
+    settings = load_app_settings()
+    return JSONResponse(
+        {
+            "source_kind": source_kind,
+            "display_root": display_root,
+            "last_sync": core.format_ts(last_sync) if last_sync else "",
+            "counts": {
+                "cycles": summary["cycle_count"],
+                "objects": summary["object_count"],
+                "databases": summary["db_count"],
+                "archives": scan.archive_count,
+                "ftp_sources": scan.ftp_source_count,
+            },
+            "auto_refresh": {
+                "enabled": settings["ftp_auto_refresh_enabled"],
+                "minutes": settings["ftp_auto_refresh_minutes"],
+            },
+            "datalog": {
+                "size_bytes": directory_size_bytes(DATALOG_ROOT),
+                "last_cleanup": core.format_ts(last_cleanup) if last_cleanup else "",
+                "retention_enabled": settings["archive_retention_enabled"],
+                "retention_days": settings["archive_retention_days"],
+            },
+            "job": {
+                "active": job_payload["active"],
+                "status": job_payload["status"],
+                "message": job_payload["message"],
+            },
+            "error": error or "",
+        }
+    )
+
+
+@app.post("/api/archives/cleanup")
+def cleanup_archives_now() -> JSONResponse:
+    settings = load_app_settings()
+    days = settings["archive_retention_days"]
+    with state_lock:
+        target_root = state.selected_root or state.pending_root
+
+    if target_root is None:
+        raise HTTPException(status_code=400, detail="Нет активного источника данных.")
+    try:
+        is_ftp = target_root.resolve().parent == DATALOG_ROOT
+    except OSError:
+        is_ftp = False
+    if not is_ftp:
+        raise HTTPException(
+            status_code=400, detail="Очистка доступна только для FTP-источника (папка datalog)."
+        )
+
+    result = cleanup_old_archives(target_root, days)
+    state.last_cleanup_ts = time.time()
+    return JSONResponse({"ok": True, "days": days, **result})
+
+
+def _parse_version(value: str) -> tuple[int, ...]:
+    parts = re.findall(r"\d+", str(value or ""))
+    return tuple(int(p) for p in parts) or (0,)
+
+
+def _is_newer_version(latest: str, current: str) -> bool:
+    try:
+        return _parse_version(latest) > _parse_version(current)
+    except Exception:
+        return False
+
+
+def _fetch_latest_release_tag() -> str:
+    """Тег последнего релиза на GitHub (без префикса v) или '' при недоступности/
+    отсутствии релизов."""
+    request = urllib.request.Request(
+        f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "OptiCIP-Dashboard",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return ""
+    tag = str(payload.get("tag_name") or "").strip()
+    return tag[1:] if tag[:1].lower() == "v" else tag
+
+
+@app.get("/api/update-check")
+def update_check() -> JSONResponse:
+    settings = load_app_settings()
+    if not settings["check_updates"]:
+        return JSONResponse({"enabled": False, "update_available": False})
+
+    latest = _fetch_latest_release_tag()
+    available = bool(latest) and _is_newer_version(latest, APP_VERSION)
+    return JSONResponse(
+        {
+            "enabled": True,
+            "current": APP_VERSION,
+            "latest": latest,
+            "update_available": available,
+            "url": UPDATE_RELEASES_URL if available else "",
+        }
+    )
 
 
 @app.get("/api/wash-details")
