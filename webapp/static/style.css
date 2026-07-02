@@ -1640,43 +1640,44 @@ body.desktop-shell .object-editor-panel {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
 }
 
 .settings-header-title {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   min-width: 0;
 }
 
 .settings-header-title h2 {
   margin: 0;
-  font-size: 20px;
-  font-weight: 700;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
   color: var(--text);
 }
 
 .settings-header-icon {
   display: inline-grid;
   place-items: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
-  background: rgba(23, 87, 255, 0.1);
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: rgba(23, 87, 255, 0.09);
   color: var(--accent);
   flex: none;
 }
 
 .settings-header-icon svg {
-  width: 22px;
-  height: 22px;
+  width: 18px;
+  height: 18px;
   fill: currentColor;
 }
 
 .settings-body {
   display: grid;
-  gap: 10px;
+  gap: 8px;
   padding: 2px 4px 2px 2px;
   overflow: auto;
   min-height: 0;
@@ -1686,7 +1687,7 @@ body.desktop-shell .object-editor-panel {
 .settings-section {
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
-  background: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.6);
   overflow: hidden;
 }
 
@@ -1698,9 +1699,9 @@ body.desktop-shell .object-editor-panel {
   justify-content: space-between;
   gap: 10px;
   margin: 0;
-  padding: 13px 15px;
+  padding: 12px 14px;
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text);
   user-select: none;
   -webkit-user-select: none;
@@ -1712,11 +1713,11 @@ body.desktop-shell .object-editor-panel {
 
 .settings-section-title::after {
   content: "";
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   flex: none;
-  border-right: 2px solid var(--muted);
-  border-bottom: 2px solid var(--muted);
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
   transform: rotate(45deg);
   transition: transform 140ms ease;
 }
@@ -1726,18 +1727,28 @@ body.desktop-shell .object-editor-panel {
 }
 
 .settings-section-title:hover {
-  background: rgba(23, 87, 255, 0.05);
+  background: rgba(23, 87, 255, 0.04);
 }
 
 .settings-section-body {
   display: grid;
-  gap: 10px;
-  padding: 0 15px 14px;
+  gap: 12px;
+  padding: 4px 14px 14px;
 }
 
-.settings-option--stacked {
-  flex-direction: column;
-  align-items: stretch;
+/* Компактные поля ввода в настройках */
+.settings-body input[type="text"],
+.settings-body input[type="number"],
+.settings-body select {
+  font-size: 13px;
+  padding: 9px 12px;
+}
+
+.settings-option input[type="number"] {
+  width: 96px;
+  min-width: 0;
+  flex: none;
+  text-align: right;
 }
 
 .settings-text-input {
@@ -1756,8 +1767,8 @@ body.desktop-shell .object-editor-panel {
 }
 
 .settings-chart-swatch {
-  width: 14px;
-  height: 14px;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
   flex: none;
   background: var(--settings-chart-color, var(--accent));
@@ -1767,7 +1778,7 @@ body.desktop-shell .object-editor-panel {
 .settings-chart-name {
   flex: 1;
   min-width: 0;
-  font-size: 13px;
+  font-size: 12px;
   color: var(--text);
 }
 
@@ -1777,44 +1788,50 @@ body.desktop-shell .object-editor-panel {
 }
 
 .settings-chart-empty {
-  font-size: 13px;
+  font-size: 12px;
   color: var(--muted);
 }
 
 .settings-note {
   margin: 0;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
+/* Плоские строки настроек внутри секции-карточки (без двойных рамок). */
 .settings-option {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 18px;
-  padding: 14px 16px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-panel);
-  background: rgba(255, 255, 255, 0.9);
+  gap: 14px;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+.settings-option--stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
 }
 
 .settings-option-text {
   display: grid;
-  gap: 4px;
+  gap: 3px;
   min-width: 0;
 }
 
 .settings-option-text strong {
-  font-size: 14px;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--text);
 }
 
 .settings-option-hint {
   font-size: 12px;
   color: var(--muted);
-  line-height: 1.45;
+  line-height: 1.4;
 }
 
 /* Переключатель в стиле приложения */
@@ -1822,14 +1839,14 @@ body.desktop-shell .object-editor-panel {
   appearance: none;
   -webkit-appearance: none;
   flex: none;
-  width: 46px;
-  min-width: 46px;
-  height: 26px;
+  width: 40px;
+  min-width: 40px;
+  height: 22px;
   margin: 0;
   padding: 0;
   border: 0;
   border-radius: 999px;
-  background: rgba(40, 58, 96, 0.22);
+  background: rgba(40, 58, 96, 0.2);
   position: relative;
   cursor: pointer;
   transition: background-color 140ms ease;
@@ -1840,8 +1857,8 @@ body.desktop-shell .object-editor-panel {
   position: absolute;
   top: 3px;
   left: 3px;
-  width: 20px;
-  height: 20px;
+  width: 16px;
+  height: 16px;
   border-radius: 999px;
   background: #fff;
   box-shadow: 0 1px 3px rgba(18, 28, 45, 0.28);
@@ -1853,7 +1870,7 @@ body.desktop-shell .object-editor-panel {
 }
 
 .settings-option input[type="checkbox"]:checked::after {
-  transform: translateX(20px);
+  transform: translateX(18px);
 }
 
 .settings-option input[type="checkbox"]:focus-visible {

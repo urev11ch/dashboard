@@ -1255,6 +1255,12 @@ def resolve_result_label(default_label: str, result_labels: dict[str, str] | Non
     return custom or RESULT_LABEL_DEFAULTS[category]
 
 
+def resolve_result_kind(default_label: str) -> str:
+    """Категория результата (`completed`/`check`) по стандартной строке ядра —
+    для цветовой индикации на фронтенде независимо от текста подписи."""
+    return _RESULT_CATEGORY_BY_DEFAULT.get(default_label, "")
+
+
 def load_app_settings() -> dict[str, Any]:
     try:
         payload = json.loads(app_settings_path().read_text(encoding="utf-8"))
@@ -2172,13 +2178,12 @@ def build_wash_rows(analysis: core.AnalysisResult) -> list[dict[str, Any]]:
     for cycle in analysis.sorted_cycles:
         cycle_key = core.make_cycle_key(cycle)
         date_time = core.format_ts(cycle.start_ts)
-        status = resolve_result_label(
-            analysis.cycle_results_by_key.get(
-                cycle_key,
-                core.cycle_result_label_from_operations(cycle.operations),
-            ),
-            result_labels,
+        default_status = analysis.cycle_results_by_key.get(
+            cycle_key,
+            core.cycle_result_label_from_operations(cycle.operations),
         )
+        result_kind = resolve_result_kind(default_status)
+        status = resolve_result_label(default_status, result_labels)
         source_name = format_source_label(cycle.source_db)
         rows.append(
             {
@@ -2191,6 +2196,7 @@ def build_wash_rows(analysis: core.AnalysisResult) -> list[dict[str, Any]]:
                 "object": cycle.object_name,
                 "program": cycle.program_name,
                 "status": status,
+                "result_kind": result_kind,
                 "channel": cycle.channel,
                 "duration": core.format_duration(cycle.duration_seconds),
                 "duration_seconds": cycle.duration_seconds,
@@ -2286,6 +2292,10 @@ def set_cached_chart_payload(analysis_revision: int, key: str, payload: dict[str
 
 def build_wash_detail(analysis: core.AnalysisResult, key: str) -> dict[str, Any]:
     cycle = find_cycle(analysis, key)
+    default_status = analysis.cycle_results_by_key.get(
+        key,
+        core.cycle_result_label_from_operations(cycle.operations),
+    )
 
     return {
         "key": key,
@@ -2298,13 +2308,8 @@ def build_wash_detail(analysis: core.AnalysisResult, key: str) -> dict[str, Any]
         "object_name": cycle.object_name,
         "program": cycle.program_name,
         "channel": cycle.channel,
-        "status": resolve_result_label(
-            analysis.cycle_results_by_key.get(
-                key,
-                core.cycle_result_label_from_operations(cycle.operations),
-            ),
-            load_app_settings()["result_labels"],
-        ),
+        "status": resolve_result_label(default_status, load_app_settings()["result_labels"]),
+        "result_kind": resolve_result_kind(default_status),
         "duration": core.format_duration(cycle.duration_seconds),
         "chart_data_url": f"/api/wash-chart-data?key={quote(key, safe='')}",
     }

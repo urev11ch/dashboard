@@ -626,8 +626,11 @@
       .replaceAll('"', "&quot;");
   }
 
-  function badgeClass(status) {
-    return status.startsWith("Завершено") ? "badge ok" : "badge warn";
+  function badgeClass(status, kind) {
+    // Цвет по категории результата (независимо от текста подписи). Если категория
+    // не передана — резерв по тексту для обратной совместимости.
+    const resolved = kind || (String(status || "").startsWith("Завершено") ? "completed" : "check");
+    return resolved === "completed" ? "badge ok" : "badge warn";
   }
 
   function formatModalDateTime(value) {
@@ -1105,7 +1108,7 @@
           <span class="wash-chip" title="${escapeHtml(row.duration)}">${escapeHtml(row.duration)}</span>
         </div>
         <div class="wash-cell wash-cell--status">
-          <span class="${badgeClass(row.status)}" title="${escapeHtml(row.status)}">${escapeHtml(row.status)}</span>
+          <span class="${badgeClass(row.status, row.result_kind)}" title="${escapeHtml(row.status)}">${escapeHtml(row.status)}</span>
           <button type="button" class="wash-row-pdf-button" data-download-row-pdf title="PDF" aria-label="PDF">PDF</button>
         </div>
       </div>
@@ -2476,7 +2479,7 @@
                   </tr>
                   <tr data-wash-result-row>
                     <th scope="row">Результат</th>
-                    <td>${escapeHtml(detail.status)}</td>
+                    <td><span class="${badgeClass(detail.status, detail.result_kind)}">${escapeHtml(detail.status)}</span></td>
                   </tr>
                 </tbody>
               </table>

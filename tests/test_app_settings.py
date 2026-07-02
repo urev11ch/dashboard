@@ -117,6 +117,14 @@ def test_result_labels_custom_override(tmp_path, monkeypatch):
     assert app.resolve_result_label("прочее", labels) == "прочее"
 
 
+def test_result_kind_mapping():
+    assert app.resolve_result_kind("Завершено штатно") == "completed"
+    assert app.resolve_result_kind("Завершено, были паузы") == "completed"
+    assert app.resolve_result_kind("Требует проверки") == "check"
+    assert app.resolve_result_kind("Требует проверки, были паузы") == "check"
+    assert app.resolve_result_kind("прочее") == ""
+
+
 def test_result_labels_length_capped(tmp_path, monkeypatch):
     monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
     long_value = "я" * 500
