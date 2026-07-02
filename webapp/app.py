@@ -21,7 +21,7 @@ from collections import OrderedDict
 from urllib.parse import quote, unquote, urlsplit
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import date, datetime, time as datetime_time
+from datetime import date, datetime, time as datetime_time, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Stre
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from runtime_paths import resolve_cache_root, resolve_default_workspace_root, resolve_runtime_root
+from runtime_paths import resolve_cache_root, resolve_runtime_root
 import wash_report as core
 from webapp.chart_payload import build_cycle_chart_payload
 
@@ -51,16 +51,15 @@ def resolve_workspace_input_value(
     if current_root is not None:
         return str(current_root)
 
-    if getattr(sys, "frozen", False):
-        return str(resolve_default_workspace_root())
-
-    return str(PROJECT_ROOT)
+    # По умолчанию — локальная папка со скачанными архивами (datalog). Она
+    # определяется per-user (%LOCALAPPDATA%\OptiCIP Dashboard\datalog на Windows),
+    # поэтому на каждом ПК подставляется путь текущего пользователя автоматически.
+    return str(DATALOG_ROOT)
 
 
 def resolve_workspace_path_placeholder() -> str:
-    if sys.platform == "win32":
-        return r"C:\Data\OptiCIP"
-    return "/Users/.../DataBase"
+    # Подсказка = фактическая папка со скачанными архивами текущего пользователя.
+    return str(DATALOG_ROOT)
 
 
 PROJECT_ROOT = resolve_project_root()
@@ -109,12 +108,14 @@ FTP_SOURCES_VERSION = 1
 FTP_CONNECT_TIMEOUT_SECONDS = 10
 FTP_DEFAULT_PORT = 21
 FTP_DOWNLOAD_MAX_DEPTH = 24
-FTP_DOWNLOAD_DATE_FORMAT = "%Y-%m-%d"
+# Запас при сравнении времени модификации (сек): гасит секундные округления
+# MDTM/MLSD и разницу файловых систем, чтобы не перекачивать неизменившиеся файлы.
+FTP_MTIME_TOLERANCE_SECONDS = 2.0
 FTP_HOST_RE = re.compile(r"^[A-Za-z0-9._:\-\[\]]+$")
 DEFAULT_FTP_FORM_VALUES = {
     "host": "",
     "port": "21",
-    "username": "",
+    "username": "uploadhis",
     "password": "",
     "path": "/datalog",
 }
@@ -555,17 +556,73 @@ def open_ftp_connection(config: dict[str, Any]) -> ftplib.FTP:
     return connection
 
 
-def _ftp_list_entries(connection: ftplib.FTP, remote_dir: str) -> list[tuple[str, bool]]:
-    entries: list[tuple[str, bool]] = []
+def _parse_ftp_timestamp(value: str) -> float | None:
+    """Разбирает время FTP формата `YYYYMMDDHHMMSS[.fff]` (UTC) в epoch-секунды."""
+    if not value:
+        return None
+    digits = value.strip()
+    if "." in digits:
+        digits = digits.split(".", 1)[0]
+    if len(digits) < 14 or not digits[:14].isdigit():
+        return None
+    try:
+        parsed = datetime.strptime(digits[:14], "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=timezone.utc).timestamp()
+
+
+def _parse_mdtm_reply(reply: str) -> float | None:
+    """Разбирает ответ команды MDTM вида `213 YYYYMMDDHHMMSS`."""
+    if not reply:
+        return None
+    parts = reply.split()
+    if not parts:
+        return None
+    candidate = parts[-1] if len(parts) > 1 and parts[0].isdigit() else parts[0]
+    return _parse_ftp_timestamp(candidate)
+
+
+def _ftp_remote_size(connection: ftplib.FTP, remote_path: str) -> int | None:
+    try:
+        return connection.size(remote_path)
+    except (ftplib.error_perm, ftplib.error_temp, ftplib.error_proto, OSError):
+        return None
+
+
+def _ftp_remote_mtime(connection: ftplib.FTP, remote_path: str) -> float | None:
+    try:
+        reply = connection.sendcmd(f"MDTM {remote_path}")
+    except (ftplib.error_perm, ftplib.error_temp, ftplib.error_proto, OSError):
+        return None
+    return _parse_mdtm_reply(reply)
+
+
+def _ftp_list_entries(
+    connection: ftplib.FTP, remote_dir: str
+) -> list[tuple[str, bool, dict[str, Any]]]:
+    entries: list[tuple[str, bool, dict[str, Any]]] = []
     try:
         for name, facts in connection.mlsd(remote_dir):
             if name in {"", ".", ".."}:
                 continue
             entry_type = str(facts.get("type") or "").lower()
             if entry_type in {"dir", "cdir", "pdir"}:
-                entries.append((name, True))
+                entries.append((name, True, {}))
             elif entry_type == "file":
-                entries.append((name, False))
+                meta: dict[str, Any] = {}
+                size_raw = facts.get("size")
+                if size_raw is not None:
+                    try:
+                        meta["size"] = int(size_raw)
+                    except (TypeError, ValueError):
+                        pass
+                modify_raw = facts.get("modify")
+                if modify_raw:
+                    mtime = _parse_ftp_timestamp(str(modify_raw))
+                    if mtime is not None:
+                        meta["mtime"] = mtime
+                entries.append((name, False, meta))
         return entries
     except (ftplib.error_perm, ftplib.error_proto, ftplib.error_temp, OSError):
         pass
@@ -582,13 +639,18 @@ def _ftp_list_entries(connection: ftplib.FTP, remote_dir: str) -> list[tuple[str
             continue
         full = raw_name if raw_name.startswith("/") else posixpath.join(remote_dir, name)
         is_dir = False
+        meta = {}
         try:
-            connection.size(full)
+            size_value = connection.size(full)
         except (ftplib.error_perm, ftplib.error_temp):
             is_dir = True
+            size_value = None
         except OSError:
             is_dir = False
-        entries.append((name, is_dir))
+            size_value = None
+        if not is_dir and size_value is not None:
+            meta["size"] = size_value
+        entries.append((name, is_dir, meta))
     return entries
 
 
@@ -598,12 +660,12 @@ def _ftp_walk_files(
     *,
     cancel_check: Callable[[], bool] | None = None,
     depth: int = 0,
-) -> list[str]:
+) -> list[tuple[str, dict[str, Any]]]:
     if depth > FTP_DOWNLOAD_MAX_DEPTH:
         return []
 
-    discovered: list[str] = []
-    for name, is_dir in _ftp_list_entries(connection, remote_dir):
+    discovered: list[tuple[str, dict[str, Any]]] = []
+    for name, is_dir, meta in _ftp_list_entries(connection, remote_dir):
         if cancel_check is not None and cancel_check():
             raise core.AnalysisCancelledError("Открытие источника было отменено пользователем.")
         full = posixpath.join(remote_dir, name)
@@ -612,7 +674,7 @@ def _ftp_walk_files(
                 _ftp_walk_files(connection, full, cancel_check=cancel_check, depth=depth + 1)
             )
         else:
-            discovered.append(full)
+            discovered.append((full, meta))
     return discovered
 
 
@@ -626,6 +688,64 @@ def _ftp_relative_target(remote_root: str, remote_file: str) -> Path:
     if safe_path is None:
         return Path(PurePosixPath(remote_file).name or "download.db")
     return safe_path
+
+
+def _is_archive_or_db_name(name: str) -> bool:
+    """Похоже ли имя на базу `.db` или поддерживаемый архив."""
+    lower_name = name.lower()
+    return lower_name.endswith(".db") or any(
+        lower_name.endswith(suffix) for suffix in SUPPORTED_ARCHIVE_SUFFIXES
+    )
+
+
+def build_local_archive_index(root_path: Path) -> dict[Any, dict[str, Any]]:
+    """Индекс уже скачанных архивов/баз под `root_path` для пропуска повторных загрузок.
+
+    Ключи двух видов: относительный путь (совпадает с `_ftp_relative_target`)
+    для файлов в зеркале и кортеж `("name", имя, размер)` — чтобы распознавать
+    копии, лежащие в старых подпапках-по-дате. Значение: `size`, `mtime`, `path`.
+    """
+    index: dict[Any, dict[str, Any]] = {}
+    root_resolved = root_path.resolve()
+    try:
+        candidates = list(root_path.rglob("*"))
+    except OSError:
+        return index
+    for candidate in candidates:
+        try:
+            if not candidate.is_file() or not _is_archive_or_db_name(candidate.name):
+                continue
+            stat_result = candidate.stat()
+        except OSError:
+            continue
+        resolved = candidate.resolve()
+        entry = {"size": stat_result.st_size, "mtime": stat_result.st_mtime, "path": resolved}
+        try:
+            rel_key = resolved.relative_to(root_resolved).as_posix()
+        except ValueError:
+            rel_key = candidate.name
+        index.setdefault(rel_key, entry)
+        index.setdefault(("name", candidate.name, stat_result.st_size), entry)
+    return index
+
+
+def _should_skip_download(
+    local_meta: dict[str, Any] | None,
+    remote_size: int | None,
+    remote_mtime: float | None,
+) -> bool:
+    """Можно ли не скачивать файл: локальная копия есть, размер совпал и она не старше панели."""
+    if local_meta is None or remote_size is None:
+        return False
+    local_size = local_meta.get("size")
+    if local_size is None or int(local_size) != int(remote_size):
+        return False
+    if remote_mtime is None:
+        return True
+    local_mtime = local_meta.get("mtime")
+    if local_mtime is None:
+        return True
+    return local_mtime + FTP_MTIME_TOLERANCE_SECONDS >= remote_mtime
 
 
 def download_ftp_files(
@@ -645,7 +765,11 @@ def download_ftp_files(
         item=format_ftp_display_label(config),
     )
     connection = open_ftp_connection(config)
-    downloaded: list[Path] = []
+    # Все файлы панели, которые сейчас представлены локально (скачанные + пропущенные).
+    present_files: list[Path] = []
+    downloaded_count = 0
+    skipped_count = 0
+    local_index = build_local_archive_index(target_dir)
     try:
         try:
             connection.voidcmd("TYPE I")
@@ -653,20 +777,47 @@ def download_ftp_files(
             pass
 
         remote_files = [
-            remote_file
-            for remote_file in _ftp_walk_files(connection, remote_root, cancel_check=cancel_check)
-            if remote_file.lower().endswith(".db")
-            or any(remote_file.lower().endswith(suffix) for suffix in SUPPORTED_ARCHIVE_SUFFIXES)
+            (remote_file, meta)
+            for remote_file, meta in _ftp_walk_files(
+                connection, remote_root, cancel_check=cancel_check
+            )
+            if _is_archive_or_db_name(remote_file)
         ]
 
         total = len(remote_files)
-        for index, remote_file in enumerate(remote_files, start=1):
+        for index, (remote_file, meta) in enumerate(remote_files, start=1):
             if cancel_check is not None and cancel_check():
                 raise core.AnalysisCancelledError("Открытие источника было отменено пользователем.")
 
             relative_target = _ftp_relative_target(remote_root, remote_file)
             target_path = target_dir / relative_target
             target_path.parent.mkdir(parents=True, exist_ok=True)
+
+            remote_size = meta.get("size")
+            if remote_size is None:
+                remote_size = _ftp_remote_size(connection, remote_file)
+            remote_mtime = meta.get("mtime")
+            if remote_mtime is None:
+                remote_mtime = _ftp_remote_mtime(connection, remote_file)
+
+            rel_key = relative_target.as_posix()
+            local_meta = local_index.get(rel_key)
+            if local_meta is None and remote_size is not None:
+                local_meta = local_index.get(("name", relative_target.name, remote_size))
+
+            if _should_skip_download(local_meta, remote_size, remote_mtime):
+                skipped_count += 1
+                core.emit_progress(
+                    progress_callback,
+                    phase="ftp",
+                    message=f"Файл {index} из {total} не изменился, пропускаю.",
+                    current=index - 1,
+                    total=total,
+                    item=relative_target.name,
+                )
+                existing_path = local_meta.get("path") if local_meta else None
+                present_files.append(Path(existing_path) if existing_path else target_path.resolve())
+                continue
 
             core.emit_progress(
                 progress_callback,
@@ -687,7 +838,28 @@ def download_ftp_files(
                     f"Не удалось скачать файл `{remote_file}` с FTP: {exc}"
                 ) from exc
 
-            downloaded.append(target_path.resolve())
+            # Сохраняем время панели, чтобы на следующих запусках сравнение по времени работало.
+            if remote_mtime is not None:
+                try:
+                    os.utime(target_path, (remote_mtime, remote_mtime))
+                except OSError:
+                    pass
+
+            resolved = target_path.resolve()
+            downloaded_count += 1
+            present_files.append(resolved)
+            # Обновляем индекс, чтобы дубликаты в этом же прогоне тоже пропускались.
+            try:
+                stat_result = target_path.stat()
+                fresh_entry = {
+                    "size": stat_result.st_size,
+                    "mtime": stat_result.st_mtime,
+                    "path": resolved,
+                }
+                local_index[rel_key] = fresh_entry
+                local_index[("name", relative_target.name, stat_result.st_size)] = fresh_entry
+            except OSError:
+                pass
     finally:
         try:
             connection.quit()
@@ -700,12 +872,12 @@ def download_ftp_files(
     core.emit_progress(
         progress_callback,
         phase="ftp",
-        message="Файлы с FTP получены.",
-        current=len(downloaded),
-        total=len(downloaded),
-        item=f"{len(downloaded)} файлов",
+        message=f"Файлы с FTP получены: скачано {downloaded_count}, пропущено {skipped_count} (без изменений).",
+        current=len(present_files),
+        total=len(present_files),
+        item=f"{downloaded_count} новых из {len(present_files)}",
     )
-    return downloaded
+    return present_files
 
 
 def datalog_has_archives(root_path: Path) -> bool:
@@ -714,10 +886,7 @@ def datalog_has_archives(root_path: Path) -> bool:
         for candidate in root_path.rglob("*"):
             if not candidate.is_file():
                 continue
-            lower_name = candidate.name.lower()
-            if lower_name.endswith(".db") or any(
-                lower_name.endswith(suffix) for suffix in SUPPORTED_ARCHIVE_SUFFIXES
-            ):
+            if _is_archive_or_db_name(candidate.name):
                 return True
     except OSError:
         return False
@@ -730,14 +899,15 @@ def materialize_ftp_sources(
     progress_callback: core.ProgressCallback | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> int:
-    """Скачивает архивы активной FTP-панели в `datalog/<id>/<дата>/` и
-    возвращает число скачанных файлов.
+    """Синхронизирует архивы активной FTP-панели в зеркало `datalog/<id>/` и
+    возвращает число файлов панели, представленных локально.
 
     Папка профиля определяется по `root_path` (это `datalog/<id>`); параметры
-    подключения берутся из реестра по `id`. Папка не очищается: каждая загрузка
-    добавляет новую подпапку по дате, а повторяющиеся мойки убираются позже на
-    этапе анализа. Если FTP недоступен, но локальные архивы уже есть — работаем
-    с ними. Для обычной папки (folder mode) функция ничего не делает."""
+    подключения берутся из реестра по `id`. Загрузка инкрементальная: файлы,
+    уже скачанные и не изменившиеся на панели (совпал размер и время не новее),
+    повторно не качаются (см. `download_ftp_files`). Если FTP недоступен, но
+    локальные архивы уже есть — работаем с ними. Для обычной папки (folder mode)
+    функция ничего не делает."""
     try:
         is_ftp_profile = root_path.resolve().parent == DATALOG_ROOT
     except OSError:
@@ -750,8 +920,9 @@ def materialize_ftp_sources(
         return 0
     config = connection_to_config(connection)
 
-    date_folder = time.strftime(FTP_DOWNLOAD_DATE_FORMAT, time.localtime())
-    download_dir = root_path / date_folder
+    # Стабильное зеркало панели: качаем прямо в профиль, без подпапок по дате,
+    # чтобы проверка «файл уже есть» работала между запусками.
+    download_dir = root_path
     download_dir.mkdir(parents=True, exist_ok=True)
 
     try:

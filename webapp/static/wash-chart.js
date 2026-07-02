@@ -840,57 +840,31 @@
       controls.innerHTML = `
         ${
           container.classList.contains("chart-host--modal")
-            ? `
-              <div class="wash-chart-controls-header">
-                <div class="wash-chart-controls-copy">
-                  <span class="wash-chart-controls-eyebrow">Настройка кривых</span>
-                  <strong>Цвет и вид линий</strong>
-                  <p>Подберите оформление каждой линии прямо в окне графика.</p>
-                </div>
-              </div>
-            `
+            ? `<div class="wash-chart-controls-title">Настройка кривых</div>`
             : ""
         }
         <div class="wash-chart-controls-grid">
           ${styledPayload.series
             .map((series) => {
-              const dashAttribute = series.dasharray ? `stroke-dasharray="${series.dasharray}"` : "";
               const safeLabel = escapeHtml(series.label);
-              const lineStyleLabel = getLineStyleOption(series.lineStyle).label;
               return `
                 <div class="wash-chart-control" style="--wash-chart-series-color: ${series.color};">
-                  <div class="wash-chart-control-header">
-                    <div class="wash-chart-control-heading">
-                      <span class="wash-chart-control-kicker">Кривая</span>
-                      <div class="wash-chart-control-name">${safeLabel}</div>
-                    </div>
+                  <div class="wash-chart-control-top">
                     <span class="wash-chart-control-swatch" aria-hidden="true"></span>
-                  </div>
-                  <div class="wash-chart-control-preview" aria-hidden="true">
-                    <svg viewBox="0 0 168 34" focusable="false">
-                      <path d="M8 25C30 25 30 10 52 10C74 10 74 25 96 25C118 25 118 12 140 12C152 12 157 18 160 22" fill="none" stroke="${series.color}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" ${dashAttribute}></path>
-                    </svg>
+                    <span class="wash-chart-control-name">${safeLabel}</span>
                   </div>
                   <div class="wash-chart-control-fields">
-                    <label class="wash-chart-control-field wash-chart-control-field--color">
-                      <span class="wash-chart-control-label">Цвет</span>
-                      <span class="wash-chart-color-input-shell">
-                        <input type="color" value="${series.color}" data-series-color="${series.id}" aria-label="Цвет ${safeLabel}">
-                        <span class="wash-chart-color-value">${series.color.toUpperCase()}</span>
-                      </span>
-                    </label>
-                    <label class="wash-chart-control-field wash-chart-control-field--line">
-                      <span class="wash-chart-control-label">Вид кривой</span>
-                      <span class="wash-chart-select-shell">
-                        <select data-series-line-style="${series.id}" aria-label="Тип линии ${safeLabel}">
-                          ${LINE_STYLE_OPTIONS.map(
-                            (option) =>
-                              `<option value="${option.id}" ${option.id === series.lineStyle ? "selected" : ""}>${option.label}</option>`
-                          ).join("")}
-                        </select>
-                      </span>
-                      <span class="wash-chart-control-hint">${lineStyleLabel}</span>
-                    </label>
+                    <span class="wash-chart-color-input-shell">
+                      <input type="color" value="${series.color}" data-series-color="${series.id}" aria-label="Цвет ${safeLabel}">
+                    </span>
+                    <span class="wash-chart-select-shell">
+                      <select data-series-line-style="${series.id}" aria-label="Тип линии ${safeLabel}">
+                        ${LINE_STYLE_OPTIONS.map(
+                          (option) =>
+                            `<option value="${option.id}" ${option.id === series.lineStyle ? "selected" : ""}>${option.label}</option>`
+                        ).join("")}
+                      </select>
+                    </span>
                   </div>
                 </div>
               `;

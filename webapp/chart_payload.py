@@ -11,17 +11,17 @@ MAX_CHART_POINTS = 900
 
 SERIES_CONFIG = (
     {
-        "id": "temperature_return",
-        "label": "Температура возврата",
-        "unit": "C",
-        "color": "#dc2626",
-        "panel": 0,
-    },
-    {
         "id": "temperature_supply",
         "label": "Температура подачи",
         "unit": "C",
         "color": "#2563eb",
+        "panel": 0,
+    },
+    {
+        "id": "temperature_return",
+        "label": "Температура возврата",
+        "unit": "C",
+        "color": "#dc2626",
         "panel": 0,
     },
     {
