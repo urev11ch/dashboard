@@ -67,10 +67,22 @@ def resolve_cache_root(dirname: str) -> Path:
     return Path(tempfile.gettempdir()) / dirname
 
 
+def _resolve_posix_state_root() -> Path:
+    """Writable-каталог состояния приложения на не-Windows (логи, профиль
+    WebView и т. п.) — вместо общего /tmp с предсказуемыми именами."""
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / APP_DIRNAME
+
+    xdg_state_home = str(os.environ.get("XDG_STATE_HOME") or "").strip()
+    if xdg_state_home:
+        return Path(xdg_state_home) / LINUX_RUNTIME_DIRNAME
+    return Path.home() / ".local" / "state" / LINUX_RUNTIME_DIRNAME
+
+
 def resolve_log_root() -> Path:
     if sys.platform == "win32":
         return resolve_runtime_root() / "logs"
-    return Path(tempfile.gettempdir())
+    return _resolve_posix_state_root() / "logs"
 
 
 def resolve_default_workspace_root() -> Path:

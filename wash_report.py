@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
 import sqlite3
 from bisect import bisect_left, bisect_right
@@ -24,6 +26,8 @@ REQUIRED_DATA_COLUMNS = {
 }
 
 OBJECT_NAME_OVERRIDES: dict[tuple[int, int], str] = {}
+
+logger = logging.getLogger(__name__)
 
 PROCESS_NAMES = {
     0: "Нет операций",
@@ -89,12 +93,14 @@ class AnalysisCancelledError(RuntimeError):
 
 @dataclass(slots=True)
 class Sample:
+    # Метрики опциональны: NULL в архиве (обрыв связи панели с контроллером)
+    # хранится как None и не должен попадать в статистику и на график.
     ts: float
-    concentration_return: float
-    temperature_return: float
-    temperature_supply: float
-    pressure_supply: float
-    flow_supply: float
+    concentration_return: float | None
+    temperature_return: float | None
+    temperature_supply: float | None
+    pressure_supply: float | None
+    flow_supply: float | None
     process: int
     program: int
     object_id: int
@@ -260,21 +266,24 @@ def emit_progress(
     *,
     phase: str,
     message: str,
-    current: int = 0,
-    total: int = 0,
+    current: int | None = None,
+    total: int | None = None,
     item: str = "",
 ) -> None:
     if progress_callback is None:
         return
-    progress_callback(
-        {
-            "phase": phase,
-            "message": message,
-            "current": current,
-            "total": total,
-            "item": item,
-        }
-    )
+    # Не заданные вызывающим current/total не попадают в событие: получатель
+    # сохраняет прежние значения, и прогресс-бар не сбрасывается к нулю.
+    payload: dict[str, object] = {
+        "phase": phase,
+        "message": message,
+        "item": item,
+    }
+    if current is not None:
+        payload["current"] = current
+    if total is not None:
+        payload["total"] = total
+    progress_callback(payload)
 
 def build_cycle_segment_index(
     cycles: Sequence[Cycle],
@@ -378,9 +387,25 @@ def infer_channel(db_path: Path) -> int:
         )
     return int(match.group(1))
 
+def sqlite_read_only_uri(db_path: Path | str) -> str:
+    """URI для открытия архива строго на чтение: обычный sqlite3.connect
+    открывает файл на запись и создаёт его, если файла нет.
+
+    Спецсимволы sqlite URI (`%`, `?`, `#`) в пути экранируем по документации
+    https://www.sqlite.org/uri.html."""
+    text = str(db_path)
+    if os.name == "nt":
+        # На Windows sqlite ожидает в URI прямые слэши.
+        text = text.replace("\\", "/")
+    text = text.replace("%", "%25").replace("?", "%3f").replace("#", "%23")
+    return f"file:{text}?mode=ro"
+
+def connect_read_only(db_path: Path | str) -> sqlite3.Connection:
+    return sqlite3.connect(sqlite_read_only_uri(db_path), uri=True)
+
 def preflight_db_file(db_path: Path) -> int:
     channel = infer_channel(db_path)
-    connection = sqlite3.connect(str(db_path))
+    connection = connect_read_only(db_path)
     try:
         has_data_table = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'data' LIMIT 1"
@@ -509,6 +534,12 @@ def format_ts(timestamp: float) -> str:
 def source_key(path: Path | str) -> str:
     return str(Path(path).expanduser().resolve())
 
+def optional_metric(value: object) -> float | None:
+    """NULL из архива не превращаем в 0.0 — иначе он попадает в min/avg."""
+    if value is None:
+        return None
+    return float(value)
+
 def is_wash_sample(sample: Sample) -> bool:
     return (
         sample.process in WASH_PROCESS_CODES
@@ -537,10 +568,11 @@ def read_samples(
         WHERE [time@timestamp] IS NOT NULL
         ORDER BY [time@timestamp]
     """
-    connection = sqlite3.connect(str(db_path))
+    connection = connect_read_only(db_path)
     try:
         cursor = connection.execute(query)
         samples: list[Sample] = []
+        skipped_rows = 0
         while True:
             if cancel_check is not None and cancel_check():
                 raise AnalysisCancelledError("Обработка базы была отменена пользователем.")
@@ -550,21 +582,32 @@ def read_samples(
                 break
 
             for row in rows:
-                samples.append(
-                    Sample(
+                # Битую строку (нечисловые значения) пропускаем, файл
+                # продолжаем анализировать дальше.
+                try:
+                    sample = Sample(
                         ts=float(row[0]),
-                        concentration_return=float(row[1] or 0.0),
-                        temperature_return=float(row[2] or 0.0),
-                        temperature_supply=float(row[3] or 0.0),
-                        pressure_supply=float(row[4] or 0.0),
-                        flow_supply=float(row[5] or 0.0),
+                        concentration_return=optional_metric(row[1]),
+                        temperature_return=optional_metric(row[2]),
+                        temperature_supply=optional_metric(row[3]),
+                        pressure_supply=optional_metric(row[4]),
+                        flow_supply=optional_metric(row[5]),
                         process=int(row[6] or 0),
                         program=int(row[7] or 0),
                         object_id=int(row[8] or 0),
                     )
-                )
+                except (ValueError, TypeError):
+                    skipped_rows += 1
+                    continue
+                samples.append(sample)
     finally:
         connection.close()
+    if skipped_rows:
+        logger.warning(
+            "Файл %s: пропущено %d строк с нечисловыми значениями.",
+            Path(db_path).name,
+            skipped_rows,
+        )
     return samples
 
 def new_metrics() -> dict[str, StatsBundle]:
@@ -577,11 +620,17 @@ def new_metrics() -> dict[str, StatsBundle]:
     }
 
 def add_sample_to_metrics(metrics: dict[str, StatsBundle], sample: Sample) -> None:
-    metrics["concentration_return"].add(sample.concentration_return)
-    metrics["temperature_return"].add(sample.temperature_return)
-    metrics["temperature_supply"].add(sample.temperature_supply)
-    metrics["pressure_supply"].add(sample.pressure_supply)
-    metrics["flow_supply"].add(sample.flow_supply)
+    # None (NULL в архиве) в статистику не добавляем.
+    if sample.concentration_return is not None:
+        metrics["concentration_return"].add(sample.concentration_return)
+    if sample.temperature_return is not None:
+        metrics["temperature_return"].add(sample.temperature_return)
+    if sample.temperature_supply is not None:
+        metrics["temperature_supply"].add(sample.temperature_supply)
+    if sample.pressure_supply is not None:
+        metrics["pressure_supply"].add(sample.pressure_supply)
+    if sample.flow_supply is not None:
+        metrics["flow_supply"].add(sample.flow_supply)
 
 def build_segments(samples: Sequence[Sample], db_path: Path, channel: int) -> list[Segment]:
     segments: list[Segment] = []
@@ -790,6 +839,9 @@ def build_object_overviews(
     # Объект уникален по (канал, объект); один и тот же объект из нескольких
     # архивов объединяем в одну запись, чтобы он не дублировался в списке.
     grouped: dict[tuple[int, int], dict[str, object]] = {}
+    # Перекрывающиеся архивы содержат одни и те же строки — считаем каждый
+    # сэмпл один раз. Храним только ключи (канал, метка времени), не копии.
+    seen_sample_keys: set[tuple[int, float]] = set()
 
     for source_db, samples in samples_by_db.items():
         channel = channels_by_db[source_db]
@@ -797,10 +849,15 @@ def build_object_overviews(
             if sample.object_id <= 0:
                 continue
 
+            sample_key = (channel, sample.ts)
+            if sample_key in seen_sample_keys:
+                continue
+            seen_sample_keys.add(sample_key)
+
             key = (channel, sample.object_id)
-            entry = grouped.setdefault(
-                key,
-                {
+            entry = grouped.get(key)
+            if entry is None:
+                entry = grouped[key] = {
                     "source_db": source_db,
                     "start_ts": sample.ts,
                     "end_ts": sample.ts,
@@ -808,8 +865,7 @@ def build_object_overviews(
                     "program_ids": set(),
                     "process_ids": set(),
                     "metrics": new_metrics(),
-                },
-            )
+                }
             entry["start_ts"] = min(entry["start_ts"], sample.ts)
             entry["end_ts"] = max(entry["end_ts"], sample.ts)
             entry["sample_count"] += 1
@@ -963,6 +1019,22 @@ def deduplicate_cycles(cycles: Sequence[Cycle]) -> list[Cycle]:
             best_by_signature[signature] = cycle
     return list(best_by_signature.values())
 
+def deduplicate_wash_intervals(intervals: Sequence[WashInterval]) -> list[WashInterval]:
+    """Аналог deduplicate_cycles для интервалов моек: перекрывающиеся архивы
+    дают одни и те же интервалы, оставляем самую полную запись."""
+    best_by_signature: dict[tuple[int, int, int, int], WashInterval] = {}
+    for interval in intervals:
+        signature = (
+            interval.channel,
+            interval.object_id,
+            interval.program_id,
+            int(round(interval.start_ts)),
+        )
+        existing = best_by_signature.get(signature)
+        if existing is None or interval.sample_count > existing.sample_count:
+            best_by_signature[signature] = interval
+    return list(best_by_signature.values())
+
 
 def build_analysis_result(
     db_files: Sequence[str | Path],
@@ -990,6 +1062,7 @@ def build_analysis_result(
         all_wash_intervals.extend(chunk.wash_intervals)
 
     all_cycles = deduplicate_cycles(all_cycles)
+    all_wash_intervals = deduplicate_wash_intervals(all_wash_intervals)
 
     all_overviews = build_object_overviews(samples_by_db, channels_by_db)
     sorted_cycles = sorted(all_cycles, key=lambda item: item.start_ts, reverse=True)

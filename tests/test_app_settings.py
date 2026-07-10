@@ -1,18 +1,9 @@
 """Тесты общих настроек приложения, CSV-экспорта и триггера автообновления FTP."""
-import asyncio
 import json
 
 import pytest
 
 import webapp.app as app
-
-
-class _FakeRequest:
-    def __init__(self, payload):
-        self._payload = payload
-
-    async def json(self):
-        return self._payload
 
 
 # ---- настройки --------------------------------------------------------------
@@ -96,8 +87,8 @@ def test_default_folder_path_used_when_set(tmp_path, monkeypatch):
 
 def test_settings_route_merges_partial(tmp_path, monkeypatch):
     monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
-    asyncio.run(app.update_app_settings_route(_FakeRequest({"settings": {"default_folder_path": "/data/x"}})))
-    asyncio.run(app.update_app_settings_route(_FakeRequest({"settings": {"ftp_auto_refresh_minutes": 9}})))
+    app.update_app_settings_route({"settings": {"default_folder_path": "/data/x"}})
+    app.update_app_settings_route({"settings": {"ftp_auto_refresh_minutes": 9}})
     result = app.load_app_settings()
     assert result["default_folder_path"] == "/data/x"
     assert result["ftp_auto_refresh_minutes"] == 9

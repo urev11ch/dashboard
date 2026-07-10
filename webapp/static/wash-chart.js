@@ -50,6 +50,13 @@
       .replace(/'/g, "&#39;");
   }
 
+  // Цвет для вставки в HTML-разметку: только #hex или простое имя цвета,
+  // иначе fallback — защита от инъекции через атрибуты style/stroke.
+  function sanitizeCssColor(value) {
+    const color = String(value || "");
+    return /^#[0-9a-fA-F]{3,8}$|^[a-zA-Z]+$/.test(color) ? color : "#627164";
+  }
+
   function normalizeStoredStyleEntry(entry) {
     const normalized = {};
     if (entry && typeof entry === "object") {
@@ -95,7 +102,9 @@
         });
         serverSeriesStyles = normalized;
       } catch (_error) {
-        // Сервер недоступен — оставляем стили по умолчанию из payload.
+        // Сервер недоступен — оставляем стили по умолчанию из payload и
+        // сбрасываем кэш промиса, чтобы следующий вызов повторил запрос.
+        serverHydrationPromise = null;
       }
     })();
     return serverHydrationPromise;
@@ -197,7 +206,24 @@
     return `${value.toFixed(2)} ${unit}`.trim();
   }
 
-  function formatTime(timestamp) {
+  // Смещение таймзоны сервера (meta.tz_offset_min, восток — плюс) в минутах.
+  // null — поля нет, форматируем в таймзоне браузера, как раньше.
+  function resolveTzOffsetMin(payload) {
+    const value = payload?.meta?.tz_offset_min;
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  }
+
+  function formatTime(timestamp, tzOffsetMin = null) {
+    if (tzOffsetMin !== null) {
+      // Сдвигаем epoch на смещение сервера и читаем как UTC — метки совпадают
+      // с таблицами, отформатированными сервером в его таймзоне.
+      return new Intl.DateTimeFormat("ru-RU", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        timeZone: "UTC",
+      }).format(new Date(timestamp + tzOffsetMin * 60000));
+    }
     return new Date(timestamp).toLocaleTimeString("ru-RU", {
       hour: "2-digit",
       minute: "2-digit",
@@ -205,20 +231,28 @@
     });
   }
 
-  function formatTimeAxisLabel(timestamp, domainStart, domainEnd) {
-    const dateFormatter = new Intl.DateTimeFormat("ru-RU");
+  function formatTimeAxisLabel(timestamp, domainStart, domainEnd, tzOffsetMin = null) {
+    const useServerTz = tzOffsetMin !== null;
+    const shift = useServerTz ? tzOffsetMin * 60000 : 0;
+    const tzOptions = useServerTz ? { timeZone: "UTC" } : {};
+    const dateFormatter = new Intl.DateTimeFormat("ru-RU", tzOptions);
     const timeFormatter = new Intl.DateTimeFormat("ru-RU", {
       hour: "2-digit",
       minute: "2-digit",
       second: "2-digit",
+      ...tzOptions,
     });
 
     const datePart =
-      dateFormatter.format(domainStart) === dateFormatter.format(domainEnd)
+      dateFormatter.format(domainStart + shift) === dateFormatter.format(domainEnd + shift)
         ? ""
-        : new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "2-digit" }).format(timestamp);
+        : new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "2-digit", ...tzOptions }).format(
+            timestamp + shift
+          );
 
-    return datePart ? `${datePart}\n${timeFormatter.format(timestamp)}` : timeFormatter.format(timestamp);
+    return datePart
+      ? `${datePart}\n${timeFormatter.format(timestamp + shift)}`
+      : timeFormatter.format(timestamp + shift);
   }
 
   function getTickPrecision(step) {
@@ -576,6 +610,7 @@
             fill: "#ffffff",
             stroke: badge.series.color,
             "stroke-width": 1.2,
+            "data-series-stroke": badge.series.id,
           })
         );
 
@@ -587,6 +622,7 @@
             fill: badge.series.color,
             "font-size": 11,
             "font-weight": 700,
+            "data-series-fill": badge.series.id,
           },
           label
         );
@@ -601,11 +637,22 @@
     const styleState = buildSeriesStyleState(payload.series);
 
     function persistSeriesStyleState() {
+      // Сохраняем только явные отклонения от дефолтов payload, иначе дефолты
+      // всех серий превращаются в вечные оверрайды на сервере.
       payload.series.forEach((series) => {
-        serverSeriesStyles[series.id] = {
-          color: styleState[series.id]?.color || series.color,
-          lineStyle: styleState[series.id]?.lineStyle || "solid",
-        };
+        const style = styleState[series.id] || {};
+        const entry = {};
+        if (isValidHexColor(style.color) && style.color !== series.color) {
+          entry.color = style.color;
+        }
+        if (style.lineStyle && style.lineStyle !== getLineStyleOption(series.line_style).id) {
+          entry.lineStyle = style.lineStyle;
+        }
+        if (Object.keys(entry).length) {
+          serverSeriesStyles[series.id] = entry;
+        } else {
+          delete serverSeriesStyles[series.id];
+        }
       });
       void pushServerSeriesStyles(serverSeriesStyles);
     }
@@ -651,6 +698,7 @@
       const domainStart =
         styledPayload.meta?.start ?? firstSeriesWithPoints?.points?.[0]?.[0] ?? 0;
       const domainEnd = Math.max(styledPayload.meta?.end ?? domainStart, domainStart + 1000);
+      const tzOffsetMin = resolveTzOffsetMin(styledPayload);
       const scaleX = (timestamp) => {
         const ratio = (timestamp - domainStart) / Math.max(domainEnd - domainStart, 1);
         return chartLayout.left + ratio * plotWidth;
@@ -829,13 +877,24 @@
         });
 
         layout.panel.series.forEach((series) => {
-          const path = series.points
-            .map(([timestamp, value], pointIndex) => {
-              const x = scaleX(timestamp);
-              const y = scaleY(value, layout.top, layout.height, layout.panel);
-              return `${pointIndex === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
-            })
-            .join(" ");
+          // Нефинитные значения (NaN/null) пропускаем с разрывом линии: следующая
+          // валидная точка начинает новый сегмент с M, иначе кривая ломается целиком.
+          const pathParts = [];
+          let previousValid = false;
+          series.points.forEach(([timestamp, value]) => {
+            if (!Number.isFinite(timestamp) || !Number.isFinite(value)) {
+              previousValid = false;
+              return;
+            }
+            const x = scaleX(timestamp);
+            const y = scaleY(value, layout.top, layout.height, layout.panel);
+            pathParts.push(`${previousValid ? "L" : "M"} ${x.toFixed(2)} ${y.toFixed(2)}`);
+            previousValid = true;
+          });
+          const path = pathParts.join(" ");
+          if (!path) {
+            return;
+          }
 
           const pathAttributes = {
             d: path,
@@ -844,6 +903,7 @@
             "stroke-width": layout.panel.panelIndex === 0 ? 2.4 : 2,
             "stroke-linecap": "round",
             "stroke-linejoin": "round",
+            "data-series-stroke": series.id,
           };
           if (series.dasharray) {
             pathAttributes["stroke-dasharray"] = series.dasharray;
@@ -881,7 +941,7 @@
             "font-weight": 700,
             "text-anchor": anchor,
           },
-          formatTimeAxisLabel(timestamp, domainStart, domainEnd),
+          formatTimeAxisLabel(timestamp, domainStart, domainEnd, tzOffsetMin),
           container.classList.contains("chart-host--modal") ? 15 : 13
         );
       });
@@ -894,7 +954,7 @@
           return `
             <span class="wash-chart-legend-item">
               <svg class="wash-chart-legend-line" viewBox="0 0 36 12" aria-hidden="true">
-                <line x1="2" y1="6" x2="34" y2="6" stroke="${series.color}" stroke-width="2.6" stroke-linecap="round" ${dashAttribute}></line>
+                <line x1="2" y1="6" x2="34" y2="6" stroke="${sanitizeCssColor(series.color)}" stroke-width="2.6" stroke-linecap="round" data-series-stroke="${escapeHtml(series.id)}" ${dashAttribute}></line>
               </svg>
               <span>${escapeHtml(series.label)}</span>
             </span>
@@ -915,18 +975,20 @@
           ${styledPayload.series
             .map((series) => {
               const safeLabel = escapeHtml(series.label);
+              const safeId = escapeHtml(series.id);
+              const safeColor = sanitizeCssColor(series.color);
               return `
-                <div class="wash-chart-control" style="--wash-chart-series-color: ${series.color};">
+                <div class="wash-chart-control" data-series-control="${safeId}" style="--wash-chart-series-color: ${safeColor};">
                   <div class="wash-chart-control-top">
                     <span class="wash-chart-control-swatch" aria-hidden="true"></span>
                     <span class="wash-chart-control-name">${safeLabel}</span>
                   </div>
                   <div class="wash-chart-control-fields">
                     <span class="wash-chart-color-input-shell">
-                      <input type="color" value="${series.color}" data-series-color="${series.id}" aria-label="Цвет ${safeLabel}">
+                      <input type="color" value="${safeColor}" data-series-color="${safeId}" aria-label="Цвет ${safeLabel}">
                     </span>
                     <span class="wash-chart-select-shell">
-                      <select data-series-line-style="${series.id}" aria-label="Тип линии ${safeLabel}">
+                      <select data-series-line-style="${safeId}" aria-label="Тип линии ${safeLabel}">
                         ${LINE_STYLE_OPTIONS.map(
                           (option) =>
                             `<option value="${option.id}" ${option.id === series.lineStyle ? "selected" : ""}>${option.label}</option>`
@@ -942,8 +1004,42 @@
       `;
       container.append(controls);
 
+      // Живое обновление цвета без пересборки DOM: красим существующие элементы
+      // серии (полный render() уничтожил бы сам color-input во время выбора).
+      const applyLiveSeriesColor = (seriesId, color) => {
+        container.querySelectorAll("[data-series-stroke]").forEach((node) => {
+          if (node.getAttribute("data-series-stroke") === seriesId) {
+            node.setAttribute("stroke", color);
+          }
+        });
+        container.querySelectorAll("[data-series-fill]").forEach((node) => {
+          if (node.getAttribute("data-series-fill") === seriesId) {
+            node.setAttribute("fill", color);
+          }
+        });
+        controls.querySelectorAll("[data-series-control]").forEach((node) => {
+          if (node.dataset.seriesControl === seriesId) {
+            node.style.setProperty("--wash-chart-series-color", color);
+          }
+        });
+        const liveSeries = styledPayload.series.find((series) => series.id === seriesId);
+        if (liveSeries) {
+          liveSeries.color = color;
+        }
+      };
+
       controls.querySelectorAll("[data-series-color]").forEach((input) => {
         input.addEventListener("input", (event) => {
+          const seriesId = event.currentTarget.dataset.seriesColor;
+          const value = event.currentTarget.value;
+          if (!seriesId || !isValidHexColor(value)) {
+            return;
+          }
+          styleState[seriesId] = { ...(styleState[seriesId] || {}), color: value };
+          applyLiveSeriesColor(seriesId, value);
+        });
+        // Сохранение и полный ререндер — только по факту выбора цвета.
+        input.addEventListener("change", (event) => {
           const seriesId = event.currentTarget.dataset.seriesColor;
           const value = event.currentTarget.value;
           if (!seriesId || !isValidHexColor(value)) {
@@ -970,9 +1066,11 @@
         });
       });
 
+      // Hover-элементы начинаются с plotTop, чтобы не накрывать плашки лейблов
+      // сегментов над областью графика.
       const hoverLine = createSvgNode("line", {
         x1: chartLayout.left,
-        y1: chartLayout.top,
+        y1: plotTop,
         x2: chartLayout.left,
         y2: plotBottom,
         stroke: "rgba(32, 49, 38, 0.35)",
@@ -991,6 +1089,7 @@
           "stroke-width": 2,
           opacity: 0,
           "data-chart-interactive": "hover-dot",
+          "data-series-fill": series.id,
         });
         svg.append(dot);
         return dot;
@@ -998,9 +1097,9 @@
 
       const overlay = createSvgNode("rect", {
         x: chartLayout.left,
-        y: chartLayout.top,
+        y: plotTop,
         width: plotWidth,
-        height: plotBottom - chartLayout.top,
+        height: plotBottom - plotTop,
         fill: "transparent",
         style: "cursor:crosshair",
         "data-chart-interactive": "overlay",
@@ -1016,7 +1115,7 @@
 
       const panelIndexToLayout = new Map(panelLayouts.map((layout) => [layout.panel.panelIndex, layout]));
 
-      const onPointerMove = (event) => {
+      const updateHover = (event) => {
         const overlayBounds = overlay.getBoundingClientRect();
         const hostBounds = canvas.getBoundingClientRect();
         const ratioX = plotWidth / Math.max(overlayBounds.width, 1);
@@ -1035,9 +1134,11 @@
         hoverLine.setAttribute("x2", lineX);
         hoverLine.setAttribute("opacity", 1);
 
-        const tooltipRows = [`<strong>${formatTime(nearestTimestamp)}</strong>`];
+        const tooltipRows = [`<strong>${formatTime(nearestTimestamp, tzOffsetMin)}</strong>`];
         styledPayload.series.forEach((series, seriesIndex) => {
-          const pointIndex = findNearestPointIndex(series.points, nearestTimestamp);
+          const pointIndex = series.points?.length
+            ? findNearestPointIndex(series.points, nearestTimestamp)
+            : -1;
           if (pointIndex < 0) {
             hoverDots[seriesIndex].setAttribute("opacity", 0);
             return;
@@ -1056,7 +1157,7 @@
           hoverDots[seriesIndex].setAttribute("opacity", 1);
 
           tooltipRows.push(
-            `<span><i style="background:${series.color}"></i>${series.label}: ${formatValue(point[1], series.unit)}</span>`
+            `<span><i style="background:${sanitizeCssColor(series.color)}"></i>${escapeHtml(series.label)}: ${escapeHtml(formatValue(point[1], series.unit))}</span>`
           );
         });
 
@@ -1079,7 +1180,31 @@
         tooltip.style.top = `${tooltipY}px`;
       };
 
+      // Троттлинг hover через requestAnimationFrame: pointermove приходит чаще,
+      // чем кадры, а updateHover читает layout (getBoundingClientRect/offsetWidth).
+      let pointerFrame = 0;
+      let pendingPointerEvent = null;
+
+      const onPointerMove = (event) => {
+        pendingPointerEvent = event;
+        if (pointerFrame) {
+          return;
+        }
+        pointerFrame = window.requestAnimationFrame(() => {
+          pointerFrame = 0;
+          if (pendingPointerEvent) {
+            updateHover(pendingPointerEvent);
+            pendingPointerEvent = null;
+          }
+        });
+      };
+
       const onPointerLeave = () => {
+        pendingPointerEvent = null;
+        if (pointerFrame) {
+          window.cancelAnimationFrame(pointerFrame);
+          pointerFrame = 0;
+        }
         hoverLine.setAttribute("opacity", 0);
         hoverDots.forEach((dot) => dot.setAttribute("opacity", 0));
         tooltip.classList.remove("visible");

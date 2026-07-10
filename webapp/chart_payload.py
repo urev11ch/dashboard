@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import textwrap
+from datetime import datetime
 from typing import Any
 
 import wash_report as core
@@ -56,7 +57,10 @@ def _downsample_points(points: list[list[float]]) -> list[list[float]]:
     if not inner_points:
         return points
 
-    bucket_count = max((MAX_CHART_POINTS - 2) // 2, 1)
+    # В каждый бакет попадает до 4 точек (first, min, max, last), поэтому
+    # делим на 4 — иначе результат превышал бы MAX_CHART_POINTS и наивная
+    # децимация ниже выбрасывала бы сохранённые экстремумы.
+    bucket_count = max((MAX_CHART_POINTS - 2) // 4, 1)
     bucket_size = math.ceil(len(inner_points) / bucket_count)
     reduced: list[list[float]] = [points[0]]
 
@@ -116,6 +120,9 @@ def build_cycle_chart_payload(
         points = []
         for sample in cycle_samples:
             value = getattr(sample, config["id"])
+            if value is None:
+                # NULL в архиве (обрыв связи) — точку на кривую не кладём.
+                continue
             if config["id"] == "concentration_return":
                 value = max(value, 0.0)
             points.append([round(sample.ts * 1000), value])
@@ -152,5 +159,15 @@ def build_cycle_chart_payload(
             "start": round(cycle.start_ts * 1000),
             "end": round(cycle.end_ts * 1000),
             "point_count": len(cycle_samples),
+            # Смещение локальной таймзоны сервера от UTC в минутах на момент
+            # начала мойки: фронтенд форматирует время на графике так же,
+            # как таблицы (format_ts в таймзоне сервера).
+            "tz_offset_min": int(
+                datetime.fromtimestamp(cycle.start_ts)
+                .astimezone()
+                .utcoffset()
+                .total_seconds()
+                // 60
+            ),
         },
     }

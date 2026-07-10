@@ -383,10 +383,18 @@
 
     let eventSource = null;
     let pollTimer = 0;
-    let fallbackStarted = false;
+    let pollingActive = false;
 
     const scheduleNextPoll = () => {
       pollTimer = window.setTimeout(tick, 1000);
+    };
+
+    const stopPolling = () => {
+      pollingActive = false;
+      if (pollTimer) {
+        window.clearTimeout(pollTimer);
+        pollTimer = 0;
+      }
     };
 
     const closeStream = () => {
@@ -394,17 +402,17 @@
       eventSource = null;
     };
 
+    // Следующий тик планирует только tick (первый — startPollingFallback),
+    // иначе таймеры размножаются: каждый потерянный setTimeout плодит свою цепочку.
     const handleStatus = async (status) => {
       if (!status.active && isTerminalWorkspaceJobStatus(status)) {
         closeStream();
+        stopPolling();
         await handleTerminalWorkspaceJob(status);
         return;
       }
 
       updateWorkspaceJobUi(status);
-      if (status.active && !eventSource && !pollTimer) {
-        scheduleNextPoll();
-      }
     };
 
     const tick = async () => {
@@ -413,20 +421,23 @@
         const status = await fetchWorkspaceJobStatus();
         await handleStatus(status);
         if (!status.active || isTerminalWorkspaceJobStatus(status)) {
+          pollingActive = false;
           return;
         }
       } catch (_error) {
         // Leave the current overlay state intact and retry on the next tick.
       }
 
-      scheduleNextPoll();
+      if (pollingActive) {
+        scheduleNextPoll();
+      }
     };
 
     const startPollingFallback = () => {
-      if (fallbackStarted) {
+      if (pollingActive) {
         return;
       }
-      fallbackStarted = true;
+      pollingActive = true;
       scheduleNextPoll();
     };
 
@@ -508,7 +519,7 @@
         ) {
           lastHandledJobId = status.id || "";
           try {
-            await hydrateWorkspaceData({ resetScroll: false });
+            await hydrateWorkspaceData({ resetScroll: false, keepUi: true });
           } catch (_error) {
             // Оставляем текущие данные, если результат обновления не удалось получить.
           }
@@ -850,11 +861,16 @@
     washList.innerHTML = `<div class="wash-list-skeleton" role="status" aria-label="Загрузка списка моек">${row.repeat(count)}</div>`;
   }
 
-  function clearWorkspaceDataCaches() {
+  function clearWorkspaceDataCaches({ keepUi = false } = {}) {
     detailCache.clear();
     detailRequestCache.clear();
     chartPayloadCache.clear();
     chartPayloadRequestCache.clear();
+    // Фоновое обновление не должно закрывать открытые окна пользователя —
+    // кэши инвалидируются, а UI остаётся как есть.
+    if (keepUi) {
+      return;
+    }
     if (!modalRoot.hidden) {
       closeChartModal();
     }
@@ -893,14 +909,22 @@
     }
   }
 
-  async function hydrateWorkspaceData({ resetScroll = false } = {}) {
+  let workspaceHydrationToken = 0;
+
+  async function hydrateWorkspaceData({ resetScroll = false, keepUi = false } = {}) {
     // Скелетон — только при первой загрузке (пустой список); при фоновом
     // обновлении оставляем текущие мойки, чтобы не мигало.
     if (!state.washRows.length) {
       setWashListSkeleton();
     }
+    const token = ++workspaceHydrationToken;
     const payload = await fetchWorkspaceData();
-    clearWorkspaceDataCaches();
+    // Пока ждали ответ, стартовала более свежая гидрация — не перетираем её
+    // данные устаревшим ответом.
+    if (token !== workspaceHydrationToken) {
+      return payload;
+    }
+    clearWorkspaceDataCaches({ keepUi });
     applyWorkspacePayload(payload, { resetScroll });
     return payload;
   }
@@ -1243,7 +1267,23 @@
     if (bottomSpacerHeight) {
       chunks.push(`<div class="wash-list-spacer" style="height:${bottomSpacerHeight}px" aria-hidden="true"></div>`);
     }
+
+    // innerHTML уничтожает сфокусированную строку — запоминаем её ключ и после
+    // перерисовки возвращаем фокус клавиатуры на ту же строку, если она в DOM.
+    const activeElement = document.activeElement;
+    const focusedRowKey =
+      activeElement && washList.contains(activeElement)
+        ? activeElement.closest("[data-key]")?.dataset.key || ""
+        : "";
+
     washList.innerHTML = chunks.join("");
+
+    if (focusedRowKey) {
+      const rowToFocus = Array.from(washList.querySelectorAll("[data-key]")).find(
+        (row) => row.dataset.key === focusedRowKey
+      );
+      rowToFocus?.focus({ preventScroll: true });
+    }
   }
 
   function scheduleVirtualizedWashList() {
@@ -2925,7 +2965,6 @@
             </button>
           </footer>
         </section>
-        ${renderPrintDocument(detail)}
       `;
 
       modalRoot.querySelectorAll("[data-close-chart-modal]").forEach((element) => {
@@ -3060,7 +3099,14 @@
   [searchInput, channelFilter, sortOrder].forEach((element) => {
     if (element === searchInput) {
       element.addEventListener("input", scheduleSearchRender);
-      element.addEventListener("change", () => renderWashList({ resetScroll: true }));
+      element.addEventListener("change", () => {
+        // Отменяем отложенный дебаунс-рендер, чтобы не рисовать список дважды.
+        if (searchRenderTimer) {
+          window.clearTimeout(searchRenderTimer);
+          searchRenderTimer = 0;
+        }
+        renderWashList({ resetScroll: true });
+      });
       return;
     }
 
@@ -3095,11 +3141,14 @@
         submitButton.textContent = "Обновляю...";
       }
 
-      workspaceJobFeed?.ensureMonitoring?.();
       setScreenError("");
 
       try {
         const payload = await startWorkspaceRefresh();
+        // Подключаем мониторинг только после подтверждённого старта новой задачи:
+        // иначе первое сообщение потока — терминальный статус ПРЕДЫДУЩЕЙ задачи,
+        // поток закрывается, и новая задача остаётся без наблюдения.
+        workspaceJobFeed?.ensureMonitoring?.();
         if (payload?.job) {
           updateWorkspaceJobUi(payload.job, { keepVisible: true });
         }

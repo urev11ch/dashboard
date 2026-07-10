@@ -110,8 +110,11 @@ def test_should_skip_download():
     assert app._should_skip_download({"size": 10, "mtime": ts}, 10, later) is False
     # Локальной копии нет — качаем.
     assert app._should_skip_download(None, 10, ts) is False
-    # Размер неизвестен с панели — не рискуем, качаем.
-    assert app._should_skip_download({"size": 10, "mtime": ts}, None, ts) is False
+    # Размер неизвестен (нет SIZE/MLSD) — сравниваем только время модификации.
+    assert app._should_skip_download({"size": 10, "mtime": ts}, None, ts) is True
+    assert app._should_skip_download({"size": 10, "mtime": ts}, None, later) is False
+    assert app._should_skip_download({"size": 10}, None, ts) is False
+    assert app._should_skip_download({"size": 10, "mtime": ts}, None, None) is False
 
 
 def test_build_local_archive_index(tmp_path):
@@ -195,6 +198,76 @@ def test_download_ftp_incremental(tmp_path, monkeypatch):
     third = app.download_ftp_files(_FTP_CONFIG, tmp_path)
     assert fake.retr_calls == ["b.db"]
     assert len(third) == 2
+
+
+class _BrokenFTP(_FakeFTP):
+    """FTP, обрывающий соединение посреди передачи файла."""
+
+    def retrbinary(self, cmd, callback):
+        callback(b"part")
+        raise OSError("connection lost")
+
+
+def test_download_interrupted_leaves_no_truncated_db(tmp_path, monkeypatch):
+    files = {"a.db": {"data": b"full-data", "modify": "20240101120000"}}
+    fake = _BrokenFTP(files)
+    monkeypatch.setattr(app, "open_ftp_connection", lambda config: fake)
+
+    with pytest.raises(SystemExit):
+        app.download_ftp_files(_FTP_CONFIG, tmp_path)
+
+    # Обрыв не оставляет ни усечённой базы, ни временного файла `.part`.
+    assert [p for p in tmp_path.rglob("*") if p.is_file()] == []
+
+
+def test_download_updates_existing_month_folder_without_duplicates(tmp_path, monkeypatch):
+    files = {"a.db": {"data": b"aaa", "modify": "20240101120000"}}
+    fake = _FakeFTP(files)
+    monkeypatch.setattr(app, "open_ftp_connection", lambda config: fake)
+
+    app.download_ftp_files(_FTP_CONFIG, tmp_path)
+    assert (tmp_path / "2024-01" / "a.db").exists()
+
+    # Файл дописали в новом месяце — качаем поверх старой копии, а не в новую
+    # месячную папку (иначе копилась бы копия на каждый месяц).
+    files["a.db"] = {"data": b"aaa-grown", "modify": "20240215120000"}
+    fake.retr_calls.clear()
+    app.download_ftp_files(_FTP_CONFIG, tmp_path)
+    assert fake.retr_calls == ["a.db"]
+    assert (tmp_path / "2024-01" / "a.db").read_bytes() == b"aaa-grown"
+    assert not (tmp_path / "2024-02").exists()
+
+
+def test_delete_ftp_connection_guards_profile_dir(tmp_path, monkeypatch):
+    datalog = tmp_path / "datalog"
+    datalog.mkdir()
+    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path / "temp")
+    monkeypatch.setattr(app, "DATALOG_ROOT", datalog)
+
+    cfg = app.normalize_ftp_connection_settings({"host": "1.1.1.1", "path": "/d"})
+    entry = app.upsert_ftp_connection(cfg)
+    profile = datalog / entry["id"]
+    profile.mkdir()
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "keep.txt").write_text("x", encoding="utf-8")
+
+    # id не из реестра (в т.ч. с `../`) не приводит к удалению чужой папки.
+    app.delete_ftp_connection("../victim")
+    assert victim.exists() and (victim / "keep.txt").exists()
+
+    # Даже если вредоносный id попал в реестр, формат id и родитель папки
+    # проверяются перед rmtree.
+    registry = app.load_ftp_sources_registry()
+    registry["connections"].append({"id": "../victim"})
+    app.save_ftp_sources_registry(registry)
+    app.delete_ftp_connection("../victim")
+    assert victim.exists() and (victim / "keep.txt").exists()
+
+    # Легитимное подключение удаляется вместе со своей папкой профиля.
+    app.delete_ftp_connection(entry["id"])
+    assert app.find_ftp_connection(entry["id"]) is None
+    assert not profile.exists()
 
 
 def test_download_ftp_redownload_on_newer_mtime(tmp_path, monkeypatch):

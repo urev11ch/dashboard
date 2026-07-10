@@ -11,6 +11,7 @@ import traceback
 import urllib.error
 import urllib.request
 from contextlib import closing
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import uvicorn
@@ -66,7 +67,9 @@ def enable_windows_dpi_awareness() -> None:
 
 configure_runtime_environment()
 
-import webview
+# `import webview` намеренно не на уровне модуля: в noconsole-сборке ошибка
+# импорта должна попадать в крэш-гард `__main__` (после configure_logging),
+# а не падать молча до него. Импортируется локально там, где используется.
 
 
 def resolve_log_path() -> Path:
@@ -77,9 +80,57 @@ LOG_PATH = resolve_log_path()
 
 
 def resolve_webview_storage_path() -> Path:
+    # Профиль WebView2 рядом с каталогом логов: на Windows их родитель — runtime
+    # root, на других платформах — writable state-каталог приложения.
     path = resolve_log_root().parent / "webview-data"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+# Хэндл мьютекса (Windows) или открытый лок-файл (иначе) держим живым всё время
+# работы процесса — иначе защита от второго экземпляра перестанет действовать.
+_single_instance_guard: object | None = None
+
+
+def acquire_single_instance_lock() -> bool:
+    """Гарантирует единственный экземпляр приложения. Возвращает False, если
+    другой экземпляр уже запущен; при сбое самой проверки не блокирует запуск."""
+    global _single_instance_guard
+
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            ERROR_ALREADY_EXISTS = 183
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.CreateMutexW.restype = wintypes.HANDLE
+            handle = kernel32.CreateMutexW(None, False, "Local\\OptiCIP-Dashboard-SingleInstance")
+            if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
+                return False
+            if handle:
+                _single_instance_guard = handle
+            else:
+                logging.warning("Не удалось создать мьютекс единственного экземпляра")
+        except Exception:
+            logging.exception("Проверка единственного экземпляра не удалась")
+        return True
+
+    try:
+        import fcntl
+
+        lock_path = resolve_log_root().parent / "instance.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_file = open(lock_path, "w")
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            lock_file.close()
+            return False
+        _single_instance_guard = lock_file
+    except Exception:
+        logging.exception("Проверка единственного экземпляра не удалась")
+    return True
 
 
 AUTOSTART_REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -129,7 +180,7 @@ def configure_logging() -> Path:
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[
-            logging.FileHandler(LOG_PATH, encoding="utf-8"),
+            RotatingFileHandler(LOG_PATH, encoding="utf-8", maxBytes=1_000_000, backupCount=3),
         ],
         force=True,
     )
@@ -261,10 +312,88 @@ def build_desktop_loading_html() -> str:
 </html>"""
 
 
-def load_desktop_window_url(bridge: "DesktopBridge", window: webview.Window, target_url: str) -> None:
+def build_desktop_error_html(message: str) -> str:
+    import html
+
+    return f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OptiCIP Dashboard</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      font-family: "Segoe UI", Tahoma, sans-serif;
+      background: #f4f7fb;
+      color: #183147;
+    }}
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(180deg, #f9fbfd 0%, #edf3f8 100%);
+    }}
+    .card {{
+      width: min(520px, calc(100vw - 48px));
+      padding: 28px 30px;
+      border-radius: 22px;
+      background: rgba(255, 255, 255, 0.94);
+      border: 1px solid rgba(181, 39, 26, 0.22);
+      box-shadow: 0 26px 70px rgba(24, 49, 71, 0.12);
+    }}
+    .eyebrow {{
+      font-size: 12px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #b5271a;
+      margin-bottom: 10px;
+    }}
+    h1 {{
+      margin: 0 0 10px;
+      font-size: 28px;
+      line-height: 1.15;
+    }}
+    p {{
+      margin: 0 0 8px;
+      font-size: 16px;
+      line-height: 1.5;
+      color: #46637c;
+    }}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="eyebrow">OptiCIP Dashboard</div>
+    <h1>Не удалось открыть интерфейс</h1>
+    <p>{html.escape(message)}</p>
+    <p>Перезапустите приложение. Если ошибка повторяется — смотрите лог:<br>{html.escape(str(LOG_PATH))}</p>
+  </main>
+</body>
+</html>"""
+
+
+def show_window_error(window: "webview.Window", message: str) -> None:
+    """Показывает в окне экран ошибки вместо вечного loading-экрана; если это
+    невозможно — системное сообщение и закрытие окна."""
+    try:
+        window.load_html(build_desktop_error_html(message))
+        return
+    except Exception:
+        logging.exception("Не удалось показать экран ошибки в окне")
+    show_fatal_error(f"{message}\n\nЛог: {LOG_PATH}")
+    try:
+        window.destroy()
+    except Exception:
+        logging.exception("Window destroy failed after navigation error")
+
+
+def load_desktop_window_url(bridge: "DesktopBridge", window: "webview.Window", target_url: str) -> None:
     logging.info("Waiting for desktop window before loading %s", target_url)
     if not window.events.shown.wait(20):
         logging.error("Desktop window was not shown in time; cannot load %s", target_url)
+        show_window_error(window, "Окно приложения не открылось за отведённое время.")
         return
 
     time.sleep(0.35)
@@ -280,6 +409,7 @@ def load_desktop_window_url(bridge: "DesktopBridge", window: webview.Window, tar
         logging.info("Desktop window navigation requested: %s", target_url)
     except Exception:
         logging.exception("Desktop window navigation failed")
+        show_window_error(window, "Не удалось загрузить локальный web-интерфейс.")
 
 
 def show_fatal_error(message: str) -> None:
@@ -323,25 +453,39 @@ def find_free_port() -> int:
 
 
 class DesktopServer:
+    # Между find_free_port и bind uvicorn порт может перехватить другой процесс
+    # (TOCTOU) — в этом случае пробуем ещё раз на новом порту.
+    START_ATTEMPTS = 3
+
     def __init__(self, web_app, host: str = HOST) -> None:
+        self.web_app = web_app
         self.host = host
-        self.port = find_free_port()
+        self._prepare(find_free_port())
+
+    def _prepare(self, port: int) -> None:
+        """Готовит uvicorn и рабочий поток для очередной попытки запуска."""
+        self.port = port
         self.config = uvicorn.Config(
-            web_app,
+            self.web_app,
             host=self.host,
             port=self.port,
             reload=False,
             log_level="warning",
+            timeout_graceful_shutdown=3,
         )
         self.server = uvicorn.Server(self.config)
         self.server.install_signal_handlers = lambda: None
-        self.thread_error: Exception | None = None
+        self.thread_error: BaseException | None = None
         self.thread = threading.Thread(target=self._run_server, name="wash-ui-server", daemon=True)
 
     def _run_server(self) -> None:
         try:
             self.server.run()
-        except Exception as exc:  # pragma: no cover - uvicorn failure is environment-specific
+        except KeyboardInterrupt:
+            raise
+        # BaseException: при неудачном bind uvicorn делает sys.exit(1)
+        # (SystemExit), и его тоже нужно сохранить для диагностики.
+        except BaseException as exc:  # pragma: no cover - uvicorn failure is environment-specific
             self.thread_error = exc
             logging.exception("Local UI server thread crashed")
 
@@ -350,23 +494,44 @@ class DesktopServer:
         return f"http://{self.host}:{self.port}"
 
     def start(self) -> None:
-        self.thread.start()
-        self.wait_until_ready()
+        for attempt in range(1, self.START_ATTEMPTS + 1):
+            self.thread.start()
+            try:
+                self.wait_until_ready()
+                return
+            except RuntimeError:
+                # Повторяем только если поток умер (вероятно, порт перехвачен);
+                # живой, но не отвечающий сервер новый порт не вылечит.
+                if self.thread.is_alive() or attempt >= self.START_ATTEMPTS:
+                    raise
+                logging.warning(
+                    "Local UI server failed on port %s (attempt %s/%s); retrying on a new port",
+                    self.port,
+                    attempt,
+                    self.START_ATTEMPTS,
+                    exc_info=True,
+                )
+                self._prepare(find_free_port())
 
     def stop(self) -> None:
         self.server.should_exit = True
         self.thread.join(timeout=5)
+        if self.thread.is_alive():
+            logging.warning("Local UI server thread did not stop within 5 seconds")
 
     def wait_until_ready(self, timeout: float = 60.0) -> None:
-        deadline = time.time() + timeout
+        deadline = time.monotonic() + timeout
         last_error: Exception | None = None
-        while time.time() < deadline:
+        # Пустой ProxyHandler: системный прокси не должен перехватывать
+        # проверку готовности локального адреса.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        while time.monotonic() < deadline:
             if self.thread_error is not None:
                 raise RuntimeError("Поток локального UI-сервера завершился с ошибкой.") from self.thread_error
             if not self.thread.is_alive():
                 raise RuntimeError("Поток локального UI-сервера завершился до готовности приложения.")
             try:
-                with urllib.request.urlopen(self.url, timeout=0.5) as response:
+                with opener.open(self.url, timeout=0.5) as response:
                     if response.status < 500:
                         return
             except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
@@ -486,6 +651,8 @@ class DesktopBridge:
         """Возвращает (x, y, width, height) основного экрана; при недоступности —
         запасные значения для Full HD."""
         try:
+            import webview
+
             screens = webview.screens or []
             screen = screens[0] if screens else None
         except Exception:
@@ -610,6 +777,8 @@ class DesktopBridge:
         return {"ok": True, "cancelled": False, "path": str(target_path)}
 
     def _choose_target_path(self, default_name: str) -> Path | None:
+        import webview
+
         assert self._window is not None
         result = self._window.create_file_dialog(
             self._dialog_type("SAVE", webview.SAVE_DIALOG),
@@ -626,6 +795,8 @@ class DesktopBridge:
         return path
 
     def _choose_directory(self, initial_path: str = "") -> Path | None:
+        import webview
+
         assert self._window is not None
 
         directory = ""
@@ -822,6 +993,8 @@ class DesktopBridge:
 
     @staticmethod
     def _dialog_type(kind: str, fallback: int) -> int:
+        import webview
+
         dialog_enum = getattr(webview, "FileDialog", None)
         if dialog_enum is not None and hasattr(dialog_enum, kind):
             return getattr(dialog_enum, kind)
@@ -830,6 +1003,22 @@ class DesktopBridge:
 
 def main() -> int:
     configure_logging()
+
+    if not acquire_single_instance_lock():
+        logging.info("Another instance is already running; exiting")
+        show_fatal_error(f"{APP_TITLE} уже запущен.")
+        return 0
+
+    try:
+        import webview  # noqa: F401 - ошибка импорта должна попасть в крэш-гард
+    except Exception as exc:
+        logging.exception("pywebview import failed")
+        show_fatal_error(
+            "Приложение не запустилось.\n\n"
+            f"{exc}\n\n"
+            f"Лог: {LOG_PATH}"
+        )
+        return 1
 
     try:
         preflight_windows_runtime()
