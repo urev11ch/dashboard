@@ -143,9 +143,18 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "autostart": False,
     "archive_retention_enabled": False,
     "archive_retention_days": 365,
+    "concentration_eval_enabled": False,
+    "concentration_norms": {"alkali": None, "acid": None},
+    "concentration_tolerance_percent": 10.0,
 }
 ARCHIVE_RETENTION_MIN_DAYS = 1
 ARCHIVE_RETENTION_MAX_DAYS = 730
+# Нормативы концентрации рабочих растворов (%). Фазы задаёт ядро (wash_report).
+CONCENTRATION_PHASE_KEYS = tuple(phase for phase, _pid, _label in core.CONCENTRATION_PHASES)
+CONCENTRATION_MIN = 0.0
+CONCENTRATION_MAX = 100.0
+CONCENTRATION_TOLERANCE_MIN = 0.0
+CONCENTRATION_TOLERANCE_MAX = 100.0
 GITHUB_REPO = "urev11ch/dashboard"
 UPDATE_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 # Как часто фоновый цикл просыпается, чтобы сверить, не пора ли обновлять FTP.
@@ -166,6 +175,10 @@ _RESULT_CATEGORY_BY_DEFAULT = {
     "Требует проверки": "check",
     "Требует проверки, были паузы": "check",
 }
+# CONCENTRATION_LOW_LABEL намеренно НЕ в маппинге: это самостоятельная подпись,
+# которую apply_concentration_verdict показывает как есть (а категорию check
+# выставляет явно). В маппинге пустой result_labels свёл бы её к «Требует
+# проверки», и причина (концентрация) потерялась бы.
 # Идентификаторы стилей линий должны совпадать с LINE_STYLE_OPTIONS в wash-chart.js.
 CHART_LINE_STYLE_IDS = frozenset({"solid", "dashed", "dashdot", "dotted", "longdash"})
 CHART_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -1707,6 +1720,34 @@ def _coerce_bool(value: Any, fallback: bool) -> bool:
     return bool(value)
 
 
+def _coerce_concentration(value: Any) -> float | None:
+    """Норматив концентрации (%): число в [0..100] или None (не задан).
+
+    Пустая строка/None/нечисловое → None. Отрицательные и >100 клампятся в диапазон.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:  # NaN
+        return None
+    return max(CONCENTRATION_MIN, min(CONCENTRATION_MAX, number))
+
+
+def _coerce_tolerance(value: Any, fallback: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if number != number:  # NaN
+        return fallback
+    return max(CONCENTRATION_TOLERANCE_MIN, min(CONCENTRATION_TOLERANCE_MAX, number))
+
+
 def normalize_app_settings(raw: Any) -> dict[str, Any]:
     data = raw if isinstance(raw, dict) else {}
 
@@ -1740,6 +1781,12 @@ def normalize_app_settings(raw: Any) -> dict[str, Any]:
         retention_days = DEFAULT_APP_SETTINGS["archive_retention_days"]
     retention_days = max(ARCHIVE_RETENTION_MIN_DAYS, min(ARCHIVE_RETENTION_MAX_DAYS, retention_days))
 
+    raw_norms = data.get("concentration_norms")
+    raw_norms = raw_norms if isinstance(raw_norms, dict) else {}
+    concentration_norms = {
+        phase: _coerce_concentration(raw_norms.get(phase)) for phase in CONCENTRATION_PHASE_KEYS
+    }
+
     return {
         "ftp_auto_refresh_enabled": enabled,
         "ftp_auto_refresh_minutes": minutes,
@@ -1751,6 +1798,15 @@ def normalize_app_settings(raw: Any) -> dict[str, Any]:
             data.get("archive_retention_enabled"), DEFAULT_APP_SETTINGS["archive_retention_enabled"]
         ),
         "archive_retention_days": retention_days,
+        "concentration_eval_enabled": _coerce_bool(
+            data.get("concentration_eval_enabled"),
+            DEFAULT_APP_SETTINGS["concentration_eval_enabled"],
+        ),
+        "concentration_norms": concentration_norms,
+        "concentration_tolerance_percent": _coerce_tolerance(
+            data.get("concentration_tolerance_percent"),
+            DEFAULT_APP_SETTINGS["concentration_tolerance_percent"],
+        ),
     }
 
 
@@ -1768,6 +1824,46 @@ def resolve_result_kind(default_label: str) -> str:
     """Категория результата (`completed`/`check`) по стандартной строке ядра —
     для цветовой индикации на фронтенде независимо от текста подписи."""
     return _RESULT_CATEGORY_BY_DEFAULT.get(default_label, "")
+
+
+def evaluate_cycle_concentration(
+    analysis: core.AnalysisResult,
+    cycle: core.Cycle,
+    settings: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Оценка концентрации мойки по настройкам, либо None если оценивать нечего.
+
+    None означает «функция выключена, нормативы не заданы или в мойке нет
+    оцениваемых фаз» — в этом случае вердикт и payload остаются как раньше.
+    """
+    if not settings.get("concentration_eval_enabled"):
+        return None
+    result = core.evaluate_concentration(
+        core.analysis_segments_for_cycle(analysis, cycle),
+        settings.get("concentration_norms") or {},
+        settings.get("concentration_tolerance_percent") or 0.0,
+    )
+    return result if result["kind"] is not None else None
+
+
+def apply_concentration_verdict(
+    default_status: str,
+    result_labels: dict[str, str] | None,
+    concentration: dict[str, Any] | None,
+) -> tuple[str, str]:
+    """Итоговые (подпись, категория) результата с учётом оценки концентрации.
+
+    Концентрация ниже нормы делает мойку «требующей проверки». Если базовый вердикт
+    был «завершено», подпись меняется на «Концентрация ниже нормы» (чтобы причина
+    была видна); если мойка и так требовала проверки — её текст не затираем.
+    """
+    result_kind = resolve_result_kind(default_status)
+    effective_status = default_status
+    if concentration is not None and concentration.get("kind") == "low":
+        result_kind = "check"
+        if resolve_result_kind(default_status) == "completed":
+            effective_status = core.CONCENTRATION_LOW_LABEL
+    return resolve_result_label(effective_status, result_labels), result_kind
 
 
 def load_app_settings() -> dict[str, Any]:
@@ -1826,6 +1922,25 @@ def apply_object_name_overrides(
 def clear_chart_payload_cache() -> None:
     with chart_payload_cache_lock:
         chart_payload_cache.clear()
+
+
+def clear_all_chart_caches() -> int:
+    """Полностью очищает кэш графиков: и в памяти, и дисковые файлы chart-*.pkl.
+
+    Возвращает число удалённых с диска файлов. Нужна, чтобы пользователь мог
+    вручную сбросить графики (например, после смены оформления кривых) — иначе
+    старые payload'ы висят в кэше и график рисуется в прежнем виде.
+    """
+    clear_chart_payload_cache()
+    removed = 0
+    with analysis_cache_lock:
+        for cache_file in ANALYSIS_CACHE_ROOT.glob("chart-*.pkl"):
+            try:
+                cache_file.unlink()
+                removed += 1
+            except OSError:
+                pass
+    return removed
 
 
 def cleanup_stale_disk_caches() -> None:
@@ -2947,7 +3062,8 @@ def find_cycle(analysis: core.AnalysisResult, key: str) -> core.Cycle:
 
 
 def build_wash_rows(analysis: core.AnalysisResult) -> list[dict[str, Any]]:
-    result_labels = load_app_settings()["result_labels"]
+    settings = load_app_settings()
+    result_labels = settings["result_labels"]
     rows: list[dict[str, Any]] = []
     for cycle in analysis.sorted_cycles:
         cycle_key = core.make_cycle_key(cycle)
@@ -2956,8 +3072,10 @@ def build_wash_rows(analysis: core.AnalysisResult) -> list[dict[str, Any]]:
             cycle_key,
             core.cycle_result_label_from_operations(cycle.operations),
         )
-        result_kind = resolve_result_kind(default_status)
-        status = resolve_result_label(default_status, result_labels)
+        concentration = evaluate_cycle_concentration(analysis, cycle, settings)
+        status, result_kind = apply_concentration_verdict(
+            default_status, result_labels, concentration
+        )
         source_name = format_source_label(cycle.source_db)
         rows.append(
             {
@@ -2971,6 +3089,7 @@ def build_wash_rows(analysis: core.AnalysisResult) -> list[dict[str, Any]]:
                 "program": cycle.program_name,
                 "status": status,
                 "result_kind": result_kind,
+                "concentration_kind": concentration["kind"] if concentration else None,
                 "channel": cycle.channel,
                 "duration": core.format_duration(cycle.duration_seconds),
                 "duration_seconds": cycle.duration_seconds,
@@ -3097,9 +3216,14 @@ def set_cached_chart_payload(analysis_revision: int, key: str, payload: dict[str
 
 def build_wash_detail(analysis: core.AnalysisResult, key: str) -> dict[str, Any]:
     cycle = find_cycle(analysis, key)
+    settings = load_app_settings()
     default_status = analysis.cycle_results_by_key.get(
         key,
         core.cycle_result_label_from_operations(cycle.operations),
+    )
+    concentration = evaluate_cycle_concentration(analysis, cycle, settings)
+    status, result_kind = apply_concentration_verdict(
+        default_status, settings["result_labels"], concentration
     )
 
     return {
@@ -3113,8 +3237,10 @@ def build_wash_detail(analysis: core.AnalysisResult, key: str) -> dict[str, Any]
         "object_name": cycle.object_name,
         "program": cycle.program_name,
         "channel": cycle.channel,
-        "status": resolve_result_label(default_status, load_app_settings()["result_labels"]),
-        "result_kind": resolve_result_kind(default_status),
+        "status": status,
+        "result_kind": result_kind,
+        "concentration_kind": concentration["kind"] if concentration else None,
+        "concentration_eval": concentration["phases"] if concentration else None,
         "duration": core.format_duration(cycle.duration_seconds),
         "chart_data_url": f"/api/wash-chart-data?key={quote(key, safe='')}",
     }
@@ -3604,6 +3730,17 @@ def update_app_settings_route(payload: dict[str, Any] = Body(...)) -> JSONRespon
         ) from exc
 
     return JSONResponse({"ok": True, "settings": settings})
+
+
+@app.post("/api/chart-cache/clear")
+def clear_chart_cache_route() -> JSONResponse:
+    try:
+        removed = clear_all_chart_caches()
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Не удалось очистить кэш графиков: {exc}"
+        ) from exc
+    return JSONResponse({"ok": True, "removed": removed})
 
 
 @app.get("/api/diagnostics")

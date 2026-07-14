@@ -7,6 +7,19 @@
     { key: "completed", label: "Завершено штатно", def: "Завершено штатно" },
     { key: "check", label: "Требует проверки", def: "Требует проверки" },
   ];
+  // Разделы окна настроек (боковая навигация в стиле System Settings macOS).
+  const SETTINGS_PAGES = [
+    { id: "general", label: "Общие", icon: "⚙" },
+    { id: "ftp", label: "FTP", icon: "↻" },
+    { id: "chart", label: "График", icon: "◠" },
+    { id: "updates", label: "Обновления", icon: "⤓" },
+    { id: "archives", label: "Архивы", icon: "▦" },
+    { id: "diagnostics", label: "Диагностика", icon: "ⓘ" },
+  ];
+  // Норматив концентрации для поля ввода: число или пусто (не задан).
+  function formatNormValue(value) {
+    return value === null || value === undefined || value === "" ? "" : String(value);
+  }
   // Должно совпадать с LINE_STYLE_OPTIONS в wash-chart.js и CHART_LINE_STYLE_IDS на сервере.
   const CHART_LINE_STYLE_OPTIONS = [
     { id: "solid", label: "Сплошная" },
@@ -1342,6 +1355,7 @@
         </div>
         <div class="wash-cell wash-cell--status">
           <span class="${badgeClass(row.status, row.result_kind)}" title="${escapeHtml(row.status)}">${escapeHtml(row.status)}</span>
+          ${row.concentration_kind === "low" ? '<span class="conc-chip conc-chip--low" title="Концентрация раствора ниже нормы">конц. ↓</span>' : ""}
           <button type="button" class="wash-row-pdf-button" data-download-row-pdf title="PDF" aria-label="PDF">PDF</button>
         </div>
       </div>
@@ -1807,6 +1821,28 @@
     return safeParts.length ? safeParts.join("__") : `wash_cycle_${Date.now()}`;
   }
 
+  // Число с одним знаком после запятой (концентрация/уставка), либо «—».
+  function formatConcentration(value) {
+    return value === null || value === undefined || !Number.isFinite(Number(value))
+      ? "—"
+      : `${Number(value).toFixed(1)} %`;
+  }
+
+  // Пары [подпись, значение] для оценённых фаз концентрации (unknown пропускаем).
+  // Используется и в окне деталей, и в печатном отчёте — вид совпадает.
+  function concentrationSummaryRows(detail) {
+    const phases = Array.isArray(detail.concentration_eval) ? detail.concentration_eval : [];
+    return phases
+      .filter((phase) => phase && phase.status !== "unknown")
+      .map((phase) => {
+        const verdict = phase.status === "low" ? "ниже нормы" : "в норме";
+        return [
+          `Концентрация: ${phase.label}`,
+          `мин ${formatConcentration(phase.min)} / норма ${formatConcentration(phase.norm)} — ${verdict}`,
+        ];
+      });
+  }
+
   function renderPrintSummaryRows(detail) {
     return [
       ["Объект", detail.object_name],
@@ -1815,6 +1851,7 @@
       ["Конец мойки", formatModalDateTime(detail.end_time)],
       ["Длительность мойки", detail.duration],
       ["Результат", detail.status],
+      ...concentrationSummaryRows(detail),
     ]
       .map(
         ([label, value]) => `
@@ -1930,91 +1967,6 @@
     syncOverlayState();
   }
 
-  async function openDiagnostics() {
-    if (!modalRoot.hidden) closeChartModal();
-    if (!objectEditorRoot.hidden) closeObjectEditor();
-    if (!settingsRoot.hidden) closeSettings();
-    const openId = ++diagnosticsOpenId;
-    diagnosticsRoot.hidden = false;
-    syncOverlayState();
-
-    let data = null;
-    try {
-      data = await fetchDiagnostics();
-    } catch (_error) {
-      if (openId !== diagnosticsOpenId) {
-        return;
-      }
-      showToast("Не удалось получить диагностику.", "error");
-    }
-    // Панель могли успеть закрыть и открыть заново: дорезолвившийся старый
-    // запрос не должен перетирать свежую разметку и обработчики.
-    if (openId !== diagnosticsOpenId || diagnosticsRoot.hidden) {
-      return;
-    }
-
-    const kindLabel = { ftp: "FTP", folder: "Папка", none: "—" };
-    const counts = data?.counts || {};
-    const rows = data
-      ? [
-          ["Источник", kindLabel[data.source_kind] || "—"],
-          ["Путь", data.display_root || "—"],
-          ["Последняя синхронизация", data.last_sync || "—"],
-          ["Моек", counts.cycles ?? 0],
-          ["Объектов", counts.objects ?? 0],
-          ["Баз данных", counts.databases ?? 0],
-          ["Архивов", counts.archives ?? 0],
-          ["FTP-панелей", counts.ftp_sources ?? 0],
-          [
-            "Автообновление",
-            data.auto_refresh?.enabled ? `вкл · ${data.auto_refresh.minutes} мин` : "выкл",
-          ],
-          ["Объём datalog", formatBytes(data.datalog?.size_bytes || 0)],
-          [
-            "Хранение архивов",
-            data.datalog?.retention_enabled ? `${data.datalog.retention_days} дней` : "выкл",
-          ],
-          ["Последняя очистка", data.datalog?.last_cleanup || "—"],
-          ["Обработка", data.job?.active ? data.job.message || "выполняется" : "нет"],
-          ["Ошибка", data.error || "—"],
-        ]
-      : [["Диагностика", "недоступна"]];
-
-    diagnosticsRoot.innerHTML = `
-      <div class="object-editor-backdrop" data-close-diagnostics></div>
-      <section class="object-editor-panel object-editor-panel--settings" role="dialog" aria-modal="true" aria-label="Диагностика">
-        <header class="settings-header">
-          <div class="settings-header-title">
-            <span class="settings-header-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" focusable="false"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm0 5a1.3 1.3 0 1 1 0 2.6A1.3 1.3 0 0 1 12 7Zm1.2 11h-2.4v-6.6h2.4V18Z"></path></svg>
-            </span>
-            <h2>Диагностика</h2>
-          </div>
-          <button type="button" class="chart-modal-icon-button chart-modal-icon-button--danger" data-close-diagnostics aria-label="Закрыть" title="Закрыть">
-            <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-              <path d="M5 5L15 15"></path>
-              <path d="M15 5L5 15"></path>
-            </svg>
-          </button>
-        </header>
-        <div class="diagnostics-body">
-          ${rows
-            .map(
-              ([key, value]) => `
-              <div class="diagnostics-row">
-                <span class="diagnostics-key">${escapeHtml(key)}</span>
-                <span class="diagnostics-value">${escapeHtml(String(value))}</span>
-              </div>
-            `
-            )
-            .join("")}
-        </div>
-      </section>
-    `;
-    diagnosticsRoot.querySelectorAll("[data-close-diagnostics]").forEach((element) => {
-      element.addEventListener("click", closeDiagnostics);
-    });
-  }
 
   function hasDesktopPdfApi() {
     return typeof window.pywebview?.api?.save_graph_pdf === "function";
@@ -2251,7 +2203,7 @@
     return /^#[0-9a-f]{6}$/i.test(String(value || ""));
   }
 
-  async function openSettings() {
+  async function openSettings(initialPage = "general") {
     if (!modalRoot.hidden) {
       closeChartModal();
     }
@@ -2303,10 +2255,20 @@
             </svg>
           </button>
         </header>
-        <div class="settings-body">
-          <details class="settings-section">
-            <summary class="settings-section-title">Результат мойки</summary>
-            <div class="settings-section-body">
+        <div class="settings-macos">
+          <nav class="settings-nav" role="tablist" aria-label="Разделы настроек">
+            ${SETTINGS_PAGES.map((page, index) => `
+              <button type="button" class="settings-nav-item${index === 0 ? " is-active" : ""}" role="tab" data-settings-nav="${page.id}" aria-selected="${index === 0 ? "true" : "false"}">
+                <span class="settings-nav-icon" aria-hidden="true">${page.icon}</span>
+                <span class="settings-nav-label">${escapeHtml(page.label)}</span>
+              </button>
+            `).join("")}
+          </nav>
+          <div class="settings-content">
+            <section class="settings-page" data-settings-page="general">
+              <h3 class="settings-page-title">Общие</h3>
+
+              <h4 class="settings-group-title">Результат мойки</h4>
               <label class="settings-option">
                 <span class="settings-option-text"><strong>Показывать результат</strong></span>
                 <input type="checkbox" data-setting-wash-result ${isWashResultVisible() ? "checked" : ""}>
@@ -2317,46 +2279,73 @@
                   <input type="text" class="settings-text-input" data-setting-result-label="${field.key}" maxlength="120" placeholder="${escapeHtml(field.def)}" value="${escapeHtml(resultLabels[field.key] || field.def)}" autocomplete="off" spellcheck="false">
                 </div>
               `).join("")}
-            </div>
-          </details>
-          <details class="settings-section">
-            <summary class="settings-section-title">Источник данных</summary>
-            <div class="settings-section-body">
+
+              <h4 class="settings-group-title">Нормативы концентрации</h4>
+              <p class="settings-note">Мин. концентрация рабочего раствора за фазу сравнивается с нормативом. Ниже нормы — мойка помечается «требует проверки». Нормативы вводятся вручную (проценты), пустое поле — фаза не оценивается.</p>
+              <label class="settings-option">
+                <span class="settings-option-text"><strong>Оценивать концентрацию</strong></span>
+                <input type="checkbox" data-setting-concentration-enabled ${settings.concentration_eval_enabled ? "checked" : ""}>
+              </label>
+              <label class="settings-option">
+                <span class="settings-option-text"><strong>Норматив щёлочи, %</strong></span>
+                <input type="number" min="0" max="100" step="0.1" data-setting-concentration-norm="alkali" placeholder="—" value="${formatNormValue(settings.concentration_norms?.alkali)}">
+              </label>
+              <label class="settings-option">
+                <span class="settings-option-text"><strong>Норматив кислоты, %</strong></span>
+                <input type="number" min="0" max="100" step="0.1" data-setting-concentration-norm="acid" placeholder="—" value="${formatNormValue(settings.concentration_norms?.acid)}">
+              </label>
+              <label class="settings-option">
+                <span class="settings-option-text"><strong>Допуск, % (0–100)</strong></span>
+                <input type="number" min="0" max="100" step="1" data-setting-concentration-tolerance value="${Number(settings.concentration_tolerance_percent) || 0}">
+              </label>
+
+              <h4 class="settings-group-title">Источник данных</h4>
               <div class="settings-option settings-option--stacked">
                 <span class="settings-option-text"><strong>Папка по умолчанию</strong></span>
                 <input type="text" class="settings-text-input" data-setting-default-folder placeholder="Встроенная папка datalog" value="${escapeHtml(settings.default_folder_path || "")}" autocomplete="off" spellcheck="false">
               </div>
-            </div>
-          </details>
-          <details class="settings-section">
-            <summary class="settings-section-title">Автообновление FTP</summary>
-            <div class="settings-section-body">
+            </section>
+            <section class="settings-page" data-settings-page="ftp" hidden>
+              <h3 class="settings-page-title">FTP</h3>
               <label class="settings-option">
-                <span class="settings-option-text"><strong>Включено</strong></span>
+                <span class="settings-option-text"><strong>Автообновление включено</strong></span>
                 <input type="checkbox" data-setting-ftp-auto-refresh ${settings.ftp_auto_refresh_enabled ? "checked" : ""}>
               </label>
               <label class="settings-option">
                 <span class="settings-option-text"><strong>Интервал, мин</strong></span>
                 <input type="number" min="1" max="1440" step="1" data-setting-ftp-auto-refresh-minutes value="${Number(settings.ftp_auto_refresh_minutes) || 5}">
               </label>
-            </div>
-          </details>
-          <details class="settings-section">
-            <summary class="settings-section-title">Обновления и запуск</summary>
-            <div class="settings-section-body">
-              <label class="settings-option">
-                <span class="settings-option-text"><strong>Проверять обновления</strong></span>
-                <input type="checkbox" data-setting-check-updates ${settings.check_updates ? "checked" : ""}>
+            </section>
+            <section class="settings-page" data-settings-page="chart" hidden>
+              <h3 class="settings-page-title">График</h3>
+              <div class="settings-option settings-option--stacked">
+                <span class="settings-option-text"><strong>Цвета и линии</strong></span>
+                <div class="settings-chart-grid" data-chart-style-grid>${renderChartStyleControls(chartStyles.defaults, chartStyles.series)}</div>
+                <div class="settings-chart-actions">
+                  <button type="button" class="ghost" data-chart-style-reset>Сбросить</button>
+                </div>
+              </div>
+              <div class="settings-option settings-option--stacked">
+                <span class="settings-option-text"><strong>Кэш графиков</strong></span>
+                <p class="settings-note">Сбрасывает сохранённые графики — они соберутся заново при следующем открытии. Помогает, если график отображается в устаревшем виде.</p>
+                <div class="settings-chart-actions">
+                  <button type="button" class="ghost" data-chart-cache-clear>Очистить кэш графиков</button>
+                </div>
+              </div>
+            </section>
+            <section class="settings-page" data-settings-page="updates" hidden>
+              <h3 class="settings-page-title">Обновления и автозапуск</h3>
+              <label class="settings-option settings-option--disabled">
+                <span class="settings-option-text"><strong>Проверять обновления</strong><span class="settings-option-hint">Функция будет доступна позже</span></span>
+                <input type="checkbox" data-setting-check-updates disabled>
               </label>
               <label class="settings-option">
                 <span class="settings-option-text"><strong>Автозапуск с Windows</strong></span>
                 <input type="checkbox" data-setting-autostart ${settings.autostart ? "checked" : ""}>
               </label>
-            </div>
-          </details>
-          <details class="settings-section">
-            <summary class="settings-section-title">Хранение архивов</summary>
-            <div class="settings-section-body">
+            </section>
+            <section class="settings-page" data-settings-page="archives" hidden>
+              <h3 class="settings-page-title">Архивы</h3>
               <label class="settings-option">
                 <span class="settings-option-text"><strong>Автоочистка архивов</strong></span>
                 <input type="checkbox" data-setting-archive-retention ${settings.archive_retention_enabled ? "checked" : ""}>
@@ -2368,20 +2357,14 @@
               <div class="settings-chart-actions">
                 <button type="button" class="ghost" data-archive-cleanup-now>Очистить сейчас</button>
               </div>
-            </div>
-          </details>
-          <details class="settings-section">
-            <summary class="settings-section-title">График</summary>
-            <div class="settings-section-body">
-              <div class="settings-option settings-option--stacked">
-                <span class="settings-option-text"><strong>Цвета и линии</strong></span>
-                <div class="settings-chart-grid" data-chart-style-grid>${renderChartStyleControls(chartStyles.defaults, chartStyles.series)}</div>
-                <div class="settings-chart-actions">
-                  <button type="button" class="ghost" data-chart-style-reset>Сбросить</button>
-                </div>
+            </section>
+            <section class="settings-page" data-settings-page="diagnostics" hidden>
+              <h3 class="settings-page-title">Диагностика</h3>
+              <div class="diagnostics-body" data-diagnostics-body>
+                <div class="technical-empty">Загрузка…</div>
               </div>
-            </div>
-          </details>
+            </section>
+          </div>
         </div>
       </section>
     `;
@@ -2633,6 +2616,149 @@
         }
       });
     }
+
+    // Нормативы концентрации: тумблер + два норматива + допуск. Пустое поле
+    // норматива = не задан (шлём null). Обновляем список, чтобы вердикт применился.
+    const concentrationEnabled = settingsRoot.querySelector("[data-setting-concentration-enabled]");
+    const concentrationNorms = settingsRoot.querySelectorAll("[data-setting-concentration-norm]");
+    const concentrationTolerance = settingsRoot.querySelector("[data-setting-concentration-tolerance]");
+    const persistConcentration = async () => {
+      const norms = {};
+      concentrationNorms.forEach((input) => {
+        const raw = String(input.value ?? "").trim();
+        if (raw === "") {
+          norms[input.dataset.settingConcentrationNorm] = null;
+        } else {
+          const num = Number(raw);
+          norms[input.dataset.settingConcentrationNorm] = Number.isFinite(num)
+            ? Math.min(100, Math.max(0, num))
+            : null;
+        }
+      });
+      const tolRaw = Number(concentrationTolerance?.value);
+      const tolerance = Number.isFinite(tolRaw) ? Math.min(100, Math.max(0, tolRaw)) : 0;
+      try {
+        const saved = await saveAppSettings({
+          concentration_eval_enabled: Boolean(concentrationEnabled?.checked),
+          concentration_norms: norms,
+          concentration_tolerance_percent: tolerance,
+        });
+        // Возвращаем нормализованные сервером значения в поля.
+        if (saved && saved.concentration_norms) {
+          concentrationNorms.forEach((input) => {
+            input.value = formatNormValue(saved.concentration_norms[input.dataset.settingConcentrationNorm]);
+          });
+        }
+        if (concentrationTolerance && saved && Number.isFinite(Number(saved.concentration_tolerance_percent))) {
+          concentrationTolerance.value = Number(saved.concentration_tolerance_percent);
+        }
+        if (appState.hasWorkspace) {
+          hydrateWorkspaceData({ resetScroll: false }).catch(() => {});
+        }
+      } catch (_error) {
+        showToast("Не удалось сохранить настройки.", "error");
+      }
+    };
+    if (concentrationEnabled) {
+      concentrationEnabled.addEventListener("change", persistConcentration);
+    }
+    concentrationNorms.forEach((input) => input.addEventListener("change", persistConcentration));
+    if (concentrationTolerance) {
+      concentrationTolerance.addEventListener("change", persistConcentration);
+    }
+
+    // Кнопка очистки кэша графиков.
+    const chartCacheClear = settingsRoot.querySelector("[data-chart-cache-clear]");
+    if (chartCacheClear) {
+      chartCacheClear.addEventListener("click", async () => {
+        chartCacheClear.disabled = true;
+        try {
+          const response = await fetch("/api/chart-cache/clear", { method: "POST" });
+          if (!response.ok) {
+            throw new Error("clear-failed");
+          }
+          const data = await response.json();
+          showToast(`Кэш графиков очищен (файлов: ${data.removed || 0}).`, "success");
+        } catch (_error) {
+          showToast("Не удалось очистить кэш графиков.", "error");
+        } finally {
+          chartCacheClear.disabled = false;
+        }
+      });
+    }
+
+    // Боковая навигация разделов (macOS-стиль): переключение активной панели.
+    let diagnosticsLoaded = false;
+    const showSettingsPage = (pageId) => {
+      settingsRoot.querySelectorAll("[data-settings-nav]").forEach((button) => {
+        const active = button.dataset.settingsNav === pageId;
+        button.classList.toggle("is-active", active);
+        button.setAttribute("aria-selected", active ? "true" : "false");
+      });
+      settingsRoot.querySelectorAll("[data-settings-page]").forEach((panel) => {
+        panel.hidden = panel.dataset.settingsPage !== pageId;
+      });
+      if (pageId === "diagnostics" && !diagnosticsLoaded) {
+        diagnosticsLoaded = true;
+        void loadDiagnosticsInto(settingsRoot.querySelector("[data-diagnostics-body]"));
+      }
+    };
+    settingsRoot.querySelectorAll("[data-settings-nav]").forEach((button) => {
+      button.addEventListener("click", () => showSettingsPage(button.dataset.settingsNav));
+    });
+    if (SETTINGS_PAGES.some((page) => page.id === initialPage)) {
+      showSettingsPage(initialPage);
+    }
+  }
+
+  // Строки диагностики (снимок состояния источника) для раздела в настройках.
+  async function loadDiagnosticsInto(container) {
+    if (!container) {
+      return;
+    }
+    let data = null;
+    try {
+      data = await fetchDiagnostics();
+    } catch (_error) {
+      container.innerHTML = '<div class="technical-empty">Диагностика недоступна.</div>';
+      return;
+    }
+    const kindLabel = { ftp: "FTP", folder: "Папка", none: "—" };
+    const counts = data?.counts || {};
+    const rows = data
+      ? [
+          ["Источник", kindLabel[data.source_kind] || "—"],
+          ["Путь", data.display_root || "—"],
+          ["Последняя синхронизация", data.last_sync || "—"],
+          ["Моек", counts.cycles ?? 0],
+          ["Объектов", counts.objects ?? 0],
+          ["Баз данных", counts.databases ?? 0],
+          ["Архивов", counts.archives ?? 0],
+          ["FTP-панелей", counts.ftp_sources ?? 0],
+          [
+            "Автообновление",
+            data.auto_refresh?.enabled ? `вкл · ${data.auto_refresh.minutes} мин` : "выкл",
+          ],
+          ["Объём datalog", formatBytes(data.datalog?.size_bytes || 0)],
+          [
+            "Хранение архивов",
+            data.datalog?.retention_enabled ? `${data.datalog.retention_days} дней` : "выкл",
+          ],
+          ["Последняя очистка", data.datalog?.last_cleanup || "—"],
+          ["Обработка", data.job?.active ? data.job.message || "выполняется" : "нет"],
+          ["Ошибка", data.error || "—"],
+        ]
+      : [["Диагностика", "недоступна"]];
+    container.innerHTML = rows
+      .map(
+        ([key, value]) => `
+          <div class="diagnostics-row">
+            <span class="diagnostics-key">${escapeHtml(key)}</span>
+            <span class="diagnostics-value">${escapeHtml(String(value))}</span>
+          </div>
+        `
+      )
+      .join("");
   }
 
   function formatBytes(bytes) {
@@ -3184,6 +3310,15 @@
                     <th scope="row">Результат</th>
                     <td><span class="${badgeClass(detail.status, detail.result_kind)}">${escapeHtml(detail.status)}</span></td>
                   </tr>
+                  ${concentrationSummaryRows(detail)
+                    .map(
+                      ([label, value]) => `
+                  <tr>
+                    <th scope="row">${escapeHtml(label)}</th>
+                    <td>${escapeHtml(value)}</td>
+                  </tr>`
+                    )
+                    .join("")}
                 </tbody>
               </table>
             </div>
@@ -3443,7 +3578,7 @@
 
   const openDiagnosticsButton = document.querySelector("#openDiagnostics");
   if (openDiagnosticsButton) {
-    openDiagnosticsButton.addEventListener("click", () => openDiagnostics());
+    openDiagnosticsButton.addEventListener("click", () => openSettings("diagnostics"));
   }
 
   initClock();

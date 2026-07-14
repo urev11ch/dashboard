@@ -10,7 +10,7 @@ from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 OBJECT_NAMES_FILENAME = "wash_object_names.json"
 REQUIRED_DATA_COLUMNS = {
@@ -87,6 +87,18 @@ WASH_PROCESS_CODES = set(range(1, 22)) | {50, 55}
 NON_SUBSTANTIVE_PROCESS_CODES = {21, 28, 37, 50, 55}
 PAUSE_PROCESS_NAMES = {PROCESS_NAMES[50], PROCESS_NAMES[55]}
 COMPLETED_PROCESS_NAME = PROCESS_NAMES[21]
+
+# Фазы мойки, в которых оценивается концентрация рабочего раствора.
+ALKALI_PROCESS_ID = 6   # «Мойка щелочью»
+ACID_PROCESS_ID = 10    # «Мойка кислотой»
+# Стандартная строка вердикта, когда концентрация раствора ниже норматива.
+CONCENTRATION_LOW_LABEL = "Концентрация ниже нормы"
+
+# Порядок и подписи оцениваемых фаз (для payload и UI).
+CONCENTRATION_PHASES = (
+    ("alkali", ALKALI_PROCESS_ID, "Щёлочь"),
+    ("acid", ACID_PROCESS_ID, "Кислота"),
+)
 
 class AnalysisCancelledError(RuntimeError):
     pass
@@ -936,6 +948,84 @@ def cycle_result_label_from_operations(operation_names: Sequence[str]) -> str:
     if has_pause:
         return "Требует проверки, были паузы"
     return "Требует проверки"
+
+def _phase_min_concentration(segments: Sequence[Segment], process_id: int) -> float | None:
+    """Минимальная концентрация возврата за фазу мойки (по всем её сегментам).
+
+    Минимум, а не среднее: цель — поймать любой провал ниже норматива. None, если
+    фазы в мойке нет или в ней не было ни одного числового замера концентрации.
+    """
+    values = [
+        segment.concentration_return.minimum
+        for segment in segments
+        if segment.process_id == process_id
+        and segment.concentration_return.minimum is not None
+    ]
+    return min(values) if values else None
+
+def evaluate_concentration(
+    segments: Sequence[Segment],
+    norms: Mapping[str, float | None],
+    tolerance_percent: float = 0.0,
+) -> dict[str, Any]:
+    """Оценивает концentрацию рабочих растворов мойки относительно нормативов.
+
+    `norms` — целевые концентрации по фазам (`{"alkali": %, "acid": %}`); None или
+    отсутствие ключа = норматив не задан, фаза не оценивается. `tolerance_percent` —
+    допуск: фаза считается в норме, если минимум концентрации ≥ норма·(1 − допуск/100).
+
+    Возвращает `{"phases": [...], "kind": "low"|"ok"|None}`. `kind` = "low", если хотя
+    бы одна оценённая фаза ниже нормы; "ok", если оценённые фазы в норме; None — если
+    оценить нечего (нормативы не заданы или в мойке нет соответствующих фаз с данными).
+    """
+    try:
+        tolerance = float(tolerance_percent)
+    except (TypeError, ValueError):
+        tolerance = 0.0
+    tolerance = max(0.0, min(100.0, tolerance))
+    factor = 1.0 - tolerance / 100.0
+
+    phases: list[dict[str, Any]] = []
+    any_low = False
+    any_evaluated = False
+    for phase_key, process_id, label in CONCENTRATION_PHASES:
+        norm = norms.get(phase_key)
+        try:
+            norm = float(norm) if norm is not None else None
+        except (TypeError, ValueError):
+            norm = None
+        minimum = _phase_min_concentration(segments, process_id)
+
+        if norm is None or norm <= 0 or minimum is None:
+            status = "unknown"
+            threshold = None
+        else:
+            any_evaluated = True
+            threshold = norm * factor
+            if minimum < threshold:
+                status = "low"
+                any_low = True
+            else:
+                status = "ok"
+
+        phases.append(
+            {
+                "phase": phase_key,
+                "label": label,
+                "min": minimum,
+                "norm": norm,
+                "threshold": threshold,
+                "status": status,
+            }
+        )
+
+    if not any_evaluated:
+        kind: str | None = None
+    elif any_low:
+        kind = "low"
+    else:
+        kind = "ok"
+    return {"phases": phases, "kind": kind}
 
 def prune_samples_to_cycles(
     samples: Sequence[Sample],

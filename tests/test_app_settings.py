@@ -18,6 +18,9 @@ def test_defaults_when_missing(tmp_path, monkeypatch):
         "autostart": False,
         "archive_retention_enabled": False,
         "archive_retention_days": 365,
+        "concentration_eval_enabled": False,
+        "concentration_norms": {"alkali": None, "acid": None},
+        "concentration_tolerance_percent": 10.0,
     }
 
 
@@ -35,7 +38,59 @@ def test_save_load_roundtrip(tmp_path, monkeypatch):
         "autostart": False,
         "archive_retention_enabled": False,
         "archive_retention_days": 365,
+        "concentration_eval_enabled": False,
+        "concentration_norms": {"alkali": None, "acid": None},
+        "concentration_tolerance_percent": 10.0,
     }
+
+
+def test_concentration_verdict_downgrades_completed():
+    labels = {"completed": "", "check": ""}
+    # Концентрация ниже нормы делает завершённую мойку «требующей проверки».
+    status, kind = app.apply_concentration_verdict("Завершено штатно", labels, {"kind": "low"})
+    assert kind == "check"
+    assert status == app.core.CONCENTRATION_LOW_LABEL
+
+
+def test_concentration_verdict_keeps_check_verdict():
+    labels = {"completed": "", "check": ""}
+    base = "Требует проверки, были паузы"
+    # Уже «требует проверки» — концентрация не подменяет базовый вердикт своим
+    # текстом (подпись остаётся такой же, как без учёта концентрации).
+    status, kind = app.apply_concentration_verdict(base, labels, {"kind": "low"})
+    assert kind == "check"
+    assert status == app.resolve_result_label(base, labels)
+    assert status != app.core.CONCENTRATION_LOW_LABEL
+
+
+def test_concentration_verdict_noop_when_ok_or_absent():
+    labels = {"completed": "", "check": ""}
+    for concentration in (None, {"kind": "ok"}):
+        status, kind = app.apply_concentration_verdict("Завершено штатно", labels, concentration)
+        assert status == "Завершено штатно"
+        assert kind == "completed"
+
+
+def test_concentration_settings_normalized(tmp_path, monkeypatch):
+    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    saved = app.save_app_settings(
+        {
+            "concentration_eval_enabled": "on",
+            "concentration_norms": {"alkali": "2.5", "acid": 200, "bogus": 5},
+            "concentration_tolerance_percent": "15",
+        }
+    )
+    assert saved["concentration_eval_enabled"] is True
+    # Незнакомая фаза отброшена, значение вне диапазона клампится, строка-число парсится.
+    assert saved["concentration_norms"] == {"alkali": 2.5, "acid": 100.0}
+    assert saved["concentration_tolerance_percent"] == 15.0
+
+    # Пустая строка и мусор → норматив не задан (None); мусорный допуск → дефолт.
+    blank = app.normalize_app_settings(
+        {"concentration_norms": {"alkali": "", "acid": "abc"}, "concentration_tolerance_percent": "x"}
+    )
+    assert blank["concentration_norms"] == {"alkali": None, "acid": None}
+    assert blank["concentration_tolerance_percent"] == 10.0
 
     payload = json.loads(app.app_settings_path().read_text(encoding="utf-8"))
     assert payload["version"] == app.APP_SETTINGS_VERSION
