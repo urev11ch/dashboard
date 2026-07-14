@@ -649,6 +649,8 @@
   let washListRenderFrame = 0;
   let searchRenderTimer = 0;
   let settingsOpenId = 0;
+  // Активный таймер подтверждения очистки архивов — чистится при закрытии настроек.
+  let archiveCleanupInterval = null;
   let diagnosticsOpenId = 0;
 
   const washList = document.querySelector("#washList");
@@ -1830,16 +1832,24 @@
 
   // Пары [подпись, значение] для оценённых фаз концентрации (unknown пропускаем).
   // Используется и в окне деталей, и в печатном отчёте — вид совпадает.
+  // Датчик на возврате: оцениваем рабочий участок (полку). «Не достигла нормы» —
+  // концентрация ни разу не вышла на уровень (показываем пик); «провал» — вышла,
+  // но просела на рабочем участке; «в норме» — вышла и держалась (мин полки).
   function concentrationSummaryRows(detail) {
     const phases = Array.isArray(detail.concentration_eval) ? detail.concentration_eval : [];
     return phases
       .filter((phase) => phase && phase.status !== "unknown")
       .map((phase) => {
-        const verdict = phase.status === "low" ? "ниже нормы" : "в норме";
-        return [
-          `Концентрация: ${phase.label}`,
-          `мин ${formatConcentration(phase.min)} / норма ${formatConcentration(phase.norm)} — ${verdict}`,
-        ];
+        const norm = `норма ${formatConcentration(phase.norm)}`;
+        let value;
+        if (phase.status === "low" && phase.reason === "not_reached") {
+          value = `макс ${formatConcentration(phase.peak)} / ${norm} — не достигла нормы`;
+        } else if (phase.status === "low") {
+          value = `мин на режиме ${formatConcentration(phase.floor)} / ${norm} — провал ниже нормы`;
+        } else {
+          value = `мин на режиме ${formatConcentration(phase.floor)} / ${norm} — в норме`;
+        }
+        return [`Концентрация: ${phase.label}`, value];
       });
   }
 
@@ -2116,6 +2126,10 @@
   function closeSettings() {
     // Новый токен: ответы запросов открытой панели уже не применятся.
     settingsOpenId += 1;
+    if (archiveCleanupInterval !== null) {
+      clearInterval(archiveCleanupInterval);
+      archiveCleanupInterval = null;
+    }
     settingsRoot.hidden = true;
     settingsRoot.innerHTML = "";
     syncOverlayState();
@@ -2357,6 +2371,13 @@
               <div class="settings-chart-actions">
                 <button type="button" class="ghost" data-archive-cleanup-now>Очистить сейчас</button>
               </div>
+              <div class="archive-confirm" data-archive-confirm hidden>
+                <p class="settings-note" data-archive-confirm-text></p>
+                <div class="settings-chart-actions">
+                  <button type="button" class="ghost" data-archive-confirm-cancel>Отмена</button>
+                  <button type="button" data-archive-confirm-ok disabled>Очистить</button>
+                </div>
+              </div>
             </section>
             <section class="settings-page" data-settings-page="diagnostics" hidden>
               <h3 class="settings-page-title">Диагностика</h3>
@@ -2591,14 +2612,66 @@
       retentionDays.addEventListener("change", persistRetention);
     }
 
+    // Очистка архивов — необратимое удаление, поэтому подтверждение с обратным
+    // отсчётом: кнопка «Очистить» разблокируется только через 30 секунд (защита
+    // от случайного нажатия), «Отмена» доступна всегда.
     const cleanupButton = settingsRoot.querySelector("[data-archive-cleanup-now]");
-    if (cleanupButton) {
-      cleanupButton.addEventListener("click", async () => {
+    const cleanupConfirm = settingsRoot.querySelector("[data-archive-confirm]");
+    const cleanupConfirmText = settingsRoot.querySelector("[data-archive-confirm-text]");
+    const cleanupConfirmOk = settingsRoot.querySelector("[data-archive-confirm-ok]");
+    const cleanupConfirmCancel = settingsRoot.querySelector("[data-archive-confirm-cancel]");
+    const CLEANUP_DELAY_SECONDS = 30;
+
+    const stopCleanupTimer = () => {
+      if (archiveCleanupInterval !== null) {
+        clearInterval(archiveCleanupInterval);
+        archiveCleanupInterval = null;
+      }
+    };
+
+    const hideCleanupConfirm = () => {
+      stopCleanupTimer();
+      if (cleanupConfirm) cleanupConfirm.hidden = true;
+      if (cleanupButton) cleanupButton.hidden = false;
+    };
+
+    if (cleanupButton && cleanupConfirm && cleanupConfirmOk) {
+      cleanupButton.addEventListener("click", () => {
         const days = Number(retentionDays?.value) || 365;
-        if (!window.confirm(`Удалить архивы старше ${days} дней? Эти мойки исчезнут из журнала.`)) {
+        if (cleanupConfirmText) {
+          cleanupConfirmText.textContent =
+            `Удалить архивы старше ${days} дней? Эти мойки исчезнут из журнала. ` +
+            `Действие необратимо — кнопка «Очистить» станет доступна через ${CLEANUP_DELAY_SECONDS} с.`;
+        }
+        cleanupButton.hidden = true;
+        cleanupConfirm.hidden = false;
+
+        let remaining = CLEANUP_DELAY_SECONDS;
+        cleanupConfirmOk.disabled = true;
+        cleanupConfirmOk.textContent = `Очистить (${remaining})`;
+        stopCleanupTimer();
+        archiveCleanupInterval = setInterval(() => {
+          remaining -= 1;
+          if (remaining > 0) {
+            cleanupConfirmOk.textContent = `Очистить (${remaining})`;
+          } else {
+            stopCleanupTimer();
+            cleanupConfirmOk.disabled = false;
+            cleanupConfirmOk.textContent = "Очистить";
+          }
+        }, 1000);
+      });
+
+      if (cleanupConfirmCancel) {
+        cleanupConfirmCancel.addEventListener("click", hideCleanupConfirm);
+      }
+
+      cleanupConfirmOk.addEventListener("click", async () => {
+        if (cleanupConfirmOk.disabled) {
           return;
         }
-        cleanupButton.disabled = true;
+        stopCleanupTimer();
+        cleanupConfirmOk.disabled = true;
         try {
           const response = await fetch("/api/archives/cleanup", { method: "POST" });
           if (!response.ok) {
@@ -2612,7 +2685,7 @@
         } catch (_error) {
           showToast("Не удалось выполнить очистку.", "error");
         } finally {
-          cleanupButton.disabled = false;
+          hideCleanupConfirm();
         }
       });
     }

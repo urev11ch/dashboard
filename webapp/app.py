@@ -1839,7 +1839,7 @@ def evaluate_cycle_concentration(
     if not settings.get("concentration_eval_enabled"):
         return None
     result = core.evaluate_concentration(
-        core.analysis_segments_for_cycle(analysis, cycle),
+        core.analysis_samples_for_cycle(analysis, cycle),
         settings.get("concentration_norms") or {},
         settings.get("concentration_tolerance_percent") or 0.0,
     )

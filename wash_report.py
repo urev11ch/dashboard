@@ -949,34 +949,63 @@ def cycle_result_label_from_operations(operation_names: Sequence[str]) -> str:
         return "Требует проверки, были паузы"
     return "Требует проверки"
 
-def _phase_min_concentration(segments: Sequence[Segment], process_id: int) -> float | None:
-    """Минимальная концентрация возврата за фазу мойки (по всем её сегментам).
+def _phase_concentration_series(samples: Sequence[Sample], process_id: int) -> list[float]:
+    """Ряд концентраций возврата за фазу мойки, в порядке времени.
 
-    Минимум, а не среднее: цель — поймать любой провал ниже норматива. None, если
-    фазы в мойке нет или в ней не было ни одного числового замера концентрации.
-    """
-    values = [
-        segment.concentration_return.minimum
-        for segment in segments
-        if segment.process_id == process_id
-        and segment.concentration_return.minimum is not None
+    Кондуктометр стоит на возврате, поэтому в начале фазы (пока раствор идёт по
+    контуру) концентрация ещё нарастает, а в конце — спадает при вытеснении.
+    Ряд нужен целиком, чтобы отделить эти переходные края от рабочей «полки»."""
+    return [
+        sample.concentration_return
+        for sample in samples
+        if sample.process == process_id and sample.concentration_return is not None
     ]
-    return min(values) if values else None
+
+
+def _evaluate_phase_concentration(
+    series: Sequence[float], norm: float, threshold: float
+) -> dict[str, Any]:
+    """Оценка одной фазы по ряду концентраций относительно порога.
+
+    Логика учитывает, что датчик на возврате: рабочий участок — это интервал от
+    первого до последнего превышения порога (полка). Всё до него — заполнение
+    контура, всё после — вытеснение; эти края в оценку не входят.
+
+    - `not_reached`: концентрация ни разу не достигла порога — раствор слабый или
+      не подан (ловим «недостижение»). Показываем пик — докуда дошла.
+    - `dip`: раствор вышел на режим, но ПОСЕРЕДИНЕ полки провалился ниже порога
+      (разбавление). Показываем минимум полки.
+    - `ok`: вышел на режим и держался. Показываем минимум полки.
+    """
+    peak = max(series)
+    reached = [index for index, value in enumerate(series) if value >= threshold]
+    if not reached:
+        return {"status": "low", "reason": "not_reached", "peak": peak, "floor": None}
+
+    working = series[reached[0]: reached[-1] + 1]
+    floor = min(working)
+    if floor < threshold:
+        return {"status": "low", "reason": "dip", "peak": peak, "floor": floor}
+    return {"status": "ok", "reason": None, "peak": peak, "floor": floor}
+
 
 def evaluate_concentration(
-    segments: Sequence[Segment],
+    samples: Sequence[Sample],
     norms: Mapping[str, float | None],
     tolerance_percent: float = 0.0,
 ) -> dict[str, Any]:
-    """Оценивает концentрацию рабочих растворов мойки относительно нормативов.
+    """Оценивает концентрацию рабочих растворов мойки относительно нормативов.
 
-    `norms` — целевые концентрации по фазам (`{"alkali": %, "acid": %}`); None или
-    отсутствие ключа = норматив не задан, фаза не оценивается. `tolerance_percent` —
-    допуск: фаза считается в норме, если минимум концентрации ≥ норма·(1 − допуск/100).
+    `samples` — сэмплы мойки (с полем `process`); из них по каждой фазе
+    (щёлочь/кислота) берётся временной ряд концентрации возврата. `norms` —
+    целевые концентрации по фазам (`{"alkali": %, "acid": %}`); None или
+    отсутствие ключа = норматив не задан, фаза не оценивается. `tolerance_percent`
+    задаёт порог `норма·(1 − допуск/100)`: раствор должен подняться до него и
+    удержаться на рабочем участке.
 
-    Возвращает `{"phases": [...], "kind": "low"|"ok"|None}`. `kind` = "low", если хотя
-    бы одна оценённая фаза ниже нормы; "ok", если оценённые фазы в норме; None — если
-    оценить нечего (нормативы не заданы или в мойке нет соответствующих фаз с данными).
+    Возвращает `{"phases": [...], "kind": "low"|"ok"|None}`. `kind` = "low", если
+    хотя бы одна оценённая фаза не достигла нормы или провалилась на рабочем
+    участке; "ok" — если оценённые фазы в норме; None — если оценить нечего.
     """
     try:
         tolerance = float(tolerance_percent)
@@ -994,28 +1023,38 @@ def evaluate_concentration(
             norm = float(norm) if norm is not None else None
         except (TypeError, ValueError):
             norm = None
-        minimum = _phase_min_concentration(segments, process_id)
+        series = _phase_concentration_series(samples, process_id)
 
-        if norm is None or norm <= 0 or minimum is None:
-            status = "unknown"
-            threshold = None
-        else:
-            any_evaluated = True
-            threshold = norm * factor
-            if minimum < threshold:
-                status = "low"
-                any_low = True
-            else:
-                status = "ok"
+        if norm is None or norm <= 0 or not series:
+            phases.append(
+                {
+                    "phase": phase_key,
+                    "label": label,
+                    "status": "unknown",
+                    "reason": None,
+                    "norm": norm,
+                    "threshold": None,
+                    "peak": max(series) if series else None,
+                    "floor": None,
+                }
+            )
+            continue
 
+        any_evaluated = True
+        threshold = norm * factor
+        result = _evaluate_phase_concentration(series, norm, threshold)
+        if result["status"] == "low":
+            any_low = True
         phases.append(
             {
                 "phase": phase_key,
                 "label": label,
-                "min": minimum,
+                "status": result["status"],
+                "reason": result["reason"],
                 "norm": norm,
                 "threshold": threshold,
-                "status": status,
+                "peak": result["peak"],
+                "floor": result["floor"],
             }
         )
 
