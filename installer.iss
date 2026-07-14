@@ -62,10 +62,16 @@ Filename: "{tmp}\MicrosoftEdgeWebview2Setup.exe"; Parameters: "/silent /install"
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
 [UninstallRun]
-; Автозапуск приложение пишет в HKCU\...\Run пользователя; деинсталлятор
-; elevated и своим HKCU (администратора) его не достанет — поэтому чистим запись
-; самим приложением, запущенным от исходного пользователя.
-Filename: "{app}\{#AppExe}"; Parameters: "--remove-autostart"; Flags: runasoriginaluser waituntilterminated runhidden skipifdoesntexist; RunOnceId: "RemoveAutostart"
+; Автозапуск приложение пишет в HKCU\...\Run текущего пользователя; при удалении
+; просим само приложение снять запись (--remove-autostart).
+; Флаг runasoriginaluser в [UninstallRun] Inno Setup НЕ поддерживается (доступен
+; только в [Run]) — из-за него компилятор падал с «flag not supported in this
+; section». Поэтому очистка идёт в обычном контексте деинсталлятора: она
+; срабатывает, когда удаление запускает тот же пользователь, что ставил программу
+; (обычный случай). В редком случае удаления под другой учётной записью запись
+; автозапуска останется указывать на удалённый .exe — Windows молча игнорирует
+; такой «мёртвый» автозапуск, вреда нет.
+Filename: "{app}\{#AppExe}"; Parameters: "--remove-autostart"; Flags: waituntilterminated runhidden skipifdoesntexist; RunOnceId: "RemoveAutostart"
 
 [Code]
 function WebView2Installed(): Boolean;
