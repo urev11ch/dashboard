@@ -31,10 +31,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-windows.txt
 
-      - name: Run tests
-        run: |
-          pip install -r requirements-dev.txt
-          pytest -q
+      # Тесты здесь НЕ гоняются намеренно. Их прогоняет workflow «Tests»
+      # (tests.yml) на ubuntu-latest при каждом push в main и в каждом PR.
+      # Дублировать прогон на windows-latest вредно: часть тестов проверяет
+      # POSIX-специфику (права 0o700, симлинки, XDG-пути), которой на Windows
+      # нет by design — os.chmod там не выставляет 0o700, а symlink_to без
+      # привилегий падает, и шаг краснел бы на неприменимой к Windows проверке.
+      # Импорт кода под Windows проверяется шагом Build executable (PyInstaller
+      # Analysis выполняет импорты приложения).
 
       - name: Resolve app version
         # Единый источник версии — webapp/__init__.py (__version__): его читают
