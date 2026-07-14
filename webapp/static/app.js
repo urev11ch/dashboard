@@ -495,6 +495,8 @@
 
   // Фоновое автообновление FTP: отдельный лёгкий поллер. Когда серверная фоновая
   // задача завершается, тихо подтягиваем свежие данные — без оверлея и перезагрузки.
+  // Поллер нужен только FTP-источнику (у папки фоновых задач не бывает) и только
+  // при видимой вкладке.
   (function initBackgroundRefreshWatcher() {
     const POLL_MS = 15000;
     let lastHandledJobId =
@@ -502,8 +504,19 @@
         ? initialJobStatus.id || ""
         : "";
     let timer = 0;
+    let stopped = false;
+
+    const stop = () => {
+      if (timer) {
+        window.clearTimeout(timer);
+        timer = 0;
+      }
+    };
 
     const schedule = () => {
+      if (stopped || timer || document.visibilityState === "hidden") {
+        return;
+      }
       timer = window.setTimeout(tick, POLL_MS);
     };
 
@@ -530,16 +543,43 @@
       schedule();
     }
 
-    window.addEventListener("beforeunload", () => {
-      if (timer) {
-        window.clearTimeout(timer);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") {
+        stop();
+      } else {
+        schedule();
       }
     });
-    schedule();
+
+    window.addEventListener("beforeunload", () => {
+      stopped = true;
+      stop();
+    });
+
+    // Тип источника отдаёт только /api/diagnostics: для папки поллер не запускаем.
+    // Если диагностика недоступна — ведём себя как раньше и опрашиваем.
+    void fetchDiagnostics()
+      .then((data) => {
+        if (String(data?.source_kind || "") === "folder") {
+          stopped = true;
+          stop();
+          return;
+        }
+        schedule();
+      })
+      .catch(() => {
+        schedule();
+      });
   })();
 
-  const WASH_LIST_ROW_HEIGHT = 69;
-  const WASH_LIST_HEADER_HEIGHT = 38;
+  // Стартовые высоты строки/заголовка дня (см. .wash-row / .wash-day-header в
+  // style.css). Реальные значения зависят от вёрстки и меряются по DOM после
+  // первой отрисовки — константы нужны только до первого измерения.
+  const WASH_LIST_ROW_HEIGHT_FALLBACK = 69;
+  const WASH_LIST_HEADER_HEIGHT_FALLBACK = 38;
+  // Ниже этой ширины строка списка становится резиновой (height: auto), поэтому
+  // виртуализация с фиксированной высотой спейсеров там неприменима.
+  const WASH_LIST_FLUID_LAYOUT_QUERY = "(max-width: 1100px)";
   const WASH_LIST_OVERSCAN = 8;
   const SEARCH_INPUT_DEBOUNCE_MS = 180;
   const DEFAULT_PERIOD_PRESET = "7d";
@@ -551,15 +591,34 @@
     displayItems: [],
     displayOffsets: [0],
     displayTotalHeight: 0,
+    displayVersion: 0,
     dateBounds: null,
     activePeriodPreset: DEFAULT_PERIOD_PRESET,
+    // Смещение таймзоны сервера (минуты к UTC). Приходит в /api/workspace-data;
+    // если поля нет — считаем дни в зоне браузера (прежнее поведение).
+    serverTzOffsetMin: null,
   };
+  const washListMetrics = {
+    rowHeight: WASH_LIST_ROW_HEIGHT_FALLBACK,
+    headerHeight: WASH_LIST_HEADER_HEIGHT_FALLBACK,
+  };
+  const fluidWashListQuery =
+    typeof window.matchMedia === "function" ? window.matchMedia(WASH_LIST_FLUID_LAYOUT_QUERY) : null;
+
+  function isWashListVirtualized() {
+    return !fluidWashListQuery?.matches;
+  }
   const detailCache = new Map();
   const detailRequestCache = new Map();
   const chartPayloadCache = new Map();
   const chartPayloadRequestCache = new Map();
   const DETAIL_CACHE_LIMIT = 200;
   const CHART_PAYLOAD_CACHE_LIMIT = 80;
+  // Поколение данных рабочей области: растёт при каждой инвалидации кэшей
+  // (в том числе при фоновом автообновлении FTP). Ответ запроса, стартовавшего
+  // до инвалидации, в кэш уже не попадает — иначе устаревшие детали/график
+  // «воскресали» бы в только что очищенном кэше.
+  let workspaceDataGeneration = 0;
 
   function setBoundedCacheEntry(cache, key, value, limit) {
     // Простая LRU-эвикция: не даём кэшам расти неограниченно между обновлениями данных.
@@ -573,11 +632,11 @@
     }
   }
   let modalRequestId = 0;
-  let activeModalKey = "";
   let restoreDocumentTitle = null;
-  let activeModalChartReady = Promise.resolve(false);
   let washListRenderFrame = 0;
   let searchRenderTimer = 0;
+  let settingsOpenId = 0;
+  let diagnosticsOpenId = 0;
 
   const washList = document.querySelector("#washList");
   const washFilterCount = document.querySelector("#washFilterCount");
@@ -659,19 +718,57 @@
   }
 
   // ---- Часы (текущее время) ---------------------------------------------
+  // Форматтеры создаём один раз: Intl-объект дорогой, а тик — каждую секунду.
+  const CLOCK_DATE_FORMAT = new Intl.DateTimeFormat("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+  const CLOCK_TIME_FORMAT = new Intl.DateTimeFormat("ru-RU", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+
   function initClock() {
     const clock = document.querySelector("#appClock");
     if (!clock) {
       return;
     }
+
+    let timer = 0;
+
     const tick = () => {
       const now = new Date();
-      const date = now.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric" });
-      const time = now.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-      clock.textContent = `${date} · ${time}`;
+      clock.textContent = `${CLOCK_DATE_FORMAT.format(now)} · ${CLOCK_TIME_FORMAT.format(now)}`;
     };
-    tick();
-    window.setInterval(tick, 1000);
+
+    const stop = () => {
+      if (timer) {
+        window.clearInterval(timer);
+        timer = 0;
+      }
+    };
+
+    // На скрытой вкладке часы никто не видит — тик останавливаем.
+    const start = () => {
+      if (timer) {
+        return;
+      }
+      tick();
+      timer = window.setInterval(tick, 1000);
+    };
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") {
+        stop();
+      } else {
+        start();
+      }
+    });
+    window.addEventListener("beforeunload", stop);
+
+    start();
   }
 
   const WASH_RESULT_PREF_KEY = "opticipShowWashResultV1";
@@ -697,12 +794,15 @@
     applyWashResultVisibility();
   }
 
+  // Экранирование как в wash-chart.js: включая одинарную кавычку (&#39;) —
+  // данные пользовательские, разметка собирается строками.
   function escapeHtml(value) {
     return String(value ?? "")
       .replaceAll("&", "&amp;")
       .replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;");
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
   }
 
   function badgeClass(status, kind) {
@@ -722,10 +822,12 @@
     return `${day}.${month}.${year}. ${hours}.${minutes}.${seconds}`;
   }
 
+  // Возвращает сырую строку: экранирование — только в месте вставки в разметку,
+  // иначе получалось двойное экранирование (&amp;quot; в тултипе).
   function formatListDateTime(value) {
     const match = String(value ?? "").match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);
     if (!match) {
-      return escapeHtml(value ?? "—");
+      return String(value ?? "—");
     }
 
     const [, year, month, day, hours, minutes, seconds] = match;
@@ -740,17 +842,6 @@
       row.source_name,
       row.status,
       `Канал ${row.channel}`,
-    ]
-      .join(" ")
-      .toLowerCase();
-  }
-
-  function buildObjectEditorSearchBlob(row) {
-    return [
-      `Канал ${row.channel}`,
-      `Объект ${row.object_id}`,
-      row.object_name,
-      row.base_object_name,
     ]
       .join(" ")
       .toLowerCase();
@@ -771,13 +862,7 @@
   }
 
   function replaceObjectRows(rows) {
-    state.objectRows = sortObjectRows(
-      (Array.isArray(rows) ? rows : []).map((row) => {
-        const nextRow = { ...row };
-        nextRow.search_blob = buildObjectEditorSearchBlob(nextRow);
-        return nextRow;
-      })
-    );
+    state.objectRows = sortObjectRows((Array.isArray(rows) ? rows : []).map((row) => ({ ...row })));
   }
 
   function buildWashObjectKey(channel, objectId) {
@@ -862,6 +947,8 @@
   }
 
   function clearWorkspaceDataCaches({ keepUi = false } = {}) {
+    // Новое поколение: ответы запросов, стартовавших до очистки, в кэш не попадут.
+    workspaceDataGeneration += 1;
     detailCache.clear();
     detailRequestCache.clear();
     chartPayloadCache.clear();
@@ -894,6 +981,10 @@
     appState.summary = payload?.summary || {};
     appState.error = String(payload?.error || "");
     appState.jobStatus = payload?.job_status || appState.jobStatus || {};
+    state.serverTzOffsetMin =
+      typeof payload?.tz_offset_min === "number" && Number.isFinite(payload.tz_offset_min)
+        ? payload.tz_offset_min
+        : null;
 
     applyWorkspaceMeta(payload);
     replaceObjectRows(payload?.object_rows);
@@ -1023,12 +1114,44 @@
     return `${year}-${month}-${day}`;
   }
 
+  // Ключ дня (YYYY-MM-DD) в таймзоне СЕРВЕРА: строки списка приходят с start_day,
+  // который сервер формирует в своей зоне (format_day_key). В вебе зоны браузера
+  // и сервера могут не совпадать — тогда «Сегодня» пустел или ехал на сутки.
+  // Если сервер не отдал tz_offset_min, считаем по зоне браузера, как раньше.
+  function getServerDateKey(value = new Date()) {
+    const date = value instanceof Date ? value : new Date(value);
+    if (state.serverTzOffsetMin === null) {
+      return getLocalDateKey(date);
+    }
+
+    const shifted = new Date(date.getTime() + state.serverTzOffsetMin * 60000);
+    const year = String(shifted.getUTCFullYear());
+    const month = String(shifted.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(shifted.getUTCDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  // Начало серверных суток (epoch, секунды) для ключа дня YYYY-MM-DD.
+  function getServerDayStartTs(dayKey) {
+    const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dayKey || ""));
+    if (!parts) {
+      return null;
+    }
+
+    const [, year, month, day] = parts;
+    if (state.serverTzOffsetMin === null) {
+      return new Date(Number(year), Number(month) - 1, Number(day)).getTime() / 1000;
+    }
+
+    return Date.UTC(Number(year), Number(month) - 1, Number(day)) / 1000 - state.serverTzOffsetMin * 60;
+  }
+
   function getPeriodPresetStartTs() {
     if (state.activePeriodPreset === "all" || !state.activePeriodPreset) {
       return null;
     }
     if (state.activePeriodPreset === "today") {
-      return new Date(new Date().setHours(0, 0, 0, 0)).getTime() / 1000;
+      return getServerDayStartTs(getServerDateKey());
     }
     if (state.activePeriodPreset === "7d") {
       return (Date.now() - 7 * 24 * 60 * 60 * 1000) / 1000;
@@ -1170,7 +1293,7 @@
     const selectedDay = dayFilter.value;
     const channel = channelFilter.value;
     const presetStartTs = getPeriodPresetStartTs();
-    const todayKey = getLocalDateKey();
+    const todayKey = getServerDateKey();
 
     const filtered = state.washRows.filter((row) => {
       if (selectedDay && row.start_day !== selectedDay) {
@@ -1202,10 +1325,11 @@
   }
 
   function renderWashRow(row) {
+    const dateTime = escapeHtml(formatListDateTime(row.date_time));
     return `
       <div class="wash-row" data-key="${escapeHtml(row.key)}" role="button" tabindex="0">
         <div class="wash-cell wash-cell--primary">
-          <div class="wash-entry-time" title="${escapeHtml(formatListDateTime(row.date_time))}">${formatListDateTime(row.date_time)}</div>
+          <div class="wash-entry-time" title="${dateTime}">${dateTime}</div>
         </div>
         <div class="wash-cell">
           <div class="wash-entry-object" title="${escapeHtml(row.object)}">${escapeHtml(row.object)}</div>
@@ -1224,6 +1348,79 @@
     `;
   }
 
+  // Границы последнего отрисованного окна. Пока они не изменились, DOM не
+  // трогаем: раньше innerHTML переписывался на каждом кадре скролла (полный
+  // reparse видимых строк — слетали hover и выделение текста).
+  const renderedWindow = { version: -1, start: -1, end: -1, virtualized: false };
+
+  function invalidateRenderedWashWindow() {
+    renderedWindow.version = -1;
+    renderedWindow.start = -1;
+    renderedWindow.end = -1;
+    renderedWindow.virtualized = false;
+  }
+
+  function renderWashItemsHtml(startIndex, endIndex) {
+    const items = state.displayItems;
+    const chunks = [];
+    for (let i = startIndex; i < endIndex; i += 1) {
+      const item = items[i];
+      chunks.push(
+        item.type === "header"
+          ? `<div class="wash-day-header" aria-hidden="true">${escapeHtml(item.label)}</div>`
+          : renderWashRow(item.row)
+      );
+    }
+    return chunks.join("");
+  }
+
+  function writeWashListHtml(html) {
+    // innerHTML уничтожает сфокусированную строку — запоминаем её ключ и после
+    // перерисовки возвращаем фокус клавиатуры на ту же строку, если она в DOM.
+    const activeElement = document.activeElement;
+    const focusedRowKey =
+      activeElement && washList.contains(activeElement)
+        ? activeElement.closest("[data-key]")?.dataset.key || ""
+        : "";
+
+    washList.innerHTML = html;
+
+    if (focusedRowKey) {
+      const rowToFocus = Array.from(washList.querySelectorAll("[data-key]")).find(
+        (row) => row.dataset.key === focusedRowKey
+      );
+      rowToFocus?.focus({ preventScroll: true });
+    }
+  }
+
+  // Реальные высоты строки и заголовка дня берём из DOM: они заданы в CSS и
+  // меняются вместе с медиа-запросами/настройками, а не константой в JS.
+  function syncWashListMetricsFromDom() {
+    let changed = false;
+
+    const rowElement = washList.querySelector(".wash-row:not(.wash-row--skeleton)");
+    if (rowElement) {
+      const height = rowElement.getBoundingClientRect().height;
+      if (height > 0 && Math.abs(height - washListMetrics.rowHeight) > 0.5) {
+        washListMetrics.rowHeight = height;
+        changed = true;
+      }
+    }
+
+    const headerElement = washList.querySelector(".wash-day-header");
+    if (headerElement) {
+      const height = headerElement.getBoundingClientRect().height;
+      if (height > 0 && Math.abs(height - washListMetrics.headerHeight) > 0.5) {
+        washListMetrics.headerHeight = height;
+        changed = true;
+      }
+    }
+
+    return changed;
+  }
+
+  let washListMetricsResyncing = false;
+
   function renderVirtualizedWashList({ resetScroll = false } = {}) {
     if (resetScroll) {
       washList.scrollTop = 0;
@@ -1231,15 +1428,37 @@
 
     const items = state.displayItems;
     if (!items.length) {
-      washList.innerHTML = '<div class="technical-empty">Мойки не найдены</div>';
+      writeWashListHtml('<div class="technical-empty">Мойки не найдены</div>');
+      invalidateRenderedWashWindow();
+      return;
+    }
+
+    // Ниже 1100px строка резиновая (height: auto, min-height: 69px), высота
+    // заранее неизвестна и у разных строк разная — спейсеры с фиксированной
+    // высотой давали бы провалы и недолистывание. В этом режиме виртуализацию
+    // отключаем и рисуем список целиком.
+    if (!isWashListVirtualized()) {
+      if (
+        renderedWindow.virtualized ||
+        renderedWindow.version !== state.displayVersion ||
+        renderedWindow.start !== 0 ||
+        renderedWindow.end !== items.length
+      ) {
+        writeWashListHtml(renderWashItemsHtml(0, items.length));
+        renderedWindow.version = state.displayVersion;
+        renderedWindow.start = 0;
+        renderedWindow.end = items.length;
+        renderedWindow.virtualized = false;
+      }
       return;
     }
 
     const offsets = state.displayOffsets;
     const totalHeight = state.displayTotalHeight;
-    const viewportHeight = Math.max(washList.clientHeight, WASH_LIST_ROW_HEIGHT);
+    const rowHeight = washListMetrics.rowHeight;
+    const viewportHeight = Math.max(washList.clientHeight, rowHeight);
     const scrollTop = washList.scrollTop;
-    const overscanPx = WASH_LIST_OVERSCAN * WASH_LIST_ROW_HEIGHT;
+    const overscanPx = WASH_LIST_OVERSCAN * rowHeight;
     const windowTop = Math.max(0, scrollTop - overscanPx);
     const windowBottom = scrollTop + viewportHeight + overscanPx;
 
@@ -1249,6 +1468,15 @@
       endIndex += 1;
     }
 
+    if (
+      renderedWindow.virtualized &&
+      renderedWindow.version === state.displayVersion &&
+      renderedWindow.start === startIndex &&
+      renderedWindow.end === endIndex
+    ) {
+      return;
+    }
+
     const topSpacerHeight = offsets[startIndex];
     const bottomSpacerHeight = Math.max(0, totalHeight - offsets[endIndex]);
 
@@ -1256,33 +1484,27 @@
     if (topSpacerHeight) {
       chunks.push(`<div class="wash-list-spacer" style="height:${topSpacerHeight}px" aria-hidden="true"></div>`);
     }
-    for (let i = startIndex; i < endIndex; i += 1) {
-      const item = items[i];
-      chunks.push(
-        item.type === "header"
-          ? `<div class="wash-day-header" aria-hidden="true">${escapeHtml(item.label)}</div>`
-          : renderWashRow(item.row)
-      );
-    }
+    chunks.push(renderWashItemsHtml(startIndex, endIndex));
     if (bottomSpacerHeight) {
       chunks.push(`<div class="wash-list-spacer" style="height:${bottomSpacerHeight}px" aria-hidden="true"></div>`);
     }
 
-    // innerHTML уничтожает сфокусированную строку — запоминаем её ключ и после
-    // перерисовки возвращаем фокус клавиатуры на ту же строку, если она в DOM.
-    const activeElement = document.activeElement;
-    const focusedRowKey =
-      activeElement && washList.contains(activeElement)
-        ? activeElement.closest("[data-key]")?.dataset.key || ""
-        : "";
+    writeWashListHtml(chunks.join(""));
+    renderedWindow.version = state.displayVersion;
+    renderedWindow.start = startIndex;
+    renderedWindow.end = endIndex;
+    renderedWindow.virtualized = true;
 
-    washList.innerHTML = chunks.join("");
-
-    if (focusedRowKey) {
-      const rowToFocus = Array.from(washList.querySelectorAll("[data-key]")).find(
-        (row) => row.dataset.key === focusedRowKey
-      );
-      rowToFocus?.focus({ preventScroll: true });
+    // Первая отрисовка (или смена вёрстки) — уточняем высоты по факту и, если
+    // они разошлись с текущими, пересчитываем смещения и рисуем окно заново.
+    if (!washListMetricsResyncing && syncWashListMetricsFromDom()) {
+      washListMetricsResyncing = true;
+      try {
+        buildWashDisplayItems();
+        renderVirtualizedWashList();
+      } finally {
+        washListMetricsResyncing = false;
+      }
     }
   }
 
@@ -1332,10 +1554,14 @@
         const day = row.start_day || "";
         if (day !== lastDay) {
           lastDay = day;
-          items.push({ type: "header", label: formatDayHeader(day), height: WASH_LIST_HEADER_HEIGHT });
+          items.push({
+            type: "header",
+            label: formatDayHeader(day),
+            height: washListMetrics.headerHeight,
+          });
         }
       }
-      items.push({ type: "row", row, height: WASH_LIST_ROW_HEIGHT });
+      items.push({ type: "row", row, height: washListMetrics.rowHeight });
     }
 
     const offsets = new Array(items.length + 1);
@@ -1346,6 +1572,9 @@
     state.displayItems = items;
     state.displayOffsets = offsets;
     state.displayTotalHeight = offsets[items.length];
+    // Версия набора элементов: по ней кэш отрисованного окна понимает, что
+    // список изменился и перерисовка нужна даже при тех же границах.
+    state.displayVersion += 1;
   }
 
   // Первый элемент, нижняя граница которого больше value (бинарный поиск по offsets).
@@ -1372,6 +1601,7 @@
       return detailRequestCache.get(key);
     }
 
+    const generation = workspaceDataGeneration;
     const request = fetch(`/api/wash-details?key=${encodeURIComponent(key)}`)
       .then((response) => {
         if (!response.ok) {
@@ -1380,11 +1610,18 @@
         return response.json();
       })
       .then((payload) => {
-        setBoundedCacheEntry(detailCache, key, payload, DETAIL_CACHE_LIMIT);
+        // Пока ответ летел, данные могли обновиться (фоновый FTP) и кэши —
+        // очиститься: устаревший ответ в новый кэш не кладём.
+        if (generation === workspaceDataGeneration) {
+          setBoundedCacheEntry(detailCache, key, payload, DETAIL_CACHE_LIMIT);
+        }
         return payload;
       })
       .finally(() => {
-        detailRequestCache.delete(key);
+        // Только свой запрос: после инвалидации по этому ключу мог стартовать новый.
+        if (detailRequestCache.get(key) === request) {
+          detailRequestCache.delete(key);
+        }
       });
 
     detailRequestCache.set(key, request);
@@ -1404,6 +1641,7 @@
       return chartPayloadRequestCache.get(url);
     }
 
+    const generation = workspaceDataGeneration;
     const request = fetch(url)
       .then((response) => {
         if (!response.ok) {
@@ -1412,11 +1650,15 @@
         return response.json();
       })
       .then((payload) => {
-        setBoundedCacheEntry(chartPayloadCache, url, payload, CHART_PAYLOAD_CACHE_LIMIT);
+        if (generation === workspaceDataGeneration) {
+          setBoundedCacheEntry(chartPayloadCache, url, payload, CHART_PAYLOAD_CACHE_LIMIT);
+        }
         return payload;
       })
       .finally(() => {
-        chartPayloadRequestCache.delete(url);
+        if (chartPayloadRequestCache.get(url) === request) {
+          chartPayloadRequestCache.delete(url);
+        }
       });
 
     chartPayloadRequestCache.set(url, request);
@@ -1633,26 +1875,6 @@
     return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
   }
 
-  async function preparePrintDocument(detail) {
-    try {
-      await activeModalChartReady;
-    } catch (_error) {
-      // The visible empty state will explain failed chart loading.
-    }
-
-    if (!modalRoot.hidden && detail?.key === activeModalKey) {
-      activeModalChartReady = mountChart(modalRoot, detail, modalRequestId);
-      try {
-        await activeModalChartReady;
-      } catch (_error) {
-        // Keep the print/export path available even when the chart cannot be refreshed.
-      }
-    }
-
-    await waitForNextFrame();
-    await waitForNextFrame();
-  }
-
   async function prepareDetachedPrintDocument(detail) {
     printRoot.hidden = false;
     printRoot.innerHTML = renderPrintDocument(detail);
@@ -1701,6 +1923,8 @@
   }
 
   function closeDiagnostics() {
+    // Новый токен: ответы запросов открытой панели уже не применятся.
+    diagnosticsOpenId += 1;
     diagnosticsRoot.hidden = true;
     diagnosticsRoot.innerHTML = "";
     syncOverlayState();
@@ -1710,6 +1934,7 @@
     if (!modalRoot.hidden) closeChartModal();
     if (!objectEditorRoot.hidden) closeObjectEditor();
     if (!settingsRoot.hidden) closeSettings();
+    const openId = ++diagnosticsOpenId;
     diagnosticsRoot.hidden = false;
     syncOverlayState();
 
@@ -1717,9 +1942,14 @@
     try {
       data = await fetchDiagnostics();
     } catch (_error) {
+      if (openId !== diagnosticsOpenId) {
+        return;
+      }
       showToast("Не удалось получить диагностику.", "error");
     }
-    if (diagnosticsRoot.hidden) {
+    // Панель могли успеть закрыть и открыть заново: дорезолвившийся старый
+    // запрос не должен перетирать свежую разметку и обработчики.
+    if (openId !== diagnosticsOpenId || diagnosticsRoot.hidden) {
       return;
     }
 
@@ -1855,10 +2085,6 @@
     }, 1000);
   }
 
-  async function printWashDetail(detail, intent = "print") {
-    await printReportDocument(detail, intent);
-  }
-
   async function saveWashRowPdf(key, button) {
     try {
       const detail = await getDetail(key);
@@ -1936,6 +2162,8 @@
   }
 
   function closeSettings() {
+    // Новый токен: ответы запросов открытой панели уже не применятся.
+    settingsOpenId += 1;
     settingsRoot.hidden = true;
     settingsRoot.innerHTML = "";
     syncOverlayState();
@@ -2030,6 +2258,7 @@
     if (!objectEditorRoot.hidden) {
       closeObjectEditor();
     }
+    const openId = ++settingsOpenId;
     settingsRoot.hidden = false;
     syncOverlayState();
 
@@ -2039,6 +2268,9 @@
     } catch (_error) {
       // Не удалось получить настройки — показываем значения по умолчанию.
     }
+    if (openId !== settingsOpenId) {
+      return;
+    }
 
     let chartStyles = { series: {}, defaults: [] };
     try {
@@ -2047,8 +2279,9 @@
       // Стили графика недоступны — секцию покажем пустой.
     }
 
-    // Пользователь мог закрыть окно, пока грузились настройки.
-    if (settingsRoot.hidden) {
+    // Пользователь мог закрыть окно (или открыть заново), пока грузились
+    // настройки: старый ответ не должен перетирать свежую панель.
+    if (openId !== settingsOpenId || settingsRoot.hidden) {
       return;
     }
 
@@ -2206,6 +2439,11 @@
     const chartStyleGrid = settingsRoot.querySelector("[data-chart-style-grid]");
     const chartStyleReset = settingsRoot.querySelector("[data-chart-style-reset]");
 
+    let chartStyleDefaults = new Map(chartStyles.defaults.map((def) => [def.id, def]));
+
+    // Шлём только отличия от дефолтов (как wash-chart.js при сохранении из
+    // графика): иначе дефолты всех серий превращаются в вечные оверрайды на
+    // сервере и смена палитры в SERIES_CONFIG перестаёт применяться.
     const collectChartStyleSeries = () => {
       const series = {};
       if (!chartStyleGrid) {
@@ -2213,11 +2451,24 @@
       }
       chartStyleGrid.querySelectorAll("[data-chart-style-color]").forEach((input) => {
         const id = input.dataset.chartStyleColor;
+        const def = chartStyleDefaults.get(id) || {};
         const lineSelect = chartStyleGrid.querySelector(`[data-chart-style-line="${id}"]`);
-        series[id] = {
-          color: input.value,
-          lineStyle: lineSelect ? lineSelect.value : "solid",
-        };
+        const color = String(input.value || "");
+        const lineStyle = lineSelect ? String(lineSelect.value || "") : "";
+        const entry = {};
+
+        if (
+          isValidHexColorLike(color) &&
+          color.toLowerCase() !== String(def.color || "").toLowerCase()
+        ) {
+          entry.color = color;
+        }
+        if (lineStyle && lineStyle !== String(def.lineStyle || "solid")) {
+          entry.lineStyle = lineStyle;
+        }
+        if (Object.keys(entry).length) {
+          series[id] = entry;
+        }
       });
       return series;
     };
@@ -2255,12 +2506,19 @@
         try {
           await saveChartStyles({});
           const fresh = await fetchChartStyles();
+          if (openId !== settingsOpenId) {
+            return;
+          }
+          chartStyleDefaults = new Map(fresh.defaults.map((def) => [def.id, def]));
           if (chartStyleGrid) {
             chartStyleGrid.innerHTML = renderChartStyleControls(fresh.defaults, fresh.series);
           }
           window.WashChart?.setSeriesStyles?.(fresh.series);
           showToast("Оформление графика сброшено", "success");
         } catch (_error) {
+          if (openId !== settingsOpenId) {
+            return;
+          }
           showToast("Не удалось сбросить оформление графика.", "error");
         }
       });
@@ -2589,7 +2847,7 @@
     }
   }
 
-  function openObjectEditor(initialQuery = "") {
+  function openObjectEditor() {
     if (!modalRoot.hidden) {
       closeChartModal();
     }
@@ -2816,8 +3074,6 @@
 
   function closeChartModal() {
     modalRequestId += 1;
-    activeModalKey = "";
-    activeModalChartReady = Promise.resolve(false);
     modalRoot.hidden = true;
     modalRoot.innerHTML = "";
     clearPrintMode();
@@ -2827,7 +3083,6 @@
 
   function renderModalLoading() {
     modalRoot.hidden = false;
-    activeModalChartReady = Promise.resolve(false);
     syncOverlayState();
     modalRoot.innerHTML = `
       <div class="chart-modal-backdrop" data-close-chart-modal></div>
@@ -2865,7 +3120,6 @@
 
   async function openWashModal(key) {
     const requestId = ++modalRequestId;
-    activeModalKey = key;
     renderModalLoading();
 
     try {
@@ -2979,7 +3233,7 @@
       const printButton = modalRoot.querySelector("[data-print-wash]");
       if (printButton) {
         printButton.addEventListener("click", () => {
-          void printWashDetail(detail, "print");
+          void printReportDocument(detail, "print");
         });
       }
       modalRoot.querySelectorAll("[data-open-wash-key]").forEach((element) => {
@@ -2989,7 +3243,7 @@
         element.addEventListener("click", () => openWashModal(element.dataset.openWashKey));
       });
 
-      activeModalChartReady = mountChart(modalRoot, detail, requestId);
+      void mountChart(modalRoot, detail, requestId);
     } catch (_error) {
       if (requestId !== modalRequestId) {
         return;
@@ -3082,7 +3336,25 @@
     event.preventDefault();
     openWashModal(row.dataset.key);
   });
-  window.addEventListener("resize", scheduleVirtualizedWashList);
+  // Смена ширины окна может изменить высоту строки (медиа-запросы) и режим
+  // виртуализации — кэш отрисованного окна сбрасываем, чтобы высоты перемерились.
+  window.addEventListener("resize", () => {
+    invalidateRenderedWashWindow();
+    scheduleVirtualizedWashList();
+  });
+
+  if (fluidWashListQuery) {
+    const handleFluidLayoutChange = () => {
+      invalidateRenderedWashWindow();
+      scheduleVirtualizedWashList();
+    };
+    if (typeof fluidWashListQuery.addEventListener === "function") {
+      fluidWashListQuery.addEventListener("change", handleFluidLayoutChange);
+    } else if (typeof fluidWashListQuery.addListener === "function") {
+      // Safari < 14.
+      fluidWashListQuery.addListener(handleFluidLayoutChange);
+    }
+  }
 
   document.querySelectorAll("[data-sort-value]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -3096,22 +3368,17 @@
     });
   });
 
-  [searchInput, channelFilter, sortOrder].forEach((element) => {
-    if (element === searchInput) {
-      element.addEventListener("input", scheduleSearchRender);
-      element.addEventListener("change", () => {
-        // Отменяем отложенный дебаунс-рендер, чтобы не рисовать список дважды.
-        if (searchRenderTimer) {
-          window.clearTimeout(searchRenderTimer);
-          searchRenderTimer = 0;
-        }
-        renderWashList({ resetScroll: true });
-      });
-      return;
+  // channelFilter и sortOrder — скрытые input'ы (значение меняют кнопки тулбара,
+  // которые сами вызывают renderWashList): input/change они не эмитят, слушатели
+  // на них никогда не срабатывали.
+  searchInput.addEventListener("input", scheduleSearchRender);
+  searchInput.addEventListener("change", () => {
+    // Отменяем отложенный дебаунс-рендер, чтобы не рисовать список дважды.
+    if (searchRenderTimer) {
+      window.clearTimeout(searchRenderTimer);
+      searchRenderTimer = 0;
     }
-
-    element.addEventListener("input", () => renderWashList({ resetScroll: true }));
-    element.addEventListener("change", () => renderWashList({ resetScroll: true }));
+    renderWashList({ resetScroll: true });
   });
 
   function handleDayFilterChange() {
@@ -3122,7 +3389,8 @@
     renderWashList({ resetScroll: true });
   }
 
-  dayFilter.addEventListener("input", handleDayFilterChange);
+  // Только change: input у <input type="date"> эмитится вместе с change при
+  // выборе даты в календаре — список фильтровался и рисовался дважды.
   dayFilter.addEventListener("change", handleDayFilterChange);
 
   clearDateFiltersButton.addEventListener("click", () => {

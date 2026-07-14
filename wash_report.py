@@ -25,7 +25,7 @@ REQUIRED_DATA_COLUMNS = {
     "data_format_7",
 }
 
-OBJECT_NAME_OVERRIDES: dict[tuple[int, int], str] = {}
+DEFAULT_MAX_GAP_SECONDS = 15.0
 
 logger = logging.getLogger(__name__)
 
@@ -178,46 +178,16 @@ class Cycle:
         return max(0.0, self.end_ts - self.start_ts)
 
 @dataclass(slots=True)
-class WashInterval:
-    source_db: str
-    channel: int
-    object_id: int
-    object_name: str
-    program_id: int
-    program_name: str
-    start_ts: float
-    end_ts: float
-    sample_count: int
-    concentration_return: StatsBundle
-    temperature_return: StatsBundle
-    temperature_supply: StatsBundle
-    pressure_supply: StatsBundle
-    flow_supply: StatsBundle
-
-    @property
-    def duration_seconds(self) -> float:
-        return max(0.0, self.end_ts - self.start_ts)
-
-@dataclass(slots=True)
 class ObjectOverview:
+    # Потребителям (список объектов, переименование) нужны только канал, номер
+    # и имя объекта; метрики и счётчики по объекту никто не читает, а их сбор
+    # требовал прохода по всем сэмплам архива.
     source_db: str
     channel: int
     object_id: int
     object_name: str
     start_ts: float
     end_ts: float
-    sample_count: int
-    program_ids: list[int]
-    process_ids: list[int]
-    concentration_return: StatsBundle
-    temperature_return: StatsBundle
-    temperature_supply: StatsBundle
-    pressure_supply: StatsBundle
-    flow_supply: StatsBundle
-
-    @property
-    def duration_seconds(self) -> float:
-        return max(0.0, self.end_ts - self.start_ts)
 
 @dataclass(slots=True)
 class AnalysisResult:
@@ -226,13 +196,14 @@ class AnalysisResult:
     max_gap_seconds: float
     segments: list[Segment]
     cycles: list[Cycle]
-    wash_intervals: list[WashInterval]
     overviews: list[ObjectOverview]
+    # Сэмплы хранятся одним потоком на канал (мойки склеиваются через границу
+    # суточных файлов), ключ потока — путь самого раннего архива канала.
     samples_by_db: dict[str, list[Sample]]
     channels_by_db: dict[str, int]
+    sample_stream_by_channel: dict[int, str]
     sorted_cycles: list[Cycle]
     cycles_by_key: dict[str, Cycle]
-    cycle_index_by_key: dict[str, int]
     segments_by_cycle_key: dict[str, list[Segment]]
     sample_ranges_by_cycle_key: dict[str, tuple[int, int]]
     cycle_results_by_key: dict[str, str]
@@ -242,10 +213,12 @@ class AnalysisResult:
 class DbAnalysisChunk:
     db_path: Path
     channel: int
+    # Только точки внутри моек (с запасом на границах): держать весь архив в
+    # памяти и в pickle-кэше незачем — статистика и график читают лишь их.
     samples: list[Sample]
     segments: list[Segment]
     cycles: list[Cycle]
-    wash_intervals: list[WashInterval]
+    objects: list[ObjectOverview]
 
 ProgressCallback = Callable[[dict[str, object]], None]
 
@@ -289,13 +262,15 @@ def build_cycle_segment_index(
     cycles: Sequence[Cycle],
     segments: Sequence[Segment],
 ) -> dict[str, list[Segment]]:
-    route_to_cycles: dict[tuple[str, int, int, int], list[Cycle]] = defaultdict(list)
-    route_to_segments: dict[tuple[str, int, int, int], list[Segment]] = defaultdict(list)
+    # Файл-источник в ключ маршрута не входит: мойка, разрезанная границей
+    # суточного архива, состоит из сегментов разных файлов.
+    route_to_cycles: dict[tuple[int, int, int], list[Cycle]] = defaultdict(list)
+    route_to_segments: dict[tuple[int, int, int], list[Segment]] = defaultdict(list)
 
     for cycle in cycles:
-        route_to_cycles[(cycle.source_db, cycle.channel, cycle.object_id, cycle.program_id)].append(cycle)
+        route_to_cycles[(cycle.channel, cycle.object_id, cycle.program_id)].append(cycle)
     for segment in segments:
-        route_to_segments[(segment.source_db, segment.channel, segment.object_id, segment.program_id)].append(segment)
+        route_to_segments[(segment.channel, segment.object_id, segment.program_id)].append(segment)
 
     indexed: dict[str, list[Segment]] = {}
     for route, route_cycles in route_to_cycles.items():
@@ -326,14 +301,16 @@ def build_cycle_segment_index(
 def build_cycle_sample_range_index(
     cycles: Sequence[Cycle],
     samples_by_db: dict[str, list[Sample]],
+    sample_stream_by_channel: Mapping[int, str],
 ) -> dict[str, tuple[int, int]]:
-    timestamps_by_db = {
-        source_db: [sample.ts for sample in samples]
-        for source_db, samples in samples_by_db.items()
+    timestamps_by_stream = {
+        stream_key: [sample.ts for sample in samples]
+        for stream_key, samples in samples_by_db.items()
     }
     indexed: dict[str, tuple[int, int]] = {}
     for cycle in cycles:
-        timestamps = timestamps_by_db.get(cycle.source_db, [])
+        stream_key = sample_stream_by_channel.get(cycle.channel, "")
+        timestamps = timestamps_by_stream.get(stream_key, [])
         start_index = bisect_left(timestamps, cycle.start_ts)
         end_index = bisect_right(timestamps, cycle.end_ts)
         indexed[make_cycle_key(cycle)] = (start_index, end_index)
@@ -365,7 +342,8 @@ def analysis_segments_for_cycle(analysis: AnalysisResult, cycle: Cycle) -> Seque
 
 def analysis_samples_for_cycle(analysis: AnalysisResult, cycle: Cycle) -> list[Sample]:
     cycle_key = make_cycle_key(cycle)
-    samples = analysis.samples_by_db.get(cycle.source_db, [])
+    stream_key = analysis.sample_stream_by_channel.get(cycle.channel, "")
+    samples = analysis.samples_by_db.get(stream_key, [])
     start_index, end_index = analysis.sample_ranges_by_cycle_key.get(cycle_key, (0, 0))
     if start_index >= end_index:
         return []
@@ -403,21 +381,37 @@ def sqlite_read_only_uri(db_path: Path | str) -> str:
 def connect_read_only(db_path: Path | str) -> sqlite3.Connection:
     return sqlite3.connect(sqlite_read_only_uri(db_path), uri=True)
 
+def broken_db_exit(db_path: Path, error: Exception) -> SystemExit:
+    """Битый/обрезанный архив (скачан не до конца, повреждён на флешке) не
+    должен ронять разбор всего источника: вызывающий код ловит SystemExit и
+    просто пропускает файл — как при отсутствующей таблице `data`."""
+    return SystemExit(
+        f"Файл {Path(db_path).name} повреждён или не является базой SQLite: {error}."
+    )
+
 def preflight_db_file(db_path: Path) -> int:
     channel = infer_channel(db_path)
-    connection = connect_read_only(db_path)
     try:
-        has_data_table = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'data' LIMIT 1"
-        ).fetchone()
-        if has_data_table is None:
-            raise SystemExit(f"Файл {db_path.name} не содержит таблицу `data`.")
+        connection = connect_read_only(db_path)
+    except sqlite3.DatabaseError as error:
+        raise broken_db_exit(db_path, error) from error
 
-        columns = {
-            str(row[1])
-            for row in connection.execute("PRAGMA table_info(data)")
-            if row and len(row) > 1 and row[1]
-        }
+    try:
+        try:
+            has_data_table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'data' LIMIT 1"
+            ).fetchone()
+            if has_data_table is None:
+                raise SystemExit(f"Файл {db_path.name} не содержит таблицу `data`.")
+
+            columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(data)")
+                if row and len(row) > 1 and row[1]
+            }
+        except sqlite3.DatabaseError as error:
+            raise broken_db_exit(db_path, error) from error
+
         missing_columns = sorted(REQUIRED_DATA_COLUMNS.difference(columns))
         if missing_columns:
             raise SystemExit(
@@ -502,21 +496,6 @@ def load_object_name_overrides_for_db_files(
         merged_overrides.update(load_object_name_overrides_from_file(candidate))
     return merged_overrides
 
-def configure_object_name_overrides(
-    db_files: Sequence[Path],
-    *,
-    object_names_file: Path | str | None = None,
-) -> dict[tuple[int, int], str]:
-    global OBJECT_NAME_OVERRIDES
-    OBJECT_NAME_OVERRIDES = load_object_name_overrides_for_db_files(
-        db_files,
-        object_names_file=object_names_file,
-    )
-    return dict(OBJECT_NAME_OVERRIDES)
-
-def name_for_object(channel: int, object_id: int) -> str:
-    return OBJECT_NAME_OVERRIDES.get((channel, object_id)) or fallback_object_name(object_id)
-
 def name_for_program(program_id: int) -> str:
     return PROGRAM_NAMES.get(program_id, f"Программа {program_id}")
 
@@ -539,6 +518,27 @@ def optional_metric(value: object) -> float | None:
     if value is None:
         return None
     return float(value)
+
+def concentration_metric(value: object) -> float | None:
+    """Датчик концентрации на нуле шумит в минус. Клипаем один раз, на разборе
+    строки: иначе график (клипал у себя) и статистика (брала сырое значение)
+    показывали разное — кривая на нуле при «мин. −0.40 %»."""
+    numeric = optional_metric(value)
+    if numeric is None:
+        return None
+    return max(numeric, 0.0)
+
+def filled_metric_count(sample: Sample) -> int:
+    return sum(
+        value is not None
+        for value in (
+            sample.concentration_return,
+            sample.temperature_return,
+            sample.temperature_supply,
+            sample.pressure_supply,
+            sample.flow_supply,
+        )
+    )
 
 def is_wash_sample(sample: Sample) -> bool:
     return (
@@ -568,38 +568,47 @@ def read_samples(
         WHERE [time@timestamp] IS NOT NULL
         ORDER BY [time@timestamp]
     """
-    connection = connect_read_only(db_path)
     try:
-        cursor = connection.execute(query)
+        connection = connect_read_only(db_path)
+    except sqlite3.DatabaseError as error:
+        raise broken_db_exit(db_path, error) from error
+
+    try:
         samples: list[Sample] = []
         skipped_rows = 0
-        while True:
-            if cancel_check is not None and cancel_check():
-                raise AnalysisCancelledError("Обработка базы была отменена пользователем.")
+        try:
+            cursor = connection.execute(query)
+            while True:
+                if cancel_check is not None and cancel_check():
+                    raise AnalysisCancelledError("Обработка базы была отменена пользователем.")
 
-            rows = cursor.fetchmany(batch_size)
-            if not rows:
-                break
+                rows = cursor.fetchmany(batch_size)
+                if not rows:
+                    break
 
-            for row in rows:
-                # Битую строку (нечисловые значения) пропускаем, файл
-                # продолжаем анализировать дальше.
-                try:
-                    sample = Sample(
-                        ts=float(row[0]),
-                        concentration_return=optional_metric(row[1]),
-                        temperature_return=optional_metric(row[2]),
-                        temperature_supply=optional_metric(row[3]),
-                        pressure_supply=optional_metric(row[4]),
-                        flow_supply=optional_metric(row[5]),
-                        process=int(row[6] or 0),
-                        program=int(row[7] or 0),
-                        object_id=int(row[8] or 0),
-                    )
-                except (ValueError, TypeError):
-                    skipped_rows += 1
-                    continue
-                samples.append(sample)
+                for row in rows:
+                    # Битую строку (нечисловые значения) пропускаем, файл
+                    # продолжаем анализировать дальше.
+                    try:
+                        sample = Sample(
+                            ts=float(row[0]),
+                            concentration_return=concentration_metric(row[1]),
+                            temperature_return=optional_metric(row[2]),
+                            temperature_supply=optional_metric(row[3]),
+                            pressure_supply=optional_metric(row[4]),
+                            flow_supply=optional_metric(row[5]),
+                            process=int(row[6] or 0),
+                            program=int(row[7] or 0),
+                            object_id=int(row[8] or 0),
+                        )
+                    except (ValueError, TypeError):
+                        skipped_rows += 1
+                        continue
+                    samples.append(sample)
+        except sqlite3.DatabaseError as error:
+            # Повреждение страницы всплывает только на fetch — до этого места
+            # файл выглядел исправным.
+            raise broken_db_exit(db_path, error) from error
     finally:
         connection.close()
     if skipped_rows:
@@ -632,59 +641,94 @@ def add_sample_to_metrics(metrics: dict[str, StatsBundle], sample: Sample) -> No
     if sample.flow_supply is not None:
         metrics["flow_supply"].add(sample.flow_supply)
 
-def build_segments(samples: Sequence[Sample], db_path: Path, channel: int) -> list[Segment]:
+def median_sample_period(samples: Sequence[Sample], max_gap_seconds: float) -> float:
+    """Медианный период логирования потока. Разрывы больше max_gap_seconds
+    (простой панели) в расчёт не берём — иначе медиана уедет."""
+    deltas = [
+        second.ts - first.ts
+        for first, second in zip(samples, samples[1:])
+        if 0.0 < second.ts - first.ts <= max_gap_seconds
+    ]
+    if not deltas:
+        return 0.0
+    deltas.sort()
+    return deltas[len(deltas) // 2]
+
+def build_segments(
+    samples: Sequence[Sample],
+    db_path: Path | str,
+    channel: int,
+    *,
+    max_gap_seconds: float = DEFAULT_MAX_GAP_SECONDS,
+) -> list[Segment]:
     segments: list[Segment] = []
     source_db = source_key(db_path)
+    # Если период определить не по чему (один сэмпл на весь поток), берём 1 с:
+    # операция из одной точки всё равно длилась хотя бы период логирования.
+    period = median_sample_period(samples, max_gap_seconds) or 1.0
 
-    current_samples: list[Sample] = []
-    current_metrics = new_metrics()
-    current_key: tuple[int, int, int] | None = None
+    def flush(start_index: int, end_index: int) -> None:
+        run = samples[start_index : end_index + 1]
+        first = run[0]
+        last = run[-1]
 
-    def flush() -> None:
-        nonlocal current_samples, current_metrics, current_key
-        if not current_samples:
-            return
+        # Конец операции — метка следующего сэмпла, а не последнего своего:
+        # иначе длительность каждой операции занижена на период логирования,
+        # операция из одного сэмпла длится 0 секунд, а на графике между
+        # полосами операций появляются щели.
+        next_index = end_index + 1
+        if next_index < len(samples) and samples[next_index].ts - last.ts <= max_gap_seconds:
+            end_ts = samples[next_index].ts
+        else:
+            end_ts = last.ts + period
 
-        first = current_samples[0]
-        last = current_samples[-1]
+        metrics = new_metrics()
+        for sample in run:
+            add_sample_to_metrics(metrics, sample)
+
         segments.append(
             Segment(
                 source_db=source_db,
                 channel=channel,
                 object_id=first.object_id,
-                object_name=name_for_object(channel, first.object_id),
+                object_name=fallback_object_name(first.object_id),
                 program_id=first.program,
                 program_name=name_for_program(first.program),
                 process_id=first.process,
                 process_name=name_for_process(first.process),
                 start_ts=first.ts,
-                end_ts=last.ts,
-                sample_count=len(current_samples),
-                concentration_return=current_metrics["concentration_return"],
-                temperature_return=current_metrics["temperature_return"],
-                temperature_supply=current_metrics["temperature_supply"],
-                pressure_supply=current_metrics["pressure_supply"],
-                flow_supply=current_metrics["flow_supply"],
+                end_ts=end_ts,
+                sample_count=len(run),
+                concentration_return=metrics["concentration_return"],
+                temperature_return=metrics["temperature_return"],
+                temperature_supply=metrics["temperature_supply"],
+                pressure_supply=metrics["pressure_supply"],
+                flow_supply=metrics["flow_supply"],
             )
         )
-        current_samples = []
-        current_metrics = new_metrics()
-        current_key = None
 
-    for sample in samples:
+    run_start: int | None = None
+    run_key: tuple[int, int, int] | None = None
+
+    for index, sample in enumerate(samples):
         if not is_wash_sample(sample):
-            flush()
+            if run_start is not None:
+                flush(run_start, index - 1)
+                run_start = None
+                run_key = None
             continue
 
         sample_key = (sample.process, sample.program, sample.object_id)
-        if current_key is None or sample_key != current_key:
-            flush()
-            current_key = sample_key
+        if run_start is None:
+            run_start = index
+            run_key = sample_key
+        elif sample_key != run_key:
+            flush(run_start, index - 1)
+            run_start = index
+            run_key = sample_key
 
-        current_samples.append(sample)
-        add_sample_to_metrics(current_metrics, sample)
-
-    flush()
+    if run_start is not None:
+        flush(run_start, len(samples) - 1)
     return segments
 
 def build_cycles(segments: Sequence[Segment], max_gap_seconds: float) -> list[Cycle]:
@@ -746,9 +790,10 @@ def build_cycles(segments: Sequence[Segment], max_gap_seconds: float) -> list[Cy
             continue
 
         previous = current_segments[-1]
+        # Файл-источник в маршрут не входит: мойка 23:50→00:20 лежит в двух
+        # суточных архивах одного канала и должна остаться одним циклом.
         same_route = (
-            segment.source_db == previous.source_db
-            and segment.channel == previous.channel
+            segment.channel == previous.channel
             and segment.object_id == previous.object_id
             and segment.program_id == previous.program_id
         )
@@ -763,143 +808,65 @@ def build_cycles(segments: Sequence[Segment], max_gap_seconds: float) -> list[Cy
     flush()
     return cycles
 
-def build_wash_intervals(samples: Sequence[Sample], db_path: Path, channel: int, max_gap_seconds: float) -> list[WashInterval]:
-    intervals: list[WashInterval] = []
-    source_db = source_key(db_path)
-
-    current_samples: list[Sample] = []
-    current_metrics = new_metrics()
-    current_key: tuple[int, int] | None = None
-    current_has_operation = False
-    current_has_end = False
-
-    def flush() -> None:
-        nonlocal current_samples, current_metrics, current_key, current_has_operation, current_has_end
-        if not current_samples:
-            return
-
-        if current_has_operation:
-            first = current_samples[0]
-            last = current_samples[-1]
-            intervals.append(
-                WashInterval(
-                    source_db=source_db,
-                    channel=channel,
-                    object_id=first.object_id,
-                    object_name=name_for_object(channel, first.object_id),
-                    program_id=first.program,
-                    program_name=name_for_program(first.program),
-                    start_ts=first.ts,
-                    end_ts=last.ts,
-                    sample_count=len(current_samples),
-                    concentration_return=current_metrics["concentration_return"],
-                    temperature_return=current_metrics["temperature_return"],
-                    temperature_supply=current_metrics["temperature_supply"],
-                    pressure_supply=current_metrics["pressure_supply"],
-                    flow_supply=current_metrics["flow_supply"],
-                )
-            )
-        current_samples = []
-        current_metrics = new_metrics()
-        current_key = None
-        current_has_operation = False
-        current_has_end = False
-
-    for sample in samples:
-        if sample.object_id <= 0 or sample.program <= 0:
-            flush()
-            continue
-
-        sample_key = (sample.object_id, sample.program)
-        if current_samples:
-            previous = current_samples[-1]
-            same_key = sample_key == current_key
-            close_enough = sample.ts - previous.ts <= max_gap_seconds
-            if not same_key or not close_enough or (current_has_end and sample.process != 21):
-                flush()
-
-        if current_key is None or sample_key != current_key:
-            flush()
-            current_key = sample_key
-
-        current_samples.append(sample)
-        add_sample_to_metrics(current_metrics, sample)
-        if sample.process in WASH_PROCESS_CODES:
-            current_has_operation = True
-        if sample.process == 21:
-            current_has_end = True
-
-    flush()
-    return intervals
-
-def build_object_overviews(
-    samples_by_db: dict[str, list[Sample]],
-    channels_by_db: dict[str, int],
+def collect_object_overviews(
+    samples: Sequence[Sample],
+    db_path: Path | str,
+    channel: int,
 ) -> list[ObjectOverview]:
+    """Список объектов, встреченных в архиве. Проход по сэмплам — один, без
+    промежуточных множеств размером во весь архив: потребителям нужны только
+    канал, номер и имя объекта (плюс время для сортировки)."""
+    source_db = source_key(db_path)
+    bounds: dict[int, list[float]] = {}
+    for sample in samples:
+        if sample.object_id <= 0:
+            continue
+        entry = bounds.get(sample.object_id)
+        if entry is None:
+            bounds[sample.object_id] = [sample.ts, sample.ts]
+            continue
+        if sample.ts < entry[0]:
+            entry[0] = sample.ts
+        if sample.ts > entry[1]:
+            entry[1] = sample.ts
+
+    return [
+        ObjectOverview(
+            source_db=source_db,
+            channel=channel,
+            object_id=object_id,
+            object_name=fallback_object_name(object_id),
+            start_ts=start_ts,
+            end_ts=end_ts,
+        )
+        for object_id, (start_ts, end_ts) in sorted(bounds.items())
+    ]
+
+def build_object_overviews(chunks: Sequence[DbAnalysisChunk]) -> list[ObjectOverview]:
     # Объект уникален по (канал, объект); один и тот же объект из нескольких
     # архивов объединяем в одну запись, чтобы он не дублировался в списке.
-    grouped: dict[tuple[int, int], dict[str, object]] = {}
-    # Перекрывающиеся архивы содержат одни и те же строки — считаем каждый
-    # сэмпл один раз. Храним только ключи (канал, метка времени), не копии.
-    seen_sample_keys: set[tuple[int, float]] = set()
-
-    for source_db, samples in samples_by_db.items():
-        channel = channels_by_db[source_db]
-        for sample in samples:
-            if sample.object_id <= 0:
+    merged: dict[tuple[int, int], ObjectOverview] = {}
+    for chunk in chunks:
+        for overview in chunk.objects:
+            key = (overview.channel, overview.object_id)
+            existing = merged.get(key)
+            if existing is None:
+                merged[key] = ObjectOverview(
+                    source_db=overview.source_db,
+                    channel=overview.channel,
+                    object_id=overview.object_id,
+                    object_name=overview.object_name,
+                    start_ts=overview.start_ts,
+                    end_ts=overview.end_ts,
+                )
                 continue
+            existing.start_ts = min(existing.start_ts, overview.start_ts)
+            existing.end_ts = max(existing.end_ts, overview.end_ts)
 
-            sample_key = (channel, sample.ts)
-            if sample_key in seen_sample_keys:
-                continue
-            seen_sample_keys.add(sample_key)
-
-            key = (channel, sample.object_id)
-            entry = grouped.get(key)
-            if entry is None:
-                entry = grouped[key] = {
-                    "source_db": source_db,
-                    "start_ts": sample.ts,
-                    "end_ts": sample.ts,
-                    "sample_count": 0,
-                    "program_ids": set(),
-                    "process_ids": set(),
-                    "metrics": new_metrics(),
-                }
-            entry["start_ts"] = min(entry["start_ts"], sample.ts)
-            entry["end_ts"] = max(entry["end_ts"], sample.ts)
-            entry["sample_count"] += 1
-            entry["program_ids"].add(sample.program)
-            entry["process_ids"].add(sample.process)
-            add_sample_to_metrics(entry["metrics"], sample)
-
-    overviews: list[ObjectOverview] = []
-    for (channel, object_id), entry in grouped.items():
-        metrics = entry["metrics"]
-        overviews.append(
-            ObjectOverview(
-                source_db=entry["source_db"],
-                channel=channel,
-                object_id=object_id,
-                object_name=name_for_object(channel, object_id),
-                start_ts=entry["start_ts"],
-                end_ts=entry["end_ts"],
-                sample_count=entry["sample_count"],
-                program_ids=sorted(entry["program_ids"]),
-                process_ids=sorted(entry["process_ids"]),
-                concentration_return=metrics["concentration_return"],
-                temperature_return=metrics["temperature_return"],
-                temperature_supply=metrics["temperature_supply"],
-                pressure_supply=metrics["pressure_supply"],
-                flow_supply=metrics["flow_supply"],
-            )
-        )
-
-    return sorted(overviews, key=lambda item: (item.channel, item.object_name, item.start_ts))
-
-def slugify(text: str) -> str:
-    cleaned = re.sub(r"[^0-9A-Za-zА-Яа-яЁё]+", "_", text.strip())
-    return cleaned.strip("_").lower() or "plot"
+    return sorted(
+        merged.values(),
+        key=lambda item: (item.channel, item.object_name, item.start_ts),
+    )
 
 def operation_color(process_id: int) -> str:
     if process_id in {1, 2, 3, 4, 7, 8, 11, 12, 15, 16, 19, 20}:
@@ -920,13 +887,6 @@ def operation_color(process_id: int) -> str:
 
 def operation_label(process_name: str) -> str:
     return re.sub(r"\s*\([^)]*\)", "", process_name).strip()
-
-def format_metric(value: float | None, unit: str = "", digits: int = 2) -> str:
-    if value is None:
-        return "н/д"
-    if unit:
-        return f"{value:.{digits}f} {unit}"
-    return f"{value:.{digits}f}"
 
 def format_duration(seconds: float) -> str:
     total_seconds = max(int(round(seconds)), 0)
@@ -977,64 +937,136 @@ def cycle_result_label_from_operations(operation_names: Sequence[str]) -> str:
         return "Требует проверки, были паузы"
     return "Требует проверки"
 
+def prune_samples_to_cycles(
+    samples: Sequence[Sample],
+    cycles: Sequence[Cycle],
+    *,
+    margin_seconds: float,
+) -> list[Sample]:
+    """Оставляем только точки внутри моек (плюс запас на границах — он нужен,
+    чтобы склеить мойку с соседним файлом и посчитать конец последней
+    операции). Весь остальной архив никто не читает, а в памяти и в pickle-кэше
+    он занимал сотни мегабайт."""
+    if not cycles or not samples:
+        return []
+
+    windows: list[list[float]] = []
+    for start, end in sorted(
+        (cycle.start_ts - margin_seconds, cycle.end_ts + margin_seconds) for cycle in cycles
+    ):
+        if windows and start <= windows[-1][1]:
+            windows[-1][1] = max(windows[-1][1], end)
+        else:
+            windows.append([start, end])
+
+    timestamps = [sample.ts for sample in samples]
+    kept: list[Sample] = []
+    for start, end in windows:
+        kept.extend(samples[bisect_left(timestamps, start) : bisect_right(timestamps, end)])
+    return kept
+
 def analyze_single_db_file(
     db_path: Path,
     *,
-    max_gap_seconds: float = 15.0,
+    max_gap_seconds: float = DEFAULT_MAX_GAP_SECONDS,
     cancel_check: Callable[[], bool] | None = None,
     channel: int | None = None,
 ) -> DbAnalysisChunk:
     resolved_db_path = Path(db_path).expanduser().resolve()
     resolved_channel = channel if channel is not None else preflight_db_file(resolved_db_path)
     samples = read_samples(resolved_db_path, cancel_check=cancel_check)
-    segments = build_segments(samples, resolved_db_path, resolved_channel)
+    segments = build_segments(
+        samples,
+        resolved_db_path,
+        resolved_channel,
+        max_gap_seconds=max_gap_seconds,
+    )
     cycles = build_cycles(segments, max_gap_seconds)
-    wash_intervals = build_wash_intervals(samples, resolved_db_path, resolved_channel, max_gap_seconds)
+    # Список объектов собираем до отсева сэмплов: объект, который в этот день
+    # ни разу не мыли, всё равно должен попасть в список для переименования.
+    objects = collect_object_overviews(samples, resolved_db_path, resolved_channel)
     return DbAnalysisChunk(
         db_path=resolved_db_path,
         channel=resolved_channel,
-        samples=samples,
+        samples=prune_samples_to_cycles(samples, cycles, margin_seconds=max_gap_seconds),
         segments=segments,
         cycles=cycles,
-        wash_intervals=wash_intervals,
+        objects=objects,
     )
+
+def merge_channel_samples(streams: Sequence[Sequence[Sample]]) -> list[Sample]:
+    """Сэмплы одного канала из разных архивов сливаются в один поток: суточные
+    файлы режут мойку по полуночи, а перекрывающиеся выгрузки повторяют одни и
+    те же строки.
+
+    Дубликат ищем по (объект, метка времени) — без объекта в ключе строки
+    разных объектов с одной меткой молча терялись. Из копий берём ту, где
+    меньше NULL-метрик (обрыв связи панели пишет строку с пустыми полями)."""
+    best: dict[tuple[float, int], Sample] = {}
+    for stream in streams:
+        for sample in stream:
+            key = (sample.ts, sample.object_id)
+            existing = best.get(key)
+            if existing is None or filled_metric_count(sample) > filled_metric_count(existing):
+                best[key] = sample
+    return sorted(best.values(), key=lambda sample: (sample.ts, sample.object_id))
+
+def build_source_db_resolver(
+    chunks: Sequence[DbAnalysisChunk],
+    fallback: str,
+) -> Callable[[float], str]:
+    """Файл-источник мойки по её началу: после склейки канала мойка может
+    приходить из двух архивов, показываем тот, в котором она началась."""
+    ranges = sorted(
+        (chunk.samples[0].ts, source_key(chunk.db_path))
+        for chunk in chunks
+        if chunk.samples
+    )
+    starts = [start for start, _ in ranges]
+
+    def resolve(timestamp: float) -> str:
+        index = bisect_right(starts, timestamp) - 1
+        if index < 0:
+            return fallback
+        return ranges[index][1]
+
+    return resolve
+
+def cycle_completeness(cycle: Cycle) -> tuple[int, float]:
+    return (cycle.sample_count, cycle.duration_seconds)
 
 def deduplicate_cycles(cycles: Sequence[Cycle]) -> list[Cycle]:
     """Убирает повторяющиеся мойки, которые встречаются сразу в нескольких
     архивах (перекрытие периодов выгрузки).
 
-    Мойка считается одной и той же по сочетанию канал + объект + программа +
-    время старта (с точностью до секунды). Из дубликатов оставляем самую
-    полную запись — с наибольшим числом точек измерений."""
-    best_by_signature: dict[tuple[int, int, int, int], Cycle] = {}
+    Дубликатом считаем мойки одного канала/объекта/программы, интервалы
+    которых пересекаются: сравнение времени старта с точностью до секунды
+    рвалось на округлении (1000.4 и 1000.6 давали разные ключи) и не ловило
+    копии, обрезанные по-разному. Из группы оставляем самую полную запись — по
+    числу точек, при равенстве по длительности."""
+    by_route: dict[tuple[int, int, int], list[Cycle]] = defaultdict(list)
     for cycle in cycles:
-        signature = (
-            cycle.channel,
-            cycle.object_id,
-            cycle.program_id,
-            int(round(cycle.start_ts)),
-        )
-        existing = best_by_signature.get(signature)
-        if existing is None or cycle.sample_count > existing.sample_count:
-            best_by_signature[signature] = cycle
-    return list(best_by_signature.values())
+        by_route[(cycle.channel, cycle.object_id, cycle.program_id)].append(cycle)
 
-def deduplicate_wash_intervals(intervals: Sequence[WashInterval]) -> list[WashInterval]:
-    """Аналог deduplicate_cycles для интервалов моек: перекрывающиеся архивы
-    дают одни и те же интервалы, оставляем самую полную запись."""
-    best_by_signature: dict[tuple[int, int, int, int], WashInterval] = {}
-    for interval in intervals:
-        signature = (
-            interval.channel,
-            interval.object_id,
-            interval.program_id,
-            int(round(interval.start_ts)),
-        )
-        existing = best_by_signature.get(signature)
-        if existing is None or interval.sample_count > existing.sample_count:
-            best_by_signature[signature] = interval
-    return list(best_by_signature.values())
+    unique: list[Cycle] = []
+    for route_cycles in by_route.values():
+        best: Cycle | None = None
+        group_end = 0.0
+        for cycle in sorted(route_cycles, key=lambda item: item.start_ts):
+            if best is None or cycle.start_ts > group_end:
+                if best is not None:
+                    unique.append(best)
+                best = cycle
+                group_end = cycle.end_ts
+                continue
 
+            group_end = max(group_end, cycle.end_ts)
+            if cycle_completeness(cycle) > cycle_completeness(best):
+                best = cycle
+        if best is not None:
+            unique.append(best)
+
+    return unique
 
 def build_analysis_result(
     db_files: Sequence[str | Path],
@@ -1045,34 +1077,53 @@ def build_analysis_result(
     analysis_cache_key: str = "",
 ) -> AnalysisResult:
     resolved_output_dir = Path(output_dir).expanduser().resolve()
-
     resolved_db_files = [Path(path).expanduser().resolve() for path in db_files]
+
+    chunks_by_channel: dict[int, list[DbAnalysisChunk]] = defaultdict(list)
+    for chunk in chunks:
+        chunks_by_channel[chunk.channel].append(chunk)
+
     all_segments: list[Segment] = []
     all_cycles: list[Cycle] = []
-    all_wash_intervals: list[WashInterval] = []
     samples_by_db: dict[str, list[Sample]] = {}
     channels_by_db: dict[str, int] = {}
+    sample_stream_by_channel: dict[int, str] = {}
 
-    for chunk in chunks:
-        db_key = source_key(chunk.db_path)
-        channels_by_db[db_key] = chunk.channel
-        samples_by_db[db_key] = chunk.samples
-        all_segments.extend(chunk.segments)
-        all_cycles.extend(chunk.cycles)
-        all_wash_intervals.extend(chunk.wash_intervals)
+    for channel, channel_chunks in sorted(chunks_by_channel.items()):
+        channel_chunks = sorted(channel_chunks, key=lambda chunk: source_key(chunk.db_path))
+        # Сегменты и циклы пересобираем по объединённому потоку канала, а не
+        # склеиваем готовые куски файлов: только так статистика мойки,
+        # разрезанной границей суток, считается по общему набору точек.
+        stream_key = source_key(channel_chunks[0].db_path)
+        merged_samples = merge_channel_samples([chunk.samples for chunk in channel_chunks])
+        samples_by_db[stream_key] = merged_samples
+        channels_by_db[stream_key] = channel
+        sample_stream_by_channel[channel] = stream_key
+
+        resolve_source_db = build_source_db_resolver(channel_chunks, stream_key)
+        channel_segments = build_segments(
+            merged_samples,
+            stream_key,
+            channel,
+            max_gap_seconds=max_gap_seconds,
+        )
+        for segment in channel_segments:
+            segment.source_db = resolve_source_db(segment.start_ts)
+
+        all_segments.extend(channel_segments)
+        all_cycles.extend(build_cycles(channel_segments, max_gap_seconds))
 
     all_cycles = deduplicate_cycles(all_cycles)
-    all_wash_intervals = deduplicate_wash_intervals(all_wash_intervals)
 
-    all_overviews = build_object_overviews(samples_by_db, channels_by_db)
+    all_overviews = build_object_overviews(chunks)
     sorted_cycles = sorted(all_cycles, key=lambda item: item.start_ts, reverse=True)
     cycles_by_key = {make_cycle_key(cycle): cycle for cycle in sorted_cycles}
-    cycle_index_by_key = {
-        key: index
-        for index, key in enumerate(cycles_by_key.keys(), start=1)
-    }
     segments_by_cycle_key = build_cycle_segment_index(all_cycles, all_segments)
-    sample_ranges_by_cycle_key = build_cycle_sample_range_index(all_cycles, samples_by_db)
+    sample_ranges_by_cycle_key = build_cycle_sample_range_index(
+        all_cycles,
+        samples_by_db,
+        sample_stream_by_channel,
+    )
     cycle_results_by_key = build_cycle_result_index(
         all_cycles,
         all_segments,
@@ -1085,16 +1136,14 @@ def build_analysis_result(
         max_gap_seconds=max_gap_seconds,
         segments=all_segments,
         cycles=all_cycles,
-        wash_intervals=all_wash_intervals,
         overviews=all_overviews,
         samples_by_db=samples_by_db,
         channels_by_db=channels_by_db,
+        sample_stream_by_channel=sample_stream_by_channel,
         sorted_cycles=sorted_cycles,
         cycles_by_key=cycles_by_key,
-        cycle_index_by_key=cycle_index_by_key,
         segments_by_cycle_key=segments_by_cycle_key,
         sample_ranges_by_cycle_key=sample_ranges_by_cycle_key,
         cycle_results_by_key=cycle_results_by_key,
         analysis_cache_key=analysis_cache_key,
     )
-

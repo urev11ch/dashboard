@@ -10,7 +10,7 @@ import time
 import traceback
 import urllib.error
 import urllib.request
-from contextlib import closing
+from contextlib import closing, nullcontext
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -333,7 +333,44 @@ def build_desktop_error_html(message: str) -> str:
       min-height: 100vh;
       display: grid;
       place-items: center;
+      padding-top: 36px;
       background: linear-gradient(180deg, #f9fbfd 0%, #edf3f8 100%);
+    }}
+    /* Окно frameless: без своей «шапки» экран ошибки нельзя было ни перетащить,
+       ни закрыть мышью (стандартной рамки Windows у окна нет). */
+    .boot-titlebar {{
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 36px;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      padding-left: 14px;
+      z-index: 10;
+    }}
+    .boot-titlebar .boot-drag {{
+      flex: 1;
+      align-self: stretch;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      color: #5b7b96;
+      letter-spacing: 0.04em;
+    }}
+    .boot-titlebar button {{
+      width: 46px;
+      height: 36px;
+      border: 0;
+      background: transparent;
+      color: #46637c;
+      font-size: 15px;
+      cursor: pointer;
+    }}
+    .boot-titlebar button:hover {{
+      background: rgba(200, 68, 55, 0.14);
+      color: #b5271a;
     }}
     .card {{
       width: min(520px, calc(100vw - 48px));
@@ -364,6 +401,10 @@ def build_desktop_error_html(message: str) -> str:
   </style>
 </head>
 <body>
+  <div class="boot-titlebar">
+    <div class="boot-drag pywebview-drag-region">OptiCIP Dashboard</div>
+    <button type="button" title="Закрыть" onclick="window.pywebview&amp;&amp;window.pywebview.api&amp;&amp;window.pywebview.api.close_window()">&#10005;</button>
+  </div>
   <main class="card">
     <div class="eyebrow">OptiCIP Dashboard</div>
     <h1>Не удалось открыть интерфейс</h1>
@@ -413,6 +454,13 @@ def load_desktop_window_url(bridge: "DesktopBridge", window: "webview.Window", t
 
 
 def show_fatal_error(message: str) -> None:
+    # Сначала в лог: в windowed-сборке (console=False) sys.stderr и sys.stdout —
+    # None, и без лога текст ошибки потерялся бы целиком.
+    try:
+        logging.error("%s", message)
+    except Exception:
+        pass
+
     if sys.platform == "win32":
         try:
             import ctypes
@@ -420,8 +468,18 @@ def show_fatal_error(message: str) -> None:
             ctypes.windll.user32.MessageBoxW(None, message, APP_TITLE, 0x10)
             return
         except Exception:
-            pass
-    print(message, file=sys.stderr)
+            try:
+                logging.exception("Не удалось показать системное сообщение об ошибке")
+            except Exception:
+                pass
+
+    stream = sys.stderr or sys.stdout
+    if stream is None:  # noconsole-сборка: писать некуда, сообщение уже в логе
+        return
+    try:
+        print(message, file=stream)
+    except Exception:
+        pass
 
 
 def preflight_windows_runtime() -> None:
@@ -1001,8 +1059,99 @@ class DesktopBridge:
         return fallback
 
 
-def main() -> int:
+def resolve_gui_backend() -> str | None:
+    """GUI-бэкенд pywebview. На Windows нужен именно edgechromium (WebView2 +
+    pythonnet): от него зависят нативное центрирование окна и экспорт PDF.
+    На macOS/Linux бэкенд выбирает сам pywebview (cocoa/gtk/qt)."""
+    if sys.platform == "win32":
+        return "edgechromium"
+    return None
+
+
+# Сколько ждём завершения фоновой загрузки рабочей области при закрытии окна.
+BACKGROUND_SHUTDOWN_TIMEOUT = 8.0
+
+
+def request_background_shutdown() -> threading.Thread | None:
+    """Просит активную фоновую загрузку рабочей области остановиться и
+    возвращает её поток, если он ещё жив.
+
+    Поток wash-workspace-loader сам по себе daemon, но внутри он держит
+    ThreadPoolExecutor, чьи воркеры — не daemon: интерпретатор на выходе ждёт их
+    в atexit-хуке, и без отмены процесс висит после закрытия окна."""
+    try:
+        from webapp import app as webapp_module
+    except Exception:
+        logging.exception("Не удалось получить webapp.app для остановки фоновых задач")
+        return None
+
+    try:
+        lock = getattr(webapp_module, "state_lock", None)
+        state = getattr(webapp_module, "state", None)
+        with lock if lock is not None else nullcontext():
+            job = getattr(state, "workspace_job", None) if state is not None else None
+            if job is not None and getattr(job, "status", "") in {"running", "cancelling"}:
+                job.cancel_requested = True
+                job.status = "cancelling"
+                logging.info("Отменяю фоновую загрузку рабочей области при выходе")
+        thread = getattr(webapp_module, "_workspace_job_thread", None)
+    except Exception:
+        logging.exception("Не удалось отменить фоновую загрузку рабочей области")
+        return None
+
+    if isinstance(thread, threading.Thread) and thread.is_alive():
+        return thread
+    return None
+
+
+def join_background_loader(
+    thread: threading.Thread | None, timeout: float = BACKGROUND_SHUTDOWN_TIMEOUT
+) -> bool:
+    """Ждёт завершения потока загрузчика. False — не уложились в timeout."""
+    if thread is None:
+        return True
+    thread.join(timeout)
+    if thread.is_alive():
+        logging.warning("Фоновая загрузка не остановилась за %.0f с", timeout)
+        return False
+    return True
+
+
+def force_exit(code: int) -> None:
+    """Принудительный выход, когда фоновые задачи не остановились: обычный выход
+    завис бы в atexit-джойне воркеров, окно уже закрыто, а «мёртвый» процесс
+    держал бы мьютекс единственного экземпляра (повторный запуск молча выходит).
+    Логи перед этим сбрасываем на диск — os._exit не делает ничего."""
+    logging.warning("Принудительное завершение процесса (код возврата %s)", code)
+    logging.shutdown()
+    os._exit(code)
+
+
+def handle_maintenance_args(argv: list[str]) -> int | None:
+    """Служебные ключи командной строки. Возвращает код возврата, если ключ
+    обработан, иначе None (обычный запуск).
+
+    --remove-autostart вызывает деинсталлятор (см. installer.iss, [UninstallRun]
+    с runasoriginaluser): сам деинсталлятор работает с админским токеном и чистил
+    бы HKCU администратора, а не пользователя, у которого прописан автозапуск."""
+    if "--remove-autostart" not in argv:
+        return None
+
+    try:
+        apply_windows_autostart(False)
+    except Exception:
+        logging.exception("Не удалось удалить запись автозапуска")
+        return 1
+    logging.info("Запись автозапуска удалена (--remove-autostart)")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
     configure_logging()
+
+    maintenance_code = handle_maintenance_args(list(sys.argv[1:] if argv is None else argv))
+    if maintenance_code is not None:
+        return maintenance_code
 
     if not acquire_single_instance_lock():
         logging.info("Another instance is already running; exiting")
@@ -1058,6 +1207,7 @@ def main() -> int:
 
     bridge = DesktopBridge()
     window = None
+    exit_code = 0
 
     try:
         window = webview.create_window(
@@ -1084,7 +1234,7 @@ def main() -> int:
         webview.start(
             load_desktop_window_url,
             args=(bridge, window, server.url),
-            gui="edgechromium",
+            gui=resolve_gui_backend(),
             private_mode=False,
             storage_path=str(resolve_webview_storage_path()),
         )
@@ -1095,15 +1245,26 @@ def main() -> int:
             f"{exc}\n\n"
             f"Лог: {LOG_PATH}"
         )
-        return 1
+        exit_code = 1
     finally:
+        # Отмену фоновой загрузки выставляем до остановки uvicorn, чтобы задача
+        # сворачивалась параллельно с сервером, а ждём её уже после.
+        loader_thread = request_background_shutdown()
         server.stop()
+        # Сервер остановлен — новых задач больше не появится. Повторная отмена
+        # ловит ту, что могла стартовать (FTP-автообновление) во время остановки.
+        late_thread = request_background_shutdown()
+        background_stopped = join_background_loader(loader_thread)
+        if late_thread is not None and late_thread is not loader_thread:
+            background_stopped = join_background_loader(late_thread) and background_stopped
         if window is not None:
             try:
                 window.destroy()
             except Exception:
                 logging.exception("Window destroy failed during shutdown")
-    return 0
+        if not background_stopped:
+            force_exit(exit_code)
+    return exit_code
 
 
 if __name__ == "__main__":

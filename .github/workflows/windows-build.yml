@@ -19,19 +19,30 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Python
+        # Версия зафиксирована (та же, что в build_windows.bat): на 3.13+ нет
+        # готовых колёс pythonnet/pywebview.
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Install dependencies
+        # Версии закреплены в requirements-windows.txt — сборка воспроизводима.
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-windows.txt
 
       - name: Run tests
         run: |
-          pip install pytest
+          pip install -r requirements-dev.txt
           pytest -q
+
+      - name: Resolve app version
+        # Единый источник версии — webapp/__init__.py (__version__): его читают
+        # webapp.app, spec-файл (version_info.txt) и установщик.
+        id: app_version
+        run: |
+          $version = python -c "import webapp; print(webapp.__version__)"
+          "value=$version" >> $env:GITHUB_OUTPUT
 
       - name: Build executable
         run: pyinstaller --noconfirm OptiCIP-Dashboard.spec
@@ -50,7 +61,7 @@ jobs:
         run: choco install innosetup --no-progress -y
 
       - name: Build installer
-        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer.iss'
+        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=${{ steps.app_version.outputs.value }} installer.iss'
 
       - name: Sign installer
         if: env.HAS_SIGNING == 'true'

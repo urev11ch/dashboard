@@ -1,5 +1,6 @@
 # Веб-приложение «Отчёты по мойкам» (OptiCIP Dashboard)
-# Базовые зависимости для веб-режима (run_wash_ui.py):
+# Базовые зависимости для веб-режима (run_wash_ui.py).
+# Для сборки .exe версии закреплены отдельно — см. requirements-windows.txt.
 fastapi>=0.110
 uvicorn>=0.29
 jinja2>=3.1

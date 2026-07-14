@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import ipaddress
 import json
 import hashlib
 import ftplib
@@ -24,7 +25,7 @@ from contextlib import asynccontextmanager
 from urllib.parse import quote, unquote, urlsplit
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import date, datetime, time as datetime_time, timezone
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
@@ -35,6 +36,7 @@ from fastapi.templating import Jinja2Templates
 
 from runtime_paths import resolve_cache_root, resolve_runtime_root
 import wash_report as core
+from webapp import __version__ as APP_VERSION
 from webapp.chart_payload import SERIES_CONFIG, build_cycle_chart_payload
 
 
@@ -74,11 +76,6 @@ def resolve_default_folder_path() -> str:
     return configured or str(DATALOG_ROOT)
 
 
-def resolve_workspace_path_placeholder() -> str:
-    # Подсказка = путь по умолчанию (настройка или встроенная папка datalog).
-    return resolve_default_folder_path()
-
-
 PROJECT_ROOT = resolve_project_root()
 TEMPLATES_DIR = PROJECT_ROOT / "webapp" / "templates"
 STATIC_DIR = PROJECT_ROOT / "webapp" / "static"
@@ -97,12 +94,24 @@ ANALYSIS_CACHE_ROOT = resolve_cache_root("wash_journal_analysis_cache")
 WEB_RUNTIME_OUTPUT_DIR = ANALYSIS_CACHE_ROOT / "generated"
 ARCHIVE_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 ANALYSIS_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
-DB_ANALYSIS_CACHE_VERSION = 2
-WORKSPACE_ANALYSIS_CACHE_VERSION = 3
-CHART_PAYLOAD_DISK_CACHE_VERSION = 1
+# Бюджет дискового кэша: одного TTL мало — автообновление FTP каждые 5 минут
+# плодит новые записи (ключ зависит от mtime+size файлов), поэтому поверх TTL
+# работает LRU-эвикция по объёму и количеству записей (см. prune_cache_root).
+# «Время доступа» — mtime записи: попадание в кэш обновляет его (touch_cache_entry).
+ARCHIVE_CACHE_MAX_BYTES = 2 * 1024**3
+ARCHIVE_CACHE_MAX_ENTRIES = 256
+ANALYSIS_CACHE_MAX_BYTES = 1024**3
+ANALYSIS_CACHE_MAX_ENTRIES = 2048
+# Сколько источников помним для удаления предыдущей версии их кэша.
+CACHE_SOURCE_REGISTRY_LIMIT = 512
+DB_ANALYSIS_CACHE_VERSION = 3
+WORKSPACE_ANALYSIS_CACHE_VERSION = 4
+CHART_PAYLOAD_DISK_CACHE_VERSION = 2
 CHART_PAYLOAD_CACHE_LIMIT = 64
 DB_ANALYSIS_MAX_WORKERS = 4
 WORKSPACE_JOB_STREAM_KEEPALIVE_SECONDS = 10.0
+# Сколько новый рабочий поток ждёт завершения предыдущего (см. run_workspace_job).
+WORKSPACE_JOB_JOIN_TIMEOUT_SECONDS = 60.0
 IGNORED_WORKSPACE_DIR_NAMES = frozenset(
     {
         ".git",
@@ -116,7 +125,6 @@ IGNORED_WORKSPACE_DIR_NAMES = frozenset(
         "node_modules",
     }
 )
-APP_VERSION = "1.0.0"
 OBJECT_NAME_OVERRIDES_FILENAME = core.OBJECT_NAMES_FILENAME
 OBJECT_NAME_OVERRIDES_VERSION = 1
 CHART_STYLE_SETTINGS_FILENAME = "wash_chart_styles.json"
@@ -173,6 +181,11 @@ FTP_MTIME_TOLERANCE_SECONDS = 2.0
 FTP_HOST_RE = re.compile(r"^[A-Za-z0-9._:\-\[\]]+$")
 # Формат id сохранённого FTP-подключения (см. ftp_connection_id): 12 hex-символов.
 FTP_CONNECTION_ID_RE = re.compile(r"^[0-9a-f]{12}$")
+# Папка удаляемого профиля: пока рабочий поток мог держать в ней файлы, она
+# переименовывается в `<id>.deleted-<uuid>` и удаляется отложенно.
+DELETED_PROFILE_DIR_RE = re.compile(r"\.deleted-[0-9a-f]{32}$")
+# Сколько ждём завершения рабочего потока перед удалением папки профиля.
+PROFILE_DELETE_JOIN_TIMEOUT_SECONDS = 30.0
 DEFAULT_FTP_FORM_VALUES = {
     "host": "",
     "port": "21",
@@ -181,30 +194,88 @@ DEFAULT_FTP_FORM_VALUES = {
     "path": "/datalog",
 }
 
+PORTABLE_ENV_VAR = "OPTICIP_PORTABLE"
+APP_DATA_SUBDIRS = ("datalog", "temp")
+
+
+def portable_mode_enabled() -> bool:
+    return str(os.environ.get(PORTABLE_ENV_VAR) or "").strip().lower() not in {
+        "",
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
 def resolve_app_data_root() -> Path:
-    """Папка приложения: рядом с .exe в собранной версии, иначе корень проекта."""
+    """Корень данных приложения.
+
+    В собранной версии это постоянный пользовательский корень (%LOCALAPPDATA%,
+    см. resolve_runtime_root): каталог рядом с .exe непригоден — при установке в
+    Program Files он доступен на запись только администратору, и выбор корня «по
+    факту записи» приводил к тому, что данные зависели от прав запуска и
+    «пропадали» при переходе admin → обычный пользователь.
+
+    Портативный режим (данные рядом с .exe) включается явно: OPTICIP_PORTABLE=1
+    либо OPTICIP_RUNTIME_ROOT=<путь> (его учитывает resolve_runtime_root)."""
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
+        if portable_mode_enabled():
+            return Path(sys.executable).resolve().parent
+        return resolve_runtime_root()
     return PROJECT_ROOT
 
 
+def legacy_app_data_root() -> Path | None:
+    """Прежний корень данных собранной версии — каталог рядом с .exe."""
+    if not getattr(sys, "frozen", False) or portable_mode_enabled():
+        return None
+    return Path(sys.executable).resolve().parent
+
+
+def migrate_legacy_app_subdir(name: str, target: Path) -> None:
+    """Переносит данные из прежнего каталога рядом с .exe в постоянный корень.
+    Выполняется один раз: если целевая папка уже не пуста, ничего не трогаем."""
+    legacy_root = legacy_app_data_root()
+    if legacy_root is None:
+        return
+    legacy_dir = legacy_root / name
+    try:
+        if not legacy_dir.is_dir() or legacy_dir.resolve() == target.resolve():
+            return
+        if next(target.iterdir(), None) is not None:
+            return
+        entries = list(legacy_dir.iterdir())
+    except OSError:
+        return
+
+    moved = 0
+    for entry in entries:
+        try:
+            shutil.move(str(entry), str(target / entry.name))
+            moved += 1
+        except (OSError, shutil.Error):
+            continue
+    if moved:
+        logging.info("Данные перенесены из `%s` в `%s`: %d элементов", legacy_dir, target, moved)
+
+
 def resolve_app_subdir(name: str) -> Path:
-    """Создаёт подпапку `name` в каталоге приложения (с запасным вариантом,
-    если каталог приложения недоступен для записи — например, Program Files)."""
+    """Создаёт подпапку `name` в корне данных приложения."""
     candidate = resolve_app_data_root() / name
     try:
         candidate.mkdir(parents=True, exist_ok=True)
-        probe = candidate / ".write-test"
-        probe.write_text("ok", encoding="utf-8")
-        probe.unlink()
+        migrate_legacy_app_subdir(name, candidate)
         return candidate.resolve()
     except OSError:
+        # Корень недоступен (например, проект распакован в read-only каталог) —
+        # уходим в пользовательский runtime-корень.
         fallback = resolve_runtime_root() / name
         fallback.mkdir(parents=True, exist_ok=True)
         return fallback.resolve()
 
 
-# datalog — постоянное хранилище скачанных архивов (подпапки по дате).
+# datalog — постоянное хранилище скачанных архивов (подпапки по месяцам).
 # temp — служебные файлы приложения (имена объектов и т. п.).
 DATALOG_ROOT = resolve_app_subdir("datalog")
 TEMP_ROOT = resolve_app_subdir("temp")
@@ -218,8 +289,10 @@ _auto_refresh_task: "asyncio.Task[None] | None" = None
 
 @asynccontextmanager
 async def _app_lifespan(_app: FastAPI):
-    # startup — поднимаем фоновый цикл автообновления FTP (папки уже созданы выше)
+    # startup — подчищаем отложенно удаляемые профили FTP и поднимаем фоновый
+    # цикл автообновления (папки уже созданы выше)
     global _auto_refresh_task
+    purge_deleted_profile_dirs()
     _auto_refresh_task = asyncio.create_task(ftp_auto_refresh_loop())
     try:
         yield
@@ -244,12 +317,47 @@ app = FastAPI(title="Отчеты по мойкам", lifespan=_app_lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
-# Сервер слушает только 127.0.0.1 и не имеет аутентификации, поэтому защищаемся
-# от CSRF (form-POST/fetch с чужих страниц) и DNS rebinding на уровне заголовков:
-# Host обязан указывать на локальный адрес, а изменяющие запросы с посторонним
-# Origin отклоняются. Запросы без Origin пропускаем для совместимости
-# (pywebview, curl, собственные страницы).
+# Сервер не имеет аутентификации, а API даёт доступ к файловой системе
+# (/workspace/open) и реестру FTP-подключений, поэтому:
+#   1) главный барьер — фактический адрес клиента (request.client.host): пускаем
+#      только loopback. Заголовку Host верить нельзя — он приходит от клиента, и
+#      при запуске на 0.0.0.0 любой в сети мог подставить `Host: localhost`;
+#   2) заголовки Host/Origin дополнительно защищают от DNS rebinding и CSRF
+#      (form-POST/fetch с чужих страниц). Запросы без Origin пропускаем для
+#      совместимости (pywebview, curl, собственные страницы).
+# Осознанный удалённый доступ включается переменной окружения.
 LOCAL_HOSTNAMES = frozenset({"127.0.0.1", "localhost", "::1"})
+ALLOW_REMOTE_ENV_VAR = "OPTICIP_ALLOW_REMOTE"
+
+
+def remote_access_allowed() -> bool:
+    return str(os.environ.get(ALLOW_REMOTE_ENV_VAR) or "").strip().lower() not in {
+        "",
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def _is_loopback_address(value: str | None) -> bool:
+    address = (value or "").strip().strip("[]")
+    if not address:
+        return False
+    # IPv6 с zone-id (fe80::1%eth0) и IPv4-mapped адреса разбираются ipaddress.
+    address = address.split("%", 1)[0]
+    try:
+        return ipaddress.ip_address(address).is_loopback
+    except ValueError:
+        return False
+
+
+def client_is_local(request: Request) -> bool:
+    client = request.client
+    if client is None:
+        # Нет TCP-пира (unix-сокет, внутренний транспорт) — удалённым быть не может.
+        return True
+    return _is_loopback_address(client.host)
 
 
 def _is_local_hostname(hostname: str | None) -> bool:
@@ -272,12 +380,19 @@ def _origin_is_local(origin_header: str) -> bool:
 
 @app.middleware("http")
 async def local_request_guard(request: Request, call_next):
+    if not client_is_local(request) and not remote_access_allowed():
+        client_host = request.client.host if request.client else "?"
+        logging.warning("Отклонён нелокальный запрос от %s к %s", client_host, request.url.path)
+        return JSONResponse(
+            {"detail": "Доступ разрешён только с локального компьютера."}, status_code=403
+        )
+
     host_header = request.headers.get("host")
-    if host_header and not _header_host_is_local(host_header):
+    if host_header and not _header_host_is_local(host_header) and not remote_access_allowed():
         return JSONResponse({"detail": "Недопустимый заголовок Host."}, status_code=403)
     if request.method not in {"GET", "HEAD", "OPTIONS"}:
         origin_header = request.headers.get("origin")
-        if origin_header and not _origin_is_local(origin_header):
+        if origin_header and not _origin_is_local(origin_header) and not remote_access_allowed():
             return JSONResponse({"detail": "Недопустимый Origin запроса."}, status_code=403)
     return await call_next(request)
 
@@ -286,6 +401,12 @@ async def local_request_guard(request: Request, call_next):
 class ScanSummary:
     archive_count: int = 0
     ftp_source_count: int = 0
+    # Файлы, которые не удалось скачать с FTP, и текст сбоя синхронизации:
+    # показываем их пользователю, а не «глотаем» (см. materialize_ftp_sources).
+    ftp_failed_files: list[str] = field(default_factory=list)
+    ftp_error: str = ""
+    # Базы, пропущенные при анализе (повреждены/не подходят по структуре).
+    skipped_db_files: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -325,6 +446,7 @@ class AppState:
 @dataclass(frozen=True)
 class AppStateSnapshot:
     analysis: core.AnalysisResult | None
+    analysis_revision: int
     selected_root: Path | None
     pending_root: Path | None
     selected_display_root: str
@@ -337,10 +459,19 @@ class AppStateSnapshot:
 
 state = AppState()
 state_lock = threading.Lock()
+# Настройки читаются-меняются-пишутся (частичное обновление), поэтому у файла
+# настроек свой лок — иначе параллельные POST /api/settings теряют изменения.
+# RLock: save_app_settings вызывается и сам по себе, и изнутри секции.
+app_settings_lock = threading.RLock()
 archive_cache_lock = threading.Lock()
 analysis_cache_lock = threading.Lock()
 chart_payload_cache_lock = threading.Lock()
-archive_cache_keys_by_source: dict[str, str] = {}
+# Последний ключ кэша по источнику (архив / .db / рабочая папка) — чтобы удалять
+# предыдущую версию записи того же источника. Ограничены по размеру: раньше
+# словарь рос монотонно и не чистился.
+archive_cache_keys_by_source: OrderedDict[str, str] = OrderedDict()
+db_cache_keys_by_source: OrderedDict[str, str] = OrderedDict()
+workspace_cache_keys_by_source: OrderedDict[str, str] = OrderedDict()
 chart_payload_cache: OrderedDict[tuple[int, str], dict[str, Any]] = OrderedDict()
 
 
@@ -348,19 +479,34 @@ def format_source_label(value: str) -> str:
     return Path(value).name
 
 
+def format_file_list(names: list[str], limit: int = 3) -> str:
+    """Короткий перечень имён файлов для сообщения пользователю."""
+    shown = ", ".join(f"`{name}`" for name in names[:limit])
+    remainder = len(names) - limit
+    return f"{shown} и ещё {remainder}" if remainder > 0 else shown
+
+
+def copy_scan_summary(summary: ScanSummary) -> ScanSummary:
+    return ScanSummary(
+        archive_count=summary.archive_count,
+        ftp_source_count=summary.ftp_source_count,
+        ftp_failed_files=list(summary.ftp_failed_files),
+        ftp_error=summary.ftp_error,
+        skipped_db_files=list(summary.skipped_db_files),
+    )
+
+
 def capture_state_snapshot() -> AppStateSnapshot:
     return AppStateSnapshot(
         analysis=state.analysis,
+        analysis_revision=state.analysis_revision,
         selected_root=state.selected_root,
         pending_root=state.pending_root,
         selected_display_root=state.selected_display_root,
         pending_display_root=state.pending_display_root,
         object_name_overrides=dict(state.object_name_overrides),
         error=state.error,
-        scan_summary=ScanSummary(
-            archive_count=state.scan_summary.archive_count,
-            ftp_source_count=state.scan_summary.ftp_source_count,
-        ),
+        scan_summary=copy_scan_summary(state.scan_summary),
         workspace_job_payload=serialize_job(state.workspace_job),
     )
 
@@ -368,11 +514,52 @@ def capture_state_snapshot() -> AppStateSnapshot:
 def is_ignored_workspace_dir(path: Path, ignored_paths: set[Path]) -> bool:
     if path.name.lower() in IGNORED_WORKSPACE_DIR_NAMES:
         return True
+    if DELETED_PROFILE_DIR_RE.search(path.name):
+        return True
 
     try:
         return path.resolve() in ignored_paths
     except OSError:
         return False
+
+
+def is_ftp_profile(path: Path | None) -> bool:
+    """Это папка профиля FTP-подключения (datalog/<id>), а не обычная папка?"""
+    if path is None:
+        return False
+    try:
+        return path.resolve().parent == DATALOG_ROOT.resolve()
+    except OSError:
+        return False
+
+
+# Имя `.tmp` без уникального суффикса ломает атомарную запись, если запущено два
+# экземпляра приложения (общие temp/ и кэш): один перезапишет чужой временный
+# файл. Поэтому у каждой записи свой суффикс.
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    temp_path = path.with_name(f"{path.name}.tmp-{uuid.uuid4().hex}")
+    try:
+        with temp_path.open("wb") as handle:
+            handle.write(data)
+        os.replace(temp_path, path)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    atomic_write_bytes(path, text.encode("utf-8"))
+
+
+def atomic_write_json(path: Path, payload: Any) -> None:
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def local_tz_offset_min() -> int:
+    """Смещение зоны сервера в минутах (с учётом летнего времени). Клиент считает
+    границы суток по нему: `start_day` формируется в зоне сервера, а не браузера."""
+    offset = datetime.now().astimezone().utcoffset()
+    return int(offset.total_seconds() // 60) if offset is not None else 0
 
 
 def format_day_key(timestamp: float) -> str:
@@ -482,9 +669,7 @@ def load_ftp_sources_registry() -> dict[str, Any]:
 def save_ftp_sources_registry(registry: dict[str, Any]) -> None:
     path = ftp_sources_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_suffix(f"{path.suffix}.tmp")
-    temp_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
-    temp_path.replace(path)
+    atomic_write_json(path, registry)
     try:
         os.chmod(path, 0o600)
     except OSError:
@@ -534,6 +719,53 @@ def connection_to_config(conn: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def purge_deleted_profile_dirs() -> None:
+    """Удаляет папки `<id>.deleted-<uuid>`, оставшиеся от отложенного удаления
+    профилей (например, если приложение закрыли до завершения уборки)."""
+    try:
+        candidates = list(DATALOG_ROOT.iterdir())
+    except OSError:
+        return
+    for candidate in candidates:
+        if candidate.is_dir() and DELETED_PROFILE_DIR_RE.search(candidate.name):
+            shutil.rmtree(candidate, ignore_errors=True)
+
+
+def remove_ftp_profile_dir(conn_id: str) -> None:
+    """Удаляет папку профиля FTP-подключения.
+
+    В неё может прямо сейчас писать рабочий поток (синхронизация зеркала),
+    поэтому папку сначала переименовываем в `<id>.deleted-<uuid>` (её больше не
+    видит ни один сканер), а физическое удаление откладываем до завершения
+    потока. Так rmtree не выдёргивает файлы из-под работающей загрузки."""
+    profile_dir = DATALOG_ROOT / conn_id
+    try:
+        if not profile_dir.exists() or profile_dir.resolve().parent != DATALOG_ROOT.resolve():
+            return
+    except OSError:
+        return
+
+    trash_dir = DATALOG_ROOT / f"{conn_id}.deleted-{uuid.uuid4().hex}"
+    try:
+        profile_dir.rename(trash_dir)
+    except OSError:
+        # Переименовать не вышло (Windows держит открытый файл) — удаляем на месте,
+        # но всё равно после завершения рабочего потока.
+        trash_dir = profile_dir
+
+    worker = _workspace_job_thread
+
+    def _purge() -> None:
+        if worker is not None and worker.is_alive():
+            worker.join(timeout=PROFILE_DELETE_JOIN_TIMEOUT_SECONDS)
+        shutil.rmtree(trash_dir, ignore_errors=True)
+
+    if worker is not None and worker.is_alive():
+        threading.Thread(target=_purge, name="wash-profile-cleanup", daemon=True).start()
+    else:
+        shutil.rmtree(trash_dir, ignore_errors=True)
+
+
 def delete_ftp_connection(conn_id: str) -> None:
     with ftp_sources_lock:
         registry = load_ftp_sources_registry()
@@ -549,14 +781,7 @@ def delete_ftp_connection(conn_id: str) -> None:
     # (`../…`, абсолютный путь) не привёл к rmtree постороннего каталога.
     if not existed or not FTP_CONNECTION_ID_RE.fullmatch(conn_id):
         return
-    profile_dir = DATALOG_ROOT / conn_id
-    try:
-        if profile_dir.resolve().parent != DATALOG_ROOT.resolve():
-            return
-    except OSError:
-        return
-    if profile_dir.exists():
-        shutil.rmtree(profile_dir, ignore_errors=True)
+    remove_ftp_profile_dir(conn_id)
 
 
 def list_ftp_sources_public() -> list[dict[str, Any]]:
@@ -848,32 +1073,41 @@ def _is_archive_or_db_name(name: str) -> bool:
     )
 
 
+def iter_tree_files(root_path: Path) -> Any:
+    """Один обход дерева: отдаёт (путь, относительный posix-путь, stat). Служит
+    общей основой для индекса зеркала, ретеншна и подсчёта объёма — раньше каждая
+    из этих операций делала свой полный rglob по datalog."""
+    for current_root, dirnames, filenames in os.walk(root_path):
+        dirnames[:] = [name for name in dirnames if not DELETED_PROFILE_DIR_RE.search(name)]
+        current_path = Path(current_root)
+        try:
+            relative_root = current_path.relative_to(root_path)
+        except ValueError:
+            relative_root = Path()
+        for filename in filenames:
+            candidate = current_path / filename
+            try:
+                stat_result = candidate.stat()
+            except OSError:
+                continue
+            yield candidate, (relative_root / filename).as_posix(), stat_result
+
+
 def build_local_archive_index(root_path: Path) -> dict[Any, dict[str, Any]]:
     """Индекс уже скачанных архивов/баз под `root_path` для пропуска повторных загрузок.
 
     Ключи двух видов: относительный путь (совпадает с `_ftp_relative_target`)
     для файлов в зеркале и кортеж `("name", имя, размер)` — чтобы распознавать
     копии, лежащие в старых подпапках-по-дате. Значение: `size`, `mtime`, `path`.
+
+    Путь файла не резолвим: `resolve()` на каждый файл — это отдельный системный
+    вызов на элемент, а зеркало и так строится относительно `root_path`.
     """
     index: dict[Any, dict[str, Any]] = {}
-    root_resolved = root_path.resolve()
-    try:
-        candidates = list(root_path.rglob("*"))
-    except OSError:
-        return index
-    for candidate in candidates:
-        try:
-            if not candidate.is_file() or not _is_archive_or_db_name(candidate.name):
-                continue
-            stat_result = candidate.stat()
-        except OSError:
+    for candidate, rel_key, stat_result in iter_tree_files(root_path):
+        if not _is_archive_or_db_name(candidate.name):
             continue
-        resolved = candidate.resolve()
-        entry = {"size": stat_result.st_size, "mtime": stat_result.st_mtime, "path": resolved}
-        try:
-            rel_key = resolved.relative_to(root_resolved).as_posix()
-        except ValueError:
-            rel_key = candidate.name
+        entry = {"size": stat_result.st_size, "mtime": stat_result.st_mtime, "path": candidate}
         index.setdefault(rel_key, entry)
         index.setdefault(("name", candidate.name, stat_result.st_size), entry)
     return index
@@ -915,56 +1149,42 @@ def archive_month_folder(mtime: float | None) -> str:
         return "unknown"
 
 
-def _remove_empty_dirs(root_path: Path) -> None:
-    try:
-        directories = sorted(
-            (path for path in root_path.rglob("*") if path.is_dir()),
-            key=lambda path: len(path.parts),
-            reverse=True,
-        )
-    except OSError:
-        return
-    for directory in directories:
-        try:
-            next(directory.iterdir())
-        except StopIteration:
-            try:
-                directory.rmdir()
-            except OSError:
-                pass
-        except OSError:
-            pass
-
-
 def cleanup_old_archives(root_path: Path, retention_days: int) -> dict[str, int]:
     """Удаляет распознанные архивы/`.db` старше `retention_days` (по mtime файла)
     под `root_path` и убирает опустевшие подпапки. Возвращает статистику
-    {'removed', 'freed_bytes'}. Служебные файлы (wash_*.json, кэш) не трогает."""
+    {'removed', 'freed_bytes'}. Служебные файлы (wash_*.json, кэш) не трогает.
+
+    Удаление файлов и уборка пустых папок делаются одним обходом снизу вверх
+    (topdown=False), а не двумя полными проходами по дереву."""
     removed = 0
     freed = 0
     days = max(ARCHIVE_RETENTION_MIN_DAYS, min(ARCHIVE_RETENTION_MAX_DAYS, int(retention_days)))
     cutoff = time.time() - days * 86400
 
-    try:
-        candidates = list(root_path.rglob("*"))
-    except OSError:
-        return {"removed": 0, "freed_bytes": 0}
-
-    for candidate in candidates:
-        try:
-            if not candidate.is_file() or not _is_archive_or_db_name(candidate.name):
+    for current_root, dirnames, filenames in os.walk(root_path, topdown=False):
+        current_path = Path(current_root)
+        for filename in filenames:
+            candidate = current_path / filename
+            if not _is_archive_or_db_name(filename):
                 continue
-            stat_result = candidate.stat()
-            if stat_result.st_mtime >= cutoff:
+            try:
+                stat_result = candidate.stat()
+                if stat_result.st_mtime >= cutoff:
+                    continue
+                size = stat_result.st_size
+                candidate.unlink()
+            except OSError:
                 continue
-            size = stat_result.st_size
-            candidate.unlink()
             removed += 1
             freed += size
-        except OSError:
-            continue
 
-    _remove_empty_dirs(root_path)
+        for dirname in dirnames:
+            directory = current_path / dirname
+            try:
+                directory.rmdir()  # сработает только для опустевшей папки
+            except OSError:
+                continue
+
     if removed:
         logging.info(
             "Автоочистка архивов: удалено %d файлов, освобождено %d байт (%s)",
@@ -976,18 +1196,7 @@ def cleanup_old_archives(root_path: Path, retention_days: int) -> dict[str, int]
 
 
 def directory_size_bytes(root_path: Path) -> int:
-    total = 0
-    try:
-        candidates = list(root_path.rglob("*"))
-    except OSError:
-        return 0
-    for candidate in candidates:
-        try:
-            if candidate.is_file():
-                total += candidate.stat().st_size
-        except OSError:
-            continue
-    return total
+    return sum(stat_result.st_size for _path, _rel, stat_result in iter_tree_files(root_path))
 
 
 # Размер datalog для /api/diagnostics: полный обход дерева на каждое открытие
@@ -1009,13 +1218,36 @@ def datalog_size_bytes_cached() -> int:
     return value
 
 
+@dataclass
+class FtpSyncResult:
+    """Итог синхронизации с панелью: что есть локально, что скачали, что не смогли."""
+
+    present_files: list[Path] = field(default_factory=list)
+    downloaded: int = 0
+    skipped: int = 0
+    failed_files: list[str] = field(default_factory=list)
+    # Синхронизация целиком не удалась (FTP недоступен), но локальное зеркало есть.
+    ftp_error_message: str = ""
+
+
+def is_ftp_connection_lost(exc: BaseException) -> bool:
+    """Сбой уровня сессии (соединение потеряно) — в отличие от ошибки на
+    конкретном файле (нет прав, файл занят), после которой качать дальше можно."""
+    if isinstance(exc, ftplib.error_temp):
+        # 421 — сервер закрывает управляющее соединение; прочие 4xx — по файлу.
+        return str(exc).strip().startswith("421")
+    if isinstance(exc, ftplib.error_perm):
+        return False
+    return isinstance(exc, (OSError, EOFError, ftplib.error_proto, ftplib.error_reply))
+
+
 def download_ftp_files(
     config: dict[str, Any],
     target_dir: Path,
     *,
     progress_callback: core.ProgressCallback | None = None,
     cancel_check: Callable[[], bool] | None = None,
-) -> list[Path]:
+) -> FtpSyncResult:
     remote_root = config.get("path") or "/"
     core.emit_progress(
         progress_callback,
@@ -1027,15 +1259,16 @@ def download_ftp_files(
     )
     connection = open_ftp_connection(config)
     # Все файлы панели, которые сейчас представлены локально (скачанные + пропущенные).
-    present_files: list[Path] = []
-    downloaded_count = 0
-    skipped_count = 0
+    result = FtpSyncResult()
+    present_files = result.present_files
     local_index = build_local_archive_index(target_dir)
 
     # Где файл с таким базовым именем уже лежит в зеркале (в какой месячной
     # папке). Активно дописываемый файл (например, `Canal_*.db`) в новом месяце
     # должен качаться поверх старой копии, а не плодить дубликаты по месяцам.
-    month_dir_re = re.compile(r"^(?:\d{4}-\d{2}|unknown)$")
+    # Формат `ГГГГ-ММ-ДД` — раскладка прежних версий: без него файл скачивался
+    # заново в `ГГГГ-ММ/`, а старая копия оставалась в зеркале навсегда.
+    month_dir_re = re.compile(r"^(?:\d{4}-\d{2}(?:-\d{2})?|unknown)$")
     existing_month_locations: dict[str, Path] = {}
     for index_key in local_index:
         if not isinstance(index_key, str):
@@ -1101,7 +1334,7 @@ def download_ftp_files(
                 local_meta = local_index.get(("name", relative_target.name, remote_size))
 
             if _should_skip_download(local_meta, remote_size, remote_mtime):
-                skipped_count += 1
+                result.skipped += 1
                 core.emit_progress(
                     progress_callback,
                     phase="ftp",
@@ -1111,7 +1344,7 @@ def download_ftp_files(
                     item=relative_target.name,
                 )
                 existing_path = local_meta.get("path") if local_meta else None
-                present_files.append(Path(existing_path) if existing_path else target_path.resolve())
+                present_files.append(Path(existing_path) if existing_path else target_path)
                 continue
 
             core.emit_progress(
@@ -1123,10 +1356,12 @@ def download_ftp_files(
                 item=relative_target.name,
             )
 
-            # Качаем во временный файл `.part` (сканеры архивов его не видят —
-            # см. _is_archive_or_db_name) и подменяем целевой только после
-            # успешной загрузки: обрыв связи не оставит усечённую базу.
-            part_path = target_path.with_name(target_path.name + ".part")
+            # Качаем во временный файл `.part-<uuid>` (сканеры архивов его не
+            # видят — см. _is_archive_or_db_name) и подменяем целевой только
+            # после успешной загрузки: обрыв связи не оставит усечённую базу.
+            # Суффикс уникален: два потока, качающих один файл, иначе писали бы
+            # в общий `.part` и получалась битая база.
+            part_path = target_path.with_name(f"{target_path.name}.part-{uuid.uuid4().hex}")
             try:
                 with part_path.open("wb") as handle:
 
@@ -1146,9 +1381,24 @@ def download_ftp_files(
                 raise
             except Exception as exc:
                 part_path.unlink(missing_ok=True)
-                raise SystemExit(
-                    f"Не удалось скачать файл `{remote_file}` с FTP: {exc}"
-                ) from exc
+                if is_ftp_connection_lost(exc):
+                    raise SystemExit(
+                        f"Соединение с FTP потеряно при скачивании `{remote_file}`: {exc}"
+                    ) from exc
+                # Сбой на конкретном файле не должен обрывать всю синхронизацию:
+                # иначе остальные файлы не скачались бы никогда. Помечаем файл
+                # как неудавшийся (он перекачается на следующем проходе) и идём дальше.
+                logging.warning("Не удалось скачать файл `%s` с FTP: %s", remote_file, exc)
+                result.failed_files.append(relative_target.name)
+                core.emit_progress(
+                    progress_callback,
+                    phase="ftp",
+                    message=f"Файл {index} из {total} не скачан ({exc}); продолжаю.",
+                    current=index,
+                    total=total,
+                    item=relative_target.name,
+                )
+                continue
 
             # Сохраняем время панели, чтобы на следующих запусках сравнение по времени работало.
             if remote_mtime is not None:
@@ -1157,16 +1407,15 @@ def download_ftp_files(
                 except OSError:
                     pass
 
-            resolved = target_path.resolve()
-            downloaded_count += 1
-            present_files.append(resolved)
+            result.downloaded += 1
+            present_files.append(target_path)
             # Обновляем индекс, чтобы дубликаты в этом же прогоне тоже пропускались.
             try:
                 stat_result = target_path.stat()
                 fresh_entry = {
                     "size": stat_result.st_size,
                     "mtime": stat_result.st_mtime,
-                    "path": resolved,
+                    "path": target_path,
                 }
                 local_index[rel_key] = fresh_entry
                 local_index[("name", relative_target.name, stat_result.st_size)] = fresh_entry
@@ -1181,27 +1430,26 @@ def download_ftp_files(
             except Exception:
                 pass
 
+    failed_note = f", не удалось {len(result.failed_files)}" if result.failed_files else ""
     core.emit_progress(
         progress_callback,
         phase="ftp",
-        message=f"Файлы с FTP получены: скачано {downloaded_count}, пропущено {skipped_count} (без изменений).",
+        message=(
+            f"Файлы с FTP получены: скачано {result.downloaded}, "
+            f"пропущено {result.skipped} (без изменений){failed_note}."
+        ),
         current=len(present_files),
         total=len(present_files),
-        item=f"{downloaded_count} новых из {len(present_files)}",
+        item=f"{result.downloaded} новых из {len(present_files)}",
     )
-    return present_files
+    return result
 
 
 def datalog_has_archives(root_path: Path) -> bool:
     """Есть ли в datalog уже скачанные базы `.db` или архивы (за любую дату)."""
-    try:
-        for candidate in root_path.rglob("*"):
-            if not candidate.is_file():
-                continue
-            if _is_archive_or_db_name(candidate.name):
-                return True
-    except OSError:
-        return False
+    for candidate, _rel, _stat in iter_tree_files(root_path):
+        if _is_archive_or_db_name(candidate.name):
+            return True
     return False
 
 
@@ -1210,26 +1458,22 @@ def materialize_ftp_sources(
     *,
     progress_callback: core.ProgressCallback | None = None,
     cancel_check: Callable[[], bool] | None = None,
-) -> int:
-    """Синхронизирует архивы активной FTP-панели в зеркало `datalog/<id>/` и
-    возвращает число файлов панели, представленных локально.
+) -> FtpSyncResult:
+    """Синхронизирует архивы активной FTP-панели в зеркало `datalog/<id>/`.
 
     Папка профиля определяется по `root_path` (это `datalog/<id>`); параметры
     подключения берутся из реестра по `id`. Загрузка инкрементальная: файлы,
     уже скачанные и не изменившиеся на панели (совпал размер и время не новее),
     повторно не качаются (см. `download_ftp_files`). Если FTP недоступен, но
-    локальные архивы уже есть — работаем с ними. Для обычной папки (folder mode)
-    функция ничего не делает."""
-    try:
-        is_ftp_profile = root_path.resolve().parent == DATALOG_ROOT
-    except OSError:
-        is_ftp_profile = False
-    if not is_ftp_profile:
-        return 0
+    локальные архивы уже есть — работаем с ними, но сам сбой не «глотаем»: он
+    возвращается в `ftp_error` и показывается пользователю. Для обычной папки
+    (folder mode) функция ничего не делает."""
+    if not is_ftp_profile(root_path):
+        return FtpSyncResult()
 
     connection = find_ftp_connection(root_path.name)
     if connection is None:
-        return 0
+        return FtpSyncResult()
     config = connection_to_config(connection)
 
     # Зеркало панели: качаем в профиль с помесячной раскладкой (ГГГГ-ММ по
@@ -1239,7 +1483,7 @@ def materialize_ftp_sources(
     download_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        downloaded_files = download_ftp_files(
+        result = download_ftp_files(
             config,
             download_dir,
             progress_callback=progress_callback,
@@ -1248,16 +1492,18 @@ def materialize_ftp_sources(
     except core.AnalysisCancelledError:
         raise
     except (ValueError, SystemExit, OSError) as exc:
+        message = str(exc) or "FTP недоступен."
+        logging.warning("Синхронизация с FTP не удалась: %s", message)
         if datalog_has_archives(root_path):
             core.emit_progress(
                 progress_callback,
                 phase="ftp",
-                message=f"FTP недоступен ({exc}); использую ранее скачанные архивы.",
+                message=f"FTP недоступен ({message}); использую ранее скачанные архивы.",
                 item=format_ftp_display_label(config),
             )
-            return 0
+            return FtpSyncResult(ftp_error_message=message)
         raise SystemExit(
-            f"Не удалось скачать архивы с FTP, и локальных архивов в `datalog` нет: {exc}"
+            f"Не удалось скачать архивы с FTP, и локальных архивов в `datalog` нет: {message}"
         ) from exc
 
     # Автоочистка архивов старше срока хранения (только для FTP-зеркала).
@@ -1265,12 +1511,12 @@ def materialize_ftp_sources(
     # поле показывало бы время каждого подключения, хотя ничего не чистилось.
     settings = load_app_settings()
     if settings["archive_retention_enabled"]:
-        result = cleanup_old_archives(root_path, settings["archive_retention_days"])
-        if result["removed"]:
+        cleanup_result = cleanup_old_archives(root_path, settings["archive_retention_days"])
+        if cleanup_result["removed"]:
             with state_lock:
                 state.last_cleanup_ts = time.time()
 
-    return len(downloaded_files)
+    return result
 
 
 def object_name_override_key(channel: int, object_id: int) -> str:
@@ -1348,13 +1594,13 @@ def save_object_name_overrides(root_path: Path, overrides: dict[tuple[int, int],
             pass
         return
 
-    payload = {
-        "version": OBJECT_NAME_OVERRIDES_VERSION,
-        "objects": objects_payload,
-    }
-    temp_path = path.with_suffix(f"{path.suffix}.tmp")
-    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    temp_path.replace(path)
+    atomic_write_json(
+        path,
+        {
+            "version": OBJECT_NAME_OVERRIDES_VERSION,
+            "objects": objects_payload,
+        },
+    )
 
 
 def resolve_object_name(channel: int, object_id: int, overrides: dict[tuple[int, int], str]) -> str:
@@ -1406,13 +1652,13 @@ def load_chart_style_settings() -> dict[str, dict[str, str]]:
 def save_chart_style_settings(series_styles: dict[str, dict[str, str]]) -> None:
     path = chart_style_settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "version": CHART_STYLE_SETTINGS_VERSION,
-        "series": series_styles,
-    }
-    temp_path = path.with_suffix(f"{path.suffix}.tmp")
-    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    temp_path.replace(path)
+    atomic_write_json(
+        path,
+        {
+            "version": CHART_STYLE_SETTINGS_VERSION,
+            "series": series_styles,
+        },
+    )
 
 
 # ---- последний открытый путь к папке (режим «Папка и архивы») ---------------
@@ -1437,10 +1683,7 @@ def save_last_folder_path(path: str) -> None:
         return
     target = folder_source_settings_path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"version": FOLDER_SOURCE_SETTINGS_VERSION, "last_path": value}
-    temp_path = target.with_suffix(f"{target.suffix}.tmp")
-    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    temp_path.replace(target)
+    atomic_write_json(target, {"version": FOLDER_SOURCE_SETTINGS_VERSION, "last_path": value})
 
 
 # ---- общие настройки приложения (автообновление FTP и т. п.) ----------------
@@ -1543,11 +1786,18 @@ def save_app_settings(raw: Any) -> dict[str, Any]:
     settings = normalize_app_settings(raw)
     path = app_settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"version": APP_SETTINGS_VERSION, "settings": settings}
-    temp_path = path.with_suffix(f"{path.suffix}.tmp")
-    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    temp_path.replace(path)
+    with app_settings_lock:
+        atomic_write_json(path, {"version": APP_SETTINGS_VERSION, "settings": settings})
     return settings
+
+
+def update_app_settings(source: dict[str, Any]) -> dict[str, Any]:
+    """Частичное обновление настроек: переданные поля накладываются поверх
+    сохранённых. Чтение и запись — под общим локом, иначе два параллельных
+    запроса читают одно состояние и второй затирает изменения первого."""
+    with app_settings_lock:
+        merged = {**load_app_settings(), **source}
+        return save_app_settings(merged)
 
 
 def apply_object_name_overrides(
@@ -1560,7 +1810,6 @@ def apply_object_name_overrides(
     collections = (
         analysis.segments,
         analysis.cycles,
-        analysis.wash_intervals,
         analysis.overviews,
     )
     for collection in collections:
@@ -1580,20 +1829,13 @@ def clear_chart_payload_cache() -> None:
 
 
 def cleanup_stale_disk_caches() -> None:
-    """Возрастная очистка дискового кэша (результаты анализа, готовые графики,
-    распакованные базы): удаляются только записи старше TTL. Полное удаление
+    """Очистка дискового кэша (результаты анализа, готовые графики, распакованные
+    базы): протухшее по TTL и всё, что не влезло в бюджет (LRU). Полное удаление
     общих корней недопустимо — их может использовать параллельно работающий
     второй экземпляр приложения."""
     clear_chart_payload_cache()
-    for cache_root, lock, ttl_seconds in (
-        (ARCHIVE_CACHE_ROOT, archive_cache_lock, ARCHIVE_CACHE_TTL_SECONDS),
-        (ANALYSIS_CACHE_ROOT, analysis_cache_lock, ANALYSIS_CACHE_TTL_SECONDS),
-    ):
-        with lock:
-            try:
-                cleanup_expired_cache_entries(cache_root, ttl_seconds)
-            except OSError:
-                pass
+    prune_archive_cache()
+    prune_analysis_cache()
 
 
 def reset_workspace() -> None:
@@ -1804,47 +2046,193 @@ def extract_archive_dbs(
     return extracted_paths
 
 
+def path_cache_signature(path: Path) -> str:
+    """Подпись файла (mtime+size) для ключа кэша. Исчезнувший под работающим
+    анализом файл (например, его удалила очистка архивов) не должен ронять
+    джоб — вместо исключения возвращаем маркер, ключ просто не совпадёт."""
+    try:
+        stat_result = path.stat()
+    except OSError:
+        return "missing"
+    return f"{stat_result.st_mtime_ns}::{stat_result.st_size}"
+
+
 def archive_cache_key(archive_path: Path) -> str:
-    archive_stat = archive_path.stat()
-    payload = f"{archive_path.resolve()}::{archive_stat.st_mtime_ns}::{archive_stat.st_size}"
+    payload = f"{archive_path}::{path_cache_signature(archive_path)}"
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:20]
 
 
 def touch_cache_entry(path: Path) -> None:
+    """Отмечает запись как использованную: mtime записи — это её «время
+    последнего доступа» для LRU-эвикции (см. prune_cache_root)."""
     try:
         os.utime(path, None)
-    except FileNotFoundError:
+    except OSError:
         return
+
+
+def remove_cache_entry(path: Path) -> None:
+    try:
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            path.unlink(missing_ok=True)
+    except OSError:
+        return
+
+
+def cache_entry_size_bytes(path: Path) -> int:
+    try:
+        if path.is_dir():
+            return directory_size_bytes(path)
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def is_protected_cache_entry(path: Path) -> bool:
+    """Служебные записи, которые нельзя вытеснять: рабочая папка отчётов лежит
+    внутри корня кэша, а незавершённые распаковки (`<key>.tmp-<uuid>`) пишет
+    другой поток — он сам за собой уберёт."""
+    if ".tmp-" in path.name:
+        return True
+    return path.name == WEB_RUNTIME_OUTPUT_DIR.name and path.parent == ANALYSIS_CACHE_ROOT
 
 
 def cleanup_expired_cache_entries(cache_root: Path, ttl_seconds: int) -> None:
     cutoff = time.time() - ttl_seconds
-    for candidate in cache_root.iterdir():
+    try:
+        candidates = list(cache_root.iterdir())
+    except OSError:
+        return
+    for candidate in candidates:
+        if is_protected_cache_entry(candidate):
+            continue
         try:
             if candidate.stat().st_mtime >= cutoff:
                 continue
-        except FileNotFoundError:
+        except OSError:
             continue
+        remove_cache_entry(candidate)
 
-        try:
-            if candidate.is_dir():
-                shutil.rmtree(candidate, ignore_errors=True)
-            else:
-                candidate.unlink()
-        except FileNotFoundError:
+
+def prune_cache_root(
+    cache_root: Path,
+    *,
+    ttl_seconds: int,
+    max_bytes: int,
+    max_entries: int,
+) -> None:
+    """TTL + бюджет кэша с LRU-эвикцией.
+
+    Одного TTL недостаточно: ключи записей зависят от mtime+size исходников, а
+    автообновление FTP идёт каждые несколько минут, поэтому за сутки набегают
+    сотни новых db-*/workspace-*/chart-* — кэш рос без ограничений. Сначала
+    выбрасываем протухшее по TTL, затем, пока не уложились в бюджет по объёму и
+    количеству, удаляем давно не используемые записи (mtime обновляется при
+    каждом попадании в кэш, см. touch_cache_entry)."""
+    cleanup_expired_cache_entries(cache_root, ttl_seconds)
+
+    try:
+        candidates = list(cache_root.iterdir())
+    except OSError:
+        return
+
+    entries: list[tuple[float, int, Path]] = []
+    total_bytes = 0
+    for candidate in candidates:
+        if is_protected_cache_entry(candidate):
             continue
+        try:
+            mtime = candidate.stat().st_mtime
+        except OSError:
+            continue
+        size = cache_entry_size_bytes(candidate)
+        total_bytes += size
+        entries.append((mtime, size, candidate))
+
+    if total_bytes <= max_bytes and len(entries) <= max_entries:
+        return
+
+    entries.sort(key=lambda item: item[0])  # от самых давно использованных
+    entry_count = len(entries)
+    for _mtime, size, candidate in entries:
+        if total_bytes <= max_bytes and entry_count <= max_entries:
+            break
+        remove_cache_entry(candidate)
+        total_bytes -= size
+        entry_count -= 1
+        logging.debug("Кэш: вытеснена запись %s (%d байт)", candidate.name, size)
+
+
+def prune_archive_cache() -> None:
+    with archive_cache_lock:
+        prune_cache_root(
+            ARCHIVE_CACHE_ROOT,
+            ttl_seconds=ARCHIVE_CACHE_TTL_SECONDS,
+            max_bytes=ARCHIVE_CACHE_MAX_BYTES,
+            max_entries=ARCHIVE_CACHE_MAX_ENTRIES,
+        )
+
+
+def prune_analysis_cache() -> None:
+    with analysis_cache_lock:
+        prune_cache_root(
+            ANALYSIS_CACHE_ROOT,
+            ttl_seconds=ANALYSIS_CACHE_TTL_SECONDS,
+            max_bytes=ANALYSIS_CACHE_MAX_BYTES,
+            max_entries=ANALYSIS_CACHE_MAX_ENTRIES,
+        )
+
+
+def remember_cache_key(
+    registry: OrderedDict[str, str],
+    source_key: str,
+    cache_key: str,
+) -> str | None:
+    """Запоминает актуальный ключ кэша источника и возвращает предыдущий (если
+    он был другим). Реестр ограничен по размеру: раньше он рос монотонно."""
+    previous_key = registry.pop(source_key, None)
+    registry[source_key] = cache_key
+    while len(registry) > CACHE_SOURCE_REGISTRY_LIMIT:
+        registry.popitem(last=False)
+    if previous_key is None or previous_key == cache_key:
+        return None
+    return previous_key
 
 
 def cleanup_stale_archive_cache(source_path: Path, cache_key: str) -> None:
-    source_key = str(source_path.resolve())
-    previous_key = archive_cache_keys_by_source.get(source_key)
-    archive_cache_keys_by_source[source_key] = cache_key
-    if previous_key is None or previous_key == cache_key:
+    previous_key = remember_cache_key(archive_cache_keys_by_source, str(source_path), cache_key)
+    if previous_key is None:
         return
+    remove_cache_entry(ARCHIVE_CACHE_ROOT / previous_key)
 
-    stale_dir = ARCHIVE_CACHE_ROOT / previous_key
-    if stale_dir.exists():
-        shutil.rmtree(stale_dir, ignore_errors=True)
+
+def cleanup_stale_db_analysis_cache(db_path: Path, cache_key: str) -> None:
+    """Удаляет пикл предыдущей версии этой же базы: при дозаписи `.db` меняется
+    mtime+size, а значит и ключ, и старая запись иначе висела бы до TTL."""
+    previous_key = remember_cache_key(db_cache_keys_by_source, str(db_path), cache_key)
+    if previous_key is None:
+        return
+    remove_cache_entry(db_analysis_cache_path(previous_key))
+
+
+def cleanup_stale_workspace_cache(source_key: str, cache_key: str) -> None:
+    """Удаляет предыдущий сводный анализ источника вместе с его графиками
+    (chart-<ключ анализа>-*.pkl) — они больше не будут востребованы."""
+    previous_key = remember_cache_key(workspace_cache_keys_by_source, source_key, cache_key)
+    if previous_key is None:
+        return
+    remove_cache_entry(workspace_analysis_cache_path(previous_key))
+    prefix = f"chart-{previous_key[:CHART_CACHE_KEY_PREFIX_LEN]}-"
+    try:
+        stale_charts = [
+            path for path in ANALYSIS_CACHE_ROOT.iterdir() if path.name.startswith(prefix)
+        ]
+    except OSError:
+        return
+    for path in stale_charts:
+        remove_cache_entry(path)
 
 
 def extract_archive_dbs_cached(
@@ -1893,8 +2281,7 @@ def extract_archive_dbs_cached(
 
 
 def db_analysis_cache_key(db_path: Path) -> str:
-    db_stat = db_path.stat()
-    payload = f"{db_path.resolve()}::{db_stat.st_mtime_ns}::{db_stat.st_size}"
+    payload = f"{db_path}::{path_cache_signature(db_path)}"
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
 
@@ -1905,7 +2292,7 @@ def db_analysis_cache_path(cache_key: str) -> Path:
 def workspace_analysis_cache_key(db_files: list[Path], *, max_gap_seconds: float) -> str:
     payload_parts = [f"v{WORKSPACE_ANALYSIS_CACHE_VERSION}", f"gap:{max_gap_seconds:.6f}"]
     for db_path in sorted(db_files, key=lambda item: str(item).lower()):
-        payload_parts.append(f"{db_path.resolve()}::{db_analysis_cache_key(db_path)}")
+        payload_parts.append(f"{db_path}::{db_analysis_cache_key(db_path)}")
     payload = "\n".join(payload_parts)
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
@@ -1915,21 +2302,22 @@ def workspace_analysis_cache_path(cache_key: str) -> Path:
 
 
 def load_pickle_cache(path: Path) -> Any | None:
+    """Промах кэша не должен ронять джоб: битый пикл даёт что угодно
+    (IndexError/KeyError/TypeError/ImportError после смены формата чанков), а не
+    только PickleError — поэтому ловим Exception и выбрасываем запись."""
     try:
         with path.open("rb") as handle:
-            payload = pickle.load(handle)
-    except (FileNotFoundError, OSError, pickle.PickleError, AttributeError, EOFError, ValueError):
+            return pickle.load(handle)
+    except FileNotFoundError:
         return None
-
-    touch_cache_entry(path)
-    return payload
+    except Exception:
+        logging.warning("Повреждённая запись кэша, удаляю: %s", path.name)
+        remove_cache_entry(path)
+        return None
 
 
 def save_pickle_cache(path: Path, payload: Any) -> None:
-    temp_path = path.with_suffix(f"{path.suffix}.tmp")
-    with temp_path.open("wb") as handle:
-        pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
-    temp_path.replace(path)
+    atomic_write_bytes(path, pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
 
 
 def load_cached_db_analysis(db_path: Path) -> core.DbAnalysisChunk | None:
@@ -1937,19 +2325,20 @@ def load_cached_db_analysis(db_path: Path) -> core.DbAnalysisChunk | None:
     cache_path = db_analysis_cache_path(cache_key)
     with analysis_cache_lock:
         payload = load_pickle_cache(cache_path)
-    if not isinstance(payload, dict):
-        return None
-    if payload.get("version") != DB_ANALYSIS_CACHE_VERSION:
-        return None
-    if payload.get("cache_key") != cache_key:
-        return None
-    if payload.get("db_path") != str(db_path.resolve()):
-        return None
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("version") != DB_ANALYSIS_CACHE_VERSION:
+            return None
+        if payload.get("cache_key") != cache_key:
+            return None
+        if payload.get("db_path") != str(db_path):
+            return None
 
-    chunk = payload.get("chunk")
-    if not isinstance(chunk, core.DbAnalysisChunk):
-        return None
-    return chunk
+        chunk = payload.get("chunk")
+        if not isinstance(chunk, core.DbAnalysisChunk):
+            return None
+        touch_cache_entry(cache_path)
+        return chunk
 
 
 def save_cached_db_analysis(db_path: Path, chunk: core.DbAnalysisChunk) -> None:
@@ -1958,39 +2347,59 @@ def save_cached_db_analysis(db_path: Path, chunk: core.DbAnalysisChunk) -> None:
     payload = {
         "version": DB_ANALYSIS_CACHE_VERSION,
         "cache_key": cache_key,
-        "db_path": str(db_path.resolve()),
+        "db_path": str(db_path),
         "chunk": chunk,
     }
     with analysis_cache_lock:
         save_pickle_cache(cache_path, payload)
+        cleanup_stale_db_analysis_cache(db_path, cache_key)
 
 
-def load_cached_workspace_analysis(cache_key: str) -> core.AnalysisResult | None:
+def load_cached_workspace_analysis(cache_key: str) -> tuple[core.AnalysisResult, list[str]] | None:
+    """Сводный анализ источника из кэша вместе со списком пропущенных (битых)
+    баз — при попадании в кэш пользователь должен видеть то же предупреждение."""
     cache_path = workspace_analysis_cache_path(cache_key)
     with analysis_cache_lock:
         payload = load_pickle_cache(cache_path)
-    if not isinstance(payload, dict):
-        return None
-    if payload.get("version") != WORKSPACE_ANALYSIS_CACHE_VERSION:
-        return None
-    if payload.get("cache_key") != cache_key:
-        return None
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("version") != WORKSPACE_ANALYSIS_CACHE_VERSION:
+            return None
+        if payload.get("cache_key") != cache_key:
+            return None
 
-    analysis = payload.get("analysis")
-    if not isinstance(analysis, core.AnalysisResult):
-        return None
-    return analysis
+        analysis = payload.get("analysis")
+        if not isinstance(analysis, core.AnalysisResult):
+            return None
+        raw_skipped = payload.get("skipped_db_files")
+        skipped = [str(name) for name in raw_skipped] if isinstance(raw_skipped, list) else []
+        touch_cache_entry(cache_path)
+        return analysis, skipped
 
 
-def save_cached_workspace_analysis(cache_key: str, analysis: core.AnalysisResult) -> None:
+def save_cached_workspace_analysis(
+    cache_key: str,
+    analysis: core.AnalysisResult,
+    *,
+    source_key: str = "",
+    skipped_db_files: list[str] | None = None,
+) -> None:
     cache_path = workspace_analysis_cache_path(cache_key)
     payload = {
         "version": WORKSPACE_ANALYSIS_CACHE_VERSION,
         "cache_key": cache_key,
         "analysis": analysis,
+        "skipped_db_files": list(skipped_db_files or []),
     }
     with analysis_cache_lock:
         save_pickle_cache(cache_path, payload)
+        if source_key:
+            cleanup_stale_workspace_cache(source_key, cache_key)
+
+
+# Ключ анализа в имени chart-файла — чтобы графики устаревшего анализа можно
+# было найти и удалить по префиксу (см. cleanup_stale_workspace_cache).
+CHART_CACHE_KEY_PREFIX_LEN = 16
 
 
 def chart_payload_disk_cache_key(analysis_cache_key: str, key: str) -> str:
@@ -2000,7 +2409,8 @@ def chart_payload_disk_cache_key(analysis_cache_key: str, key: str) -> str:
 
 def chart_payload_disk_cache_path(analysis_cache_key: str, key: str) -> Path:
     cache_key = chart_payload_disk_cache_key(analysis_cache_key, key)
-    return ANALYSIS_CACHE_ROOT / f"chart-{cache_key}.pkl"
+    prefix = analysis_cache_key[:CHART_CACHE_KEY_PREFIX_LEN]
+    return ANALYSIS_CACHE_ROOT / f"chart-{prefix}-{cache_key}.pkl"
 
 
 def load_cached_chart_payload_disk(analysis_cache_key: str, key: str) -> dict[str, Any] | None:
@@ -2010,19 +2420,20 @@ def load_cached_chart_payload_disk(analysis_cache_key: str, key: str) -> dict[st
     cache_path = chart_payload_disk_cache_path(analysis_cache_key, key)
     with analysis_cache_lock:
         payload = load_pickle_cache(cache_path)
-    if not isinstance(payload, dict):
-        return None
-    if payload.get("version") != CHART_PAYLOAD_DISK_CACHE_VERSION:
-        return None
-    if payload.get("analysis_cache_key") != analysis_cache_key:
-        return None
-    if payload.get("cycle_key") != key:
-        return None
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("version") != CHART_PAYLOAD_DISK_CACHE_VERSION:
+            return None
+        if payload.get("analysis_cache_key") != analysis_cache_key:
+            return None
+        if payload.get("cycle_key") != key:
+            return None
 
-    chart_payload = payload.get("payload")
-    if not isinstance(chart_payload, dict):
-        return None
-    return chart_payload
+        chart_payload = payload.get("payload")
+        if not isinstance(chart_payload, dict):
+            return None
+        touch_cache_entry(cache_path)
+        return chart_payload
 
 
 def save_cached_chart_payload_disk(analysis_cache_key: str, key: str, payload: dict[str, Any]) -> None:
@@ -2057,12 +2468,11 @@ def discover_db_files(
     archive_files: list[Path] = []
     scanned_files = 0
 
-    with archive_cache_lock:
-        cleanup_expired_cache_entries(ARCHIVE_CACHE_ROOT, ARCHIVE_CACHE_TTL_SECONDS)
+    prune_archive_cache()
 
-    # Сначала докачиваем свежие архивы с FTP в datalog/<дата>/, чтобы обход
-    # ниже увидел и их, и ранее скачанные за прошлые даты.
-    ftp_downloaded_count = materialize_ftp_sources(
+    # Сначала докачиваем свежие архивы с FTP в datalog/ГГГГ-ММ/, чтобы обход
+    # ниже увидел и их, и ранее скачанные за прошлые месяцы.
+    ftp_result = materialize_ftp_sources(
         root_path,
         progress_callback=progress_callback,
         cancel_check=cancel_check,
@@ -2093,13 +2503,15 @@ def discover_db_files(
 
         for filename in filenames:
             scanned_files += 1
-            candidate = Path(current_root) / filename
+            candidate = current_root_path / filename
             lower_name = filename.lower()
 
+            # resolve() на каждый файл — лишний системный вызов на элемент дерева;
+            # os.walk и так идёт от уже нормализованного корня.
             if lower_name.endswith(".db"):
-                direct_db_files.append(candidate.resolve())
+                direct_db_files.append(candidate)
             elif any(lower_name.endswith(suffix) for suffix in SUPPORTED_ARCHIVE_SUFFIXES):
-                archive_files.append(candidate.resolve())
+                archive_files.append(candidate)
 
             if scanned_files == 1 or scanned_files % 200 == 0:
                 core.emit_progress(
@@ -2138,7 +2550,9 @@ def discover_db_files(
     db_files = sorted(unique_paths.values(), key=lambda item: str(item).lower())
     return db_files, ScanSummary(
         archive_count=len(archive_files),
-        ftp_source_count=ftp_downloaded_count,
+        ftp_source_count=len(ftp_result.present_files),
+        ftp_failed_files=list(ftp_result.failed_files),
+        ftp_error=ftp_result.ftp_error_message,
     )
 
 
@@ -2147,15 +2561,17 @@ def analyze_db_files_incremental(
     *,
     output_dir: Path,
     max_gap_seconds: float = 15.0,
+    source_key: str = "",
     progress_callback: core.ProgressCallback | None = None,
     cancel_check: Callable[[], bool] | None = None,
-) -> core.AnalysisResult:
-    with analysis_cache_lock:
-        cleanup_expired_cache_entries(ANALYSIS_CACHE_ROOT, ANALYSIS_CACHE_TTL_SECONDS)
+) -> tuple[core.AnalysisResult, list[str]]:
+    """Возвращает сводный анализ и имена пропущенных баз (битые/неподходящие)."""
+    prune_analysis_cache()
 
     workspace_cache_key = workspace_analysis_cache_key(db_files, max_gap_seconds=max_gap_seconds)
-    cached_analysis = load_cached_workspace_analysis(workspace_cache_key)
-    if cached_analysis is not None:
+    cached = load_cached_workspace_analysis(workspace_cache_key)
+    if cached is not None:
+        cached_analysis, cached_skipped = cached
         core.emit_progress(
             progress_callback,
             phase="cache",
@@ -2166,7 +2582,7 @@ def analyze_db_files_incremental(
         )
         cached_analysis.output_dir = output_dir
         cached_analysis.analysis_cache_key = workspace_cache_key
-        return cached_analysis
+        return cached_analysis, cached_skipped
 
     chunks_by_db: dict[str, core.DbAnalysisChunk] = {}
     pending_jobs: list[tuple[int, Path, int]] = []
@@ -2189,7 +2605,7 @@ def analyze_db_files_incremental(
                 total=total_files,
                 item=db_path.name,
             )
-            chunks_by_db[str(db_path.resolve())] = cached_chunk
+            chunks_by_db[str(db_path)] = cached_chunk
             continue
 
         core.emit_progress(
@@ -2200,9 +2616,13 @@ def analyze_db_files_incremental(
             total=total_files,
             item=db_path.name,
         )
+        # Битая или неподходящая база (нет таблицы `data`, повреждён файл,
+        # исчез под работающим анализом) не должна валить весь джоб: файл
+        # пропускаем, а пользователю потом показываем, сколько таких было.
         try:
             channel = core.preflight_db_file(db_path)
-        except SystemExit:
+        except (SystemExit, sqlite3.Error, OSError, ValueError) as exc:
+            logging.warning("Файл `%s` пропущен: %s", db_path.name, exc)
             skipped_db_files.append(db_path.name)
             continue
         pending_jobs.append((index, db_path, channel))
@@ -2239,9 +2659,16 @@ def analyze_db_files_incremental(
                         raise core.AnalysisCancelledError("Открытие источника было отменено пользователем.")
 
                     index, db_path = future_to_job[future]
-                    chunk = future.result()
+                    # Файл мог оказаться битым уже на разборе данных (или исчезнуть
+                    # под работающим анализом) — пропускаем его, а не джоб целиком.
+                    try:
+                        chunk = future.result()
+                    except (SystemExit, sqlite3.Error, OSError, ValueError) as exc:
+                        logging.warning("Файл `%s` пропущен: %s", db_path.name, exc)
+                        skipped_db_files.append(db_path.name)
+                        continue
                     save_cached_db_analysis(db_path, chunk)
-                    chunks_by_db[str(db_path.resolve())] = chunk
+                    chunks_by_db[str(db_path)] = chunk
                     analyzed_files += 1
                     core.emit_progress(
                         progress_callback,
@@ -2258,15 +2685,16 @@ def analyze_db_files_incremental(
 
     chunks = [
         chunks_by_db[db_key]
-        for db_key in (str(path.resolve()) for path in db_files)
+        for db_key in (str(path) for path in db_files)
         if db_key in chunks_by_db
     ]
 
     if not chunks:
         if skipped_db_files:
             raise SystemExit(
-                "В выбранной папке не найдено ни одной подходящей базы данных "
-                "с именем вида `Canal_*.db`."
+                "Ни одну базу данных не удалось прочитать: "
+                f"{format_file_list(skipped_db_files)}. "
+                "Проверьте, что файлы не повреждены и имеют вид `Canal_*.db`."
             )
         raise SystemExit("SQLite-файлы не найдены.")
 
@@ -2285,8 +2713,36 @@ def analyze_db_files_incremental(
         chunks=chunks,
         analysis_cache_key=workspace_cache_key,
     )
-    save_cached_workspace_analysis(workspace_cache_key, analysis)
-    return analysis
+    save_cached_workspace_analysis(
+        workspace_cache_key,
+        analysis,
+        source_key=source_key,
+        skipped_db_files=skipped_db_files,
+    )
+    return analysis, skipped_db_files
+
+
+def build_job_completion_message(scan_summary: ScanSummary) -> str:
+    """Сообщение об успешном обновлении. Пропущенные базы и несостоявшиеся
+    загрузки — не молчаливые: пользователь должен видеть, что часть данных не
+    попала в отчёт."""
+    notes: list[str] = []
+    if scan_summary.skipped_db_files:
+        notes.append(
+            f"пропущено баз: {len(scan_summary.skipped_db_files)} "
+            f"({format_file_list(scan_summary.skipped_db_files)})"
+        )
+    if scan_summary.ftp_failed_files:
+        notes.append(
+            f"не скачано файлов с FTP: {len(scan_summary.ftp_failed_files)} "
+            f"({format_file_list(scan_summary.ftp_failed_files)})"
+        )
+    if scan_summary.ftp_error:
+        notes.append(f"синхронизация с FTP не удалась ({scan_summary.ftp_error})")
+
+    if not notes:
+        return "Данные успешно обновлены."
+    return "Данные обновлены, но " + "; ".join(notes) + "."
 
 
 def run_workspace_job(
@@ -2299,9 +2755,18 @@ def run_workspace_job(
 
     # Дожидаемся завершения предыдущего джоба (ему уже выставлен
     # cancel_requested), чтобы два потока не писали одни и те же файлы
-    # зеркала. Ждём здесь, в рабочем потоке, а не под state_lock.
+    # зеркала. Ждём здесь, в рабочем потоке, а не под state_lock. Если
+    # предыдущий поток так и не завершился, второй параллельно не запускаем:
+    # иначе оба пишут в одно зеркало и портят скачанные базы.
     if previous_thread is not None and previous_thread.is_alive():
-        previous_thread.join(timeout=60.0)
+        previous_thread.join(timeout=WORKSPACE_JOB_JOIN_TIMEOUT_SECONDS)
+        if previous_thread.is_alive():
+            finish_workspace_job_failed(
+                job_id,
+                "Предыдущая обработка источника не завершилась вовремя. "
+                "Повторите попытку через некоторое время.",
+            )
+            return
 
     try:
         db_files, scan_summary = discover_db_files(
@@ -2314,12 +2779,14 @@ def run_workspace_job(
                 "В выбранном источнике не найдено ни одной базы `.db` ни в папке, ни в поддерживаемых архивах, ни на FTP."
             )
 
-        analysis = analyze_db_files_incremental(
+        analysis, skipped_db_files = analyze_db_files_incremental(
             db_files,
             output_dir=WEB_RUNTIME_OUTPUT_DIR,
+            source_key=str(target_root),
             progress_callback=progress_callback,
             cancel_check=cancel_check,
         )
+        scan_summary.skipped_db_files = skipped_db_files
         object_name_overrides = load_object_name_overrides(TEMP_ROOT)
         apply_object_name_overrides(analysis, object_name_overrides)
 
@@ -2343,7 +2810,7 @@ def run_workspace_job(
             job.target_root = target_root
             job.status = "completed"
             job.phase = "completed"
-            job.message = "Данные успешно обновлены."
+            job.message = build_job_completion_message(scan_summary)
             job.current = max(job.current, job.total)
             job.finished_at = time.time()
     except core.AnalysisCancelledError:
@@ -2411,11 +2878,7 @@ def trigger_ftp_auto_refresh() -> bool:
         if target_root is None or state.analysis is None:
             return False
 
-        try:
-            is_ftp_profile = target_root.resolve().parent == DATALOG_ROOT
-        except OSError:
-            is_ftp_profile = False
-        if not is_ftp_profile:
+        if not is_ftp_profile(target_root):
             return False
 
         display_target = (
@@ -2529,7 +2992,10 @@ def build_wash_rows(analysis: core.AnalysisResult) -> list[dict[str, Any]]:
 
 # Кэш строк списка моек для /api/workspace-data: пересборка нужна только при
 # смене анализа/оверрайдов имён (analysis_revision) или файла настроек (mtime).
+# Собирается ВНЕ state_lock: сборка десятков тысяч словарей и чтение файла
+# настроек под общим локом подвешивали и остальные запросы, и SSE.
 _wash_rows_cache: dict[str, Any] = {"revision": None, "settings_mtime": None, "rows": []}
+_wash_rows_cache_lock = threading.Lock()
 
 
 def app_settings_mtime_ns() -> int | None:
@@ -2539,20 +3005,27 @@ def app_settings_mtime_ns() -> int | None:
         return None
 
 
-def build_wash_rows_cached_locked() -> list[dict[str, Any]]:
-    """Строки списка моек с кэшем; вызывать под state_lock."""
-    if state.analysis is None:
+def build_wash_rows_cached(
+    analysis: core.AnalysisResult | None,
+    analysis_revision: int,
+) -> list[dict[str, Any]]:
+    """Строки списка моек с кэшем; вызывать вне state_lock."""
+    if analysis is None:
         return []
+
     settings_mtime = app_settings_mtime_ns()
-    if (
-        _wash_rows_cache["revision"] == state.analysis_revision
-        and _wash_rows_cache["settings_mtime"] == settings_mtime
-    ):
-        return _wash_rows_cache["rows"]
-    rows = build_wash_rows(state.analysis)
-    _wash_rows_cache["revision"] = state.analysis_revision
-    _wash_rows_cache["settings_mtime"] = settings_mtime
-    _wash_rows_cache["rows"] = rows
+    with _wash_rows_cache_lock:
+        if (
+            _wash_rows_cache["revision"] == analysis_revision
+            and _wash_rows_cache["settings_mtime"] == settings_mtime
+        ):
+            return _wash_rows_cache["rows"]
+
+    rows = build_wash_rows(analysis)
+    with _wash_rows_cache_lock:
+        _wash_rows_cache["revision"] = analysis_revision
+        _wash_rows_cache["settings_mtime"] = settings_mtime
+        _wash_rows_cache["rows"] = rows
     return rows
 
 
@@ -2584,14 +3057,6 @@ def build_object_rows(
                 "base_object_name": base_name,
                 "is_json_name": (channel, object_id) in overrides,
                 "is_custom_name": object_name != base_name,
-                "search_blob": " ".join(
-                    [
-                        f"Канал {channel}",
-                        f"Объект {object_id}",
-                        object_name,
-                        base_name,
-                    ]
-                ).lower(),
             }
         )
 
@@ -2665,14 +3130,12 @@ def build_summary_payload(
         "cycle_count": len(analysis.cycles) if analysis else 0,
         "archive_count": scan_summary.archive_count,
         "ftp_source_count": scan_summary.ftp_source_count,
+        "skipped_db_count": len(scan_summary.skipped_db_files),
+        "ftp_failed_count": len(scan_summary.ftp_failed_files),
     }
 
 
-def build_workspace_payload(
-    snapshot: AppStateSnapshot,
-    *,
-    include_rows: bool,
-) -> dict[str, Any]:
+def build_workspace_payload(snapshot: AppStateSnapshot) -> dict[str, Any]:
     analysis = snapshot.analysis
     selected_root = snapshot.selected_root
     pending_root = snapshot.pending_root
@@ -2682,25 +3145,42 @@ def build_workspace_payload(
         or snapshot.pending_display_root
         or (str(current_root) if current_root else "")
     )
-    payload = {
+    return {
         "has_analysis": analysis is not None,
         "selected_root": str(selected_root) if selected_root else "",
         "display_root": display_root,
         "summary": build_summary_payload(analysis, snapshot.scan_summary),
         "error": snapshot.error,
+        "warnings": build_scan_warnings(snapshot.scan_summary),
         "job_status": snapshot.workspace_job_payload,
+        "tz_offset_min": local_tz_offset_min(),
     }
-    if include_rows:
-        payload["wash_rows"] = build_wash_rows(analysis) if analysis else []
-        payload["object_rows"] = build_object_rows(snapshot.object_name_overrides, analysis)
-    return payload
+
+
+def build_scan_warnings(scan_summary: ScanSummary) -> list[str]:
+    """Непрерывающие проблемы прошедшей синхронизации (битые базы, недокачанные
+    файлы, недоступный FTP) — их видно в интерфейсе, а не только в логе."""
+    warnings: list[str] = []
+    if scan_summary.skipped_db_files:
+        warnings.append(
+            f"Пропущены повреждённые или неподходящие базы ({len(scan_summary.skipped_db_files)}): "
+            f"{format_file_list(scan_summary.skipped_db_files)}."
+        )
+    if scan_summary.ftp_failed_files:
+        warnings.append(
+            f"Не удалось скачать файлы с FTP ({len(scan_summary.ftp_failed_files)}): "
+            f"{format_file_list(scan_summary.ftp_failed_files)}."
+        )
+    if scan_summary.ftp_error:
+        warnings.append(f"Синхронизация с FTP не удалась: {scan_summary.ftp_error}")
+    return warnings
 
 
 def page_context(request: Request, snapshot: AppStateSnapshot) -> dict[str, Any]:
     analysis = snapshot.analysis
     selected_root = snapshot.selected_root
     pending_root = snapshot.pending_root
-    workspace_payload = build_workspace_payload(snapshot, include_rows=False)
+    workspace_payload = build_workspace_payload(snapshot)
     workspace_input_value = resolve_workspace_input_value(selected_root, pending_root)
     def asset_version(filename: str) -> int:
         try:
@@ -2721,7 +3201,8 @@ def page_context(request: Request, snapshot: AppStateSnapshot) -> dict[str, Any]
         "display_root": workspace_payload["display_root"],
         "project_root": str(PROJECT_ROOT),
         "workspace_input_value": workspace_input_value,
-        "workspace_path_placeholder": resolve_workspace_path_placeholder(),
+        # Подсказка в поле «Папка» = путь по умолчанию (настройка или datalog).
+        "workspace_path_placeholder": resolve_default_folder_path(),
         "workspace_default_path": resolve_default_folder_path(),
         "ftp_form_defaults": dict(DEFAULT_FTP_FORM_VALUES),
         "ftp_sources": list_ftp_sources_public(),
@@ -2831,29 +3312,35 @@ def reset_workspace_route() -> RedirectResponse:
     return RedirectResponse(url="/", status_code=303)
 
 
+def start_refresh_job_locked() -> dict[str, Any] | None:
+    """Перезапуск обработки текущего источника; вызывать под state_lock.
+    Возвращает описание джоба либо None, если источник ещё не выбран."""
+    target_root = state.selected_root or state.pending_root
+    if target_root is None:
+        return None
+
+    display_target = (
+        state.selected_display_root or state.pending_display_root or str(target_root.resolve())
+    )
+    start_workspace_job(target_root.resolve(), display_target=display_target)
+    return serialize_job(state.workspace_job)
+
+
 @app.post("/workspace/refresh")
 def refresh_workspace_route() -> RedirectResponse:
     with state_lock:
-        target_root = state.selected_root or state.pending_root
-        if target_root is None:
+        if start_refresh_job_locked() is None:
             state.error = "Сначала выберите источник данных."
-            return RedirectResponse(url="/", status_code=303)
-
-        display_target = state.selected_display_root or state.pending_display_root or str(target_root.resolve())
-        start_workspace_job(target_root.resolve(), display_target=display_target)
     return RedirectResponse(url="/", status_code=303)
 
 
 @app.post("/api/workspace/refresh")
 def refresh_workspace_api() -> JSONResponse:
     with state_lock:
-        target_root = state.selected_root or state.pending_root
-        if target_root is None:
-            raise HTTPException(status_code=400, detail="Сначала выберите источник данных.")
-
-        display_target = state.selected_display_root or state.pending_display_root or str(target_root.resolve())
-        start_workspace_job(target_root.resolve(), display_target=display_target)
-        return JSONResponse({"ok": True, "job": serialize_job(state.workspace_job)})
+        job = start_refresh_job_locked()
+    if job is None:
+        raise HTTPException(status_code=400, detail="Сначала выберите источник данных.")
+    return JSONResponse({"ok": True, "job": job})
 
 
 @app.get("/api/workspace-job")
@@ -2864,21 +3351,30 @@ def workspace_job_status() -> JSONResponse:
 
 @app.get("/api/workspace-data")
 def workspace_data() -> JSONResponse:
-    # Строки собираем под state_lock (analysis разделяется с другими потоками)
-    # и кэшируем, чтобы не пересобирать всё на каждый запрос.
+    # Под state_lock — только снимок ссылок на данные. Тяжёлая сборка строк и
+    # чтение файла настроек идут снаружи: держать общий лок на время сборки
+    # десятков тысяч словарей нельзя (на нём же ждут SSE и все другие запросы).
     with state_lock:
         snapshot = capture_state_snapshot()
-        payload = build_workspace_payload(snapshot, include_rows=False)
-        payload["wash_rows"] = build_wash_rows_cached_locked()
-        payload["object_rows"] = build_object_rows(snapshot.object_name_overrides, snapshot.analysis)
+
+    payload = build_workspace_payload(snapshot)
+    payload["wash_rows"] = build_wash_rows_cached(snapshot.analysis, snapshot.analysis_revision)
+    payload["object_rows"] = build_object_rows(snapshot.object_name_overrides, snapshot.analysis)
     return JSONResponse(payload)
+
+
+def snapshot_job_status() -> dict[str, Any]:
+    with state_lock:
+        return serialize_job(state.workspace_job)
 
 
 @app.get("/api/workspace-job/stream")
 async def workspace_job_status_stream() -> StreamingResponse:
-    # Асинхронный опрос состояния задачи на событийном цикле: не занимает поток
-    # из ограниченного пула (раньше блокирующий sync-генератор мог исчерпать
-    # пул потоков и подвесить весь интерфейс). При обрыве соединения генератор
+    # Асинхронный опрос состояния задачи: не занимает поток из ограниченного
+    # пула (раньше блокирующий sync-генератор мог его исчерпать). Блокирующий
+    # state_lock берём в отдельном потоке (asyncio.to_thread) — если взять его
+    # прямо в генераторе, ожидание лока встаёт на event loop и подвешивает весь
+    # сервер, пока другой запрос держит лок. При обрыве соединения генератор
     # корректно отменяется.
     poll_interval = 0.5
     keepalive_ticks = max(1, int(WORKSPACE_JOB_STREAM_KEEPALIVE_SECONDS / poll_interval))
@@ -2887,8 +3383,7 @@ async def workspace_job_status_stream() -> StreamingResponse:
         last_payload: str | None = None
         idle_ticks = 0
         while True:
-            with state_lock:
-                snapshot = serialize_job(state.workspace_job)
+            snapshot = await asyncio.to_thread(snapshot_job_status)
             payload = json.dumps(snapshot, ensure_ascii=False)
 
             if payload != last_payload:
@@ -2993,6 +3488,10 @@ def update_object_name(payload: dict[str, Any] = Body(...)) -> JSONResponse:
             apply_object_name_overrides(state.analysis, overrides)
             state.analysis_revision += 1
         resolved_name = resolve_object_name(channel, object_id, overrides)
+        # Ответ собираем под тем же локом: снаружи состояние мог успеть сменить
+        # другой запрос (или завершившийся джоб), и клиент получил бы список
+        # объектов, не соответствующий только что сохранённому переименованию.
+        object_rows = build_object_rows(state.object_name_overrides, state.analysis)
 
     return JSONResponse(
         {
@@ -3003,7 +3502,7 @@ def update_object_name(payload: dict[str, Any] = Body(...)) -> JSONResponse:
             "object_name": resolved_name,
             "has_json_name": (channel, object_id) in overrides,
             "is_custom_name": resolved_name != fallback_object_name(object_id),
-            "object_rows": build_object_rows(state.object_name_overrides, state.analysis),
+            "object_rows": object_rows,
         }
     )
 
@@ -3097,11 +3596,8 @@ def update_app_settings_route(payload: dict[str, Any] = Body(...)) -> JSONRespon
     if not isinstance(source, dict):
         raise HTTPException(status_code=400, detail="Некорректное тело запроса.")
 
-    # Частичное обновление: переданные поля накладываются поверх сохранённых,
-    # чтобы можно было менять настройки по одной, не сбрасывая остальные.
-    merged = {**load_app_settings(), **source}
     try:
-        settings = save_app_settings(merged)
+        settings = update_app_settings(source)
     except OSError as exc:
         raise HTTPException(
             status_code=500, detail=f"Не удалось сохранить настройки: {exc}"
@@ -3129,10 +3625,7 @@ def get_diagnostics() -> JSONResponse:
 
     source_kind = "none"
     if selected_root is not None:
-        try:
-            source_kind = "ftp" if selected_root.resolve().parent == DATALOG_ROOT else "folder"
-        except OSError:
-            source_kind = "folder"
+        source_kind = "ftp" if is_ftp_profile(selected_root) else "folder"
 
     settings = load_app_settings()
     return JSONResponse(
@@ -3173,14 +3666,20 @@ def cleanup_archives_now() -> JSONResponse:
     days = settings["archive_retention_days"]
     with state_lock:
         target_root = state.selected_root or state.pending_root
+        job = state.workspace_job
+        job_active = job is not None and job.status in {"running", "cancelling"}
+
+    # Удалять архивы под работающим анализом нельзя: файл исчезает прямо во время
+    # чтения и джоб падает. Очистка и так выполняется в конце каждой синхронизации.
+    if job_active:
+        raise HTTPException(
+            status_code=409,
+            detail="Идёт обработка источника. Дождитесь её завершения и повторите очистку.",
+        )
 
     if target_root is None:
         raise HTTPException(status_code=400, detail="Нет активного источника данных.")
-    try:
-        is_ftp = target_root.resolve().parent == DATALOG_ROOT
-    except OSError:
-        is_ftp = False
-    if not is_ftp:
+    if not is_ftp_profile(target_root):
         raise HTTPException(
             status_code=400, detail="Очистка доступна только для FTP-источника (папка datalog)."
         )

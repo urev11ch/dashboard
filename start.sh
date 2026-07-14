@@ -22,6 +22,23 @@ fi
 
 export HOST="${HOST:-127.0.0.1}"
 export PORT="${PORT:-8765}"
+
+# У приложения нет аутентификации: слушаем только loopback. Нелокальный адрес
+# (например, 0.0.0.0) — осознанное решение через OPTICIP_ALLOW_REMOTE=1;
+# ту же переменную проверяют run_wash_ui.py и webapp/app.py.
+case "${HOST}" in
+    127.0.0.1 | localhost | ::1 | "[::1]") ;;
+    *)
+        if [ "${OPTICIP_ALLOW_REMOTE:-}" != "1" ]; then
+            echo "!! HOST=${HOST} открыл бы доступ к приложению из сети, а аутентификации у него нет." >&2
+            echo "!! Допустимы только 127.0.0.1, localhost, ::1." >&2
+            echo "!! Если удалённый доступ действительно нужен — OPTICIP_ALLOW_REMOTE=1." >&2
+            exit 2
+        fi
+        echo "!! ВНИМАНИЕ: слушаю ${HOST} без аутентификации (OPTICIP_ALLOW_REMOTE=1)." >&2
+        ;;
+esac
+
 echo ">> Открой в браузере: http://${HOST}:${PORT}/"
 # run_wash_ui.py читает HOST/PORT и понятно сообщает о занятом порте.
 exec .venv/bin/python run_wash_ui.py

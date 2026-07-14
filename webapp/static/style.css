@@ -896,8 +896,7 @@ code {
 }
 
 .wash-list-panel,
-.plot-card,
-.info-card {
+.plot-card {
   background: var(--panel);
   border: 1px solid rgba(40, 58, 96, 0.1);
   box-shadow: var(--shadow);
@@ -1233,12 +1232,8 @@ body.wash-result-hidden [data-wash-result-row] {
   gap: 22px;
 }
 
-.plot-card,
-.info-card {
-  border-radius: var(--radius-panel);
-}
-
 .plot-card {
+  border-radius: var(--radius-panel);
   padding: 22px;
   position: sticky;
   top: 0;
@@ -2230,20 +2225,15 @@ body.desktop-shell .object-editor-panel {
 }
 
 .chart-modal-header,
-.chart-modal-actions,
-.chart-modal-toolbar {
+.chart-modal-actions {
   display: flex;
   align-items: flex-start;
   gap: 10px;
 }
 
-.chart-modal-header,
-.chart-modal-meta {
+.chart-modal-header {
   padding-left: 0;
   padding-right: 0;
-}
-
-.chart-modal-header {
   justify-content: space-between;
   align-items: stretch;
 }
@@ -2260,12 +2250,6 @@ body.desktop-shell .object-editor-panel {
   flex-wrap: wrap;
   justify-content: flex-start;
   align-items: center;
-  gap: 12px;
-}
-
-.chart-modal-toolbar {
-  justify-content: flex-end;
-  align-items: flex-start;
   gap: 12px;
 }
 
@@ -2355,10 +2339,6 @@ body.desktop-shell .object-editor-panel {
 
 .chart-modal-actions--compact {
   align-self: start;
-}
-
-.chart-modal-meta {
-  margin-top: 0;
 }
 
 .chart-modal-summary-card {
@@ -2600,11 +2580,6 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
   grid-template-columns: minmax(280px, 0.8fr) minmax(0, 1.2fr) minmax(280px, 0.8fr);
   gap: 16px;
   align-items: start;
-}
-
-.info-card {
-  padding: 18px;
-  border-radius: var(--radius-panel);
 }
 
 .info-list {
@@ -3268,19 +3243,13 @@ body.modal-export-mode .chart-print-document {
     padding: 16px;
   }
 
-  .chart-modal-header,
-  .chart-modal-meta {
+  .chart-modal-header {
     padding-left: 0;
     padding-right: 0;
   }
 
   .chart-modal-header--table {
     grid-template-columns: 1fr;
-  }
-
-  .chart-modal-toolbar {
-    width: 100%;
-    justify-content: space-between;
   }
 
   .object-editor-row {
@@ -3417,7 +3386,6 @@ body.modal-export-mode .chart-print-document {
 
   .welcome-card,
   .plot-card,
-  .info-card,
   .wash-list-panel {
     border-radius: var(--radius-panel);
   }
@@ -3463,8 +3431,7 @@ body.modal-export-mode .chart-print-document {
     border-radius: 18px;
   }
 
-  .chart-modal-header,
-  .chart-modal-meta {
+  .chart-modal-header {
     padding-left: 0;
     padding-right: 0;
   }
@@ -3527,12 +3494,6 @@ body.modal-export-mode .chart-print-document {
   .chart-modal-frame {
     min-height: min(520px, calc(100vh - 230px));
     border-radius: 16px;
-  }
-
-  .chart-modal-toolbar {
-    grid-template-columns: 1fr auto;
-    display: grid;
-    align-items: start;
   }
 
   .chart-modal-actions {

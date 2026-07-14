@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import textwrap
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import wash_report as core
@@ -85,19 +85,26 @@ def _downsample_points(points: list[list[float]]) -> list[list[float]]:
     if reduced[-1] != points[-1]:
         reduced.append(points[-1])
 
-    if len(reduced) <= MAX_CHART_POINTS:
-        return reduced
-
-    step = math.ceil(len(reduced) / MAX_CHART_POINTS)
-    compact = reduced[::step]
-    if compact[-1] != reduced[-1]:
-        compact.append(reduced[-1])
-    return compact
+    # Дополнительная децимация не нужна: bucket_count бакетов дают не больше
+    # 4 точек каждый, то есть максимум MAX_CHART_POINTS - 2 точки.
+    return reduced
 
 
 def _format_segment_label(segment: core.Segment, index: int) -> str:
     label = f"{index}. {core.operation_label(segment.process_name)}"
     return textwrap.fill(label, width=26, break_long_words=False)
+
+
+def _tz_offset_minutes(timestamp: float) -> int:
+    """Смещение локальной таймзоны сервера от UTC в минутах. Битая метка
+    времени в архиве не должна ронять график: берём смещение «сейчас»."""
+    try:
+        offset = datetime.fromtimestamp(timestamp).astimezone().utcoffset()
+    except (OverflowError, OSError, ValueError):
+        offset = None
+    if offset is None:
+        offset = datetime.now().astimezone().utcoffset() or timedelta(0)
+    return int(offset.total_seconds() // 60)
 
 
 def build_cycle_chart_payload(
@@ -123,8 +130,8 @@ def build_cycle_chart_payload(
             if value is None:
                 # NULL в архиве (обрыв связи) — точку на кривую не кладём.
                 continue
-            if config["id"] == "concentration_return":
-                value = max(value, 0.0)
+            # Значения не правим: концентрация клипается один раз, на разборе
+            # строки архива (иначе статистика и кривая расходятся).
             points.append([round(sample.ts * 1000), value])
         points = _downsample_points(points)
 
@@ -162,12 +169,6 @@ def build_cycle_chart_payload(
             # Смещение локальной таймзоны сервера от UTC в минутах на момент
             # начала мойки: фронтенд форматирует время на графике так же,
             # как таблицы (format_ts в таймзоне сервера).
-            "tz_offset_min": int(
-                datetime.fromtimestamp(cycle.start_ts)
-                .astimezone()
-                .utcoffset()
-                .total_seconds()
-                // 60
-            ),
+            "tz_offset_min": _tz_offset_minutes(cycle.start_ts),
         },
     }

@@ -1,4 +1,5 @@
-# PyInstaller version resource for OptiCIP-Dashboard.exe (Windows "Properties" tab).
+# ВНИМАНИЕ: файл генерируется при сборке из webapp/__init__.py (__version__).
+# Правьте версию только там — здесь изменения будут перезаписаны.
 VSVersionInfo(
   ffi=FixedFileInfo(
     filevers=(1, 0, 0, 0),
@@ -21,7 +22,7 @@ VSVersionInfo(
           StringStruct('InternalName', 'OptiCIP-Dashboard'),
           StringStruct('OriginalFilename', 'OptiCIP-Dashboard.exe'),
           StringStruct('ProductName', 'OptiCIP Dashboard'),
-          StringStruct('ProductVersion', '1.0.0.0'),
+          StringStruct('ProductVersion', '1.0.0'),
           StringStruct('LegalCopyright', '(c) OptiCIP'),
         ],
       )

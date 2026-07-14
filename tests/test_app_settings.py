@@ -94,6 +94,48 @@ def test_settings_route_merges_partial(tmp_path, monkeypatch):
     assert result["ftp_auto_refresh_minutes"] == 9
 
 
+def test_concurrent_settings_updates_do_not_lose_changes(tmp_path, monkeypatch):
+    """POST /api/settings — это read-modify-write: без общего лока параллельные
+    запросы читают одно состояние и затирают изменения друг друга."""
+    import threading
+    import time as _time
+
+    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    app.save_app_settings({})
+
+    real_load = app.load_app_settings
+
+    def slow_load():
+        settings = real_load()
+        _time.sleep(0.02)  # расширяем окно гонки между чтением и записью
+        return settings
+
+    monkeypatch.setattr(app, "load_app_settings", slow_load)
+
+    updates = [
+        {"ftp_auto_refresh_minutes": 7},
+        {"default_folder_path": "/data/x"},
+        {"archive_retention_days": 10},
+        {"check_updates": True},
+    ]
+    threads = [
+        threading.Thread(target=app.update_app_settings_route, args=({"settings": update},))
+        for update in updates
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    monkeypatch.setattr(app, "load_app_settings", real_load)
+    result = app.load_app_settings()
+    # Ни одно из обновлений не потеряно.
+    assert result["ftp_auto_refresh_minutes"] == 7
+    assert result["default_folder_path"] == "/data/x"
+    assert result["archive_retention_days"] == 10
+    assert result["check_updates"] is True
+
+
 # ---- подписи результата мойки -----------------------------------------------
 def test_result_labels_default_empty_and_resolve_to_default(tmp_path, monkeypatch):
     monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
