@@ -202,6 +202,21 @@ button.ghost {
   box-shadow: none;
 }
 
+/* Подсветка вторичных (ghost) кнопок при наведении. Без этого правила селектор
+   button.ghost перебивал button:hover по специфичности, и ghost-кнопки
+   (шапка, пресеты периода, редактор и т. п.) не реагировали на наведение. */
+button.ghost:hover {
+  background: rgba(23, 87, 255, 0.1);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+button.ghost:hover:disabled {
+  background: rgba(255, 255, 255, 0.92);
+  border-color: var(--line);
+  color: var(--text);
+}
+
 input,
 select,
 textarea {
@@ -1642,7 +1657,11 @@ body.desktop-shell .object-editor-panel {
 }
 
 .object-editor-panel--settings {
+  /* Фиксированный размер окна: при переключении разделов окно не «прыгает».
+     Длинные разделы (Общие) скроллятся внутри правой части (.settings-content). */
   width: min(760px, calc(100vw - 32px));
+  height: min(600px, calc(100vh - 48px));
+  max-height: calc(100vh - 48px);
   grid-template-rows: auto minmax(0, 1fr);
 }
 

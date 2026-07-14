@@ -3576,11 +3576,6 @@
     openSettingsButton.addEventListener("click", () => openSettings());
   }
 
-  const openDiagnosticsButton = document.querySelector("#openDiagnostics");
-  if (openDiagnosticsButton) {
-    openDiagnosticsButton.addEventListener("click", () => openSettings("diagnostics"));
-  }
-
   initClock();
   checkForUpdates();
   applyWashResultVisibility();
