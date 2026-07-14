@@ -10,19 +10,23 @@ import wash_report as core
 
 MAX_CHART_POINTS = 900
 
+# Палитра кривых — ISA-101 / PlantPAx. Красный, оранжевый, жёлтый и фиолетовый
+# зарезервированы за приоритетами аварий и в кривых не применяются: иначе
+# нормальный тренд неотличим от аварийного признака. Оттенки взяты из палитры
+# сред (STYLE.md §1) — они намеренно уведены от алармовых.
 SERIES_CONFIG = (
     {
         "id": "temperature_supply",
         "label": "Температура подачи",
         "unit": "C",
-        "color": "#2563eb",
+        "color": "#2f5c8a",
         "panel": 0,
     },
     {
         "id": "temperature_return",
         "label": "Температура возврата",
         "unit": "C",
-        "color": "#dc2626",
+        "color": "#3e7c8c",
         "panel": 0,
         "line_style": "dashed",
     },
@@ -30,14 +34,14 @@ SERIES_CONFIG = (
         "id": "concentration_return",
         "label": "Концентрация возврата",
         "unit": "%",
-        "color": "#7c3aed",
+        "color": "#8a7a6a",
         "panel": 1,
     },
     {
         "id": "flow_supply",
         "label": "Расход подачи",
         "unit": "м3/ч",
-        "color": "#059669",
+        "color": "#6f9f82",
         "panel": 2,
     },
 )

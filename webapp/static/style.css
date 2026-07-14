@@ -1,24 +1,55 @@
 :root {
-  --bg: #f5f7fb;
-  --panel: rgba(255, 255, 255, 0.94);
-  --panel-strong: #ffffff;
-  --panel-soft: #f1f5fb;
-  --text: #1a2430;
-  --muted: #6a7686;
-  --line: rgba(40, 58, 96, 0.12);
-  --accent: #1757ff;
-  --accent-strong: #0f46d2;
-  --warn: #c2432f;
-  --shadow: 0 16px 32px rgba(26, 36, 48, 0.06);
-  --success-bg: #e8f5eb;
-  --success-text: #1c6e2f;
-  --warn-bg: #fae9e4;
-  --tag-bg: #eef3fb;
-  --radius-panel: 6px;
-  --radius-control: 4px;
-  --radius-tag: 3px;
-  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-  --font-mono: "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace;
+  /* Палитра ISA-101 / Rockwell PlantPAx (PROCES-WP023).
+     Источник истины — /home/Urevich/Elems/STYLE.md, раздел 1. */
+
+  /* Фон и поверхности */
+  --bg: #e0e0e0;
+  --panel: #e8e8e8;
+  --panel-strong: #ededed;
+  --panel-soft: #e4e4e4;
+  --surface-sunken: #d8d8da;
+  --surface-active: #c0c0c0;
+  --surface-active-hover: #b0b0b4;
+
+  /* Геометрия и линии */
+  --line: #a0a0a4;
+  --line-soft: #c4c4c8;
+  --detail: #8b8b8f;
+
+  /* Текст */
+  --text: #3f3f3f;
+  --muted: #6e6e70;
+  --dim: #919191;
+  --data: #475ca7;
+
+  /* Состояния */
+  --off: #b9bcc0;
+  --on: #6f9f82;
+  --alarm: #c0392b;
+  --alarm-dark: #8e2a20;
+  --alarm-bg: #ecd9d6;
+  --manual: #356a9c;
+
+  /* Интерактив: цвет выделения/фокуса, не является состоянием процесса */
+  --accent: #356a9c;
+  --accent-strong: #2a5580;
+  --hover: rgba(63, 63, 63, 0.07);
+
+  /* Совместимость со старыми именами (используются по всему файлу) */
+  --warn: #c0392b;
+  --warn-bg: #ecd9d6;
+  --success-bg: #e8e8e8;
+  --success-text: #3f3f3f;
+  --tag-bg: #dcdcde;
+  --shadow: none;
+
+  /* Прямые углы: HP-HMI не использует скругления как декор */
+  --radius-panel: 2px;
+  --radius-control: 2px;
+  --radius-tag: 2px;
+
+  --font-sans: "Roboto", "Noto Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "Roboto Mono", "SFMono-Regular", Menlo, Consolas, monospace;
 }
 
 * {
@@ -51,11 +82,6 @@ body {
   color: var(--text);
   font-family: var(--font-sans);
   background-color: var(--bg);
-  background-image:
-    linear-gradient(rgba(23, 87, 255, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(23, 87, 255, 0.035) 1px, transparent 1px),
-    radial-gradient(circle at top left, rgba(255, 255, 255, 0.9), rgba(245, 247, 251, 0.92));
-  background-size: 24px 24px, 24px 24px, 100% 100%;
 }
 
 /* ---- Кастомная шапка окна (frameless desktop-режим) ---------------------- */
@@ -143,14 +169,14 @@ body.desktop-shell .app-titlebar {
 }
 
 .app-titlebar-button:hover {
-  background: rgba(40, 58, 96, 0.08);
+  background: var(--line-soft);
   color: var(--text);
 }
 
 .app-titlebar-button--close:hover {
   background: var(--warn);
   border-color: var(--warn);
-  color: #fff;
+  color: var(--text);
 }
 
 /* Сдвигаем контент главных экранов под фиксированную шапку (box-sizing: border-box). */
@@ -175,10 +201,10 @@ p {
 }
 
 button {
-  border: 1px solid var(--accent);
+  border: 2px solid var(--text);
   border-radius: var(--radius-control);
-  background: var(--accent);
-  color: #fff;
+  background: var(--panel-strong);
+  color: var(--text);
   padding: 0 18px;
   height: 46px;
   font-size: 12px;
@@ -190,16 +216,26 @@ button {
 }
 
 button:hover {
-  background: var(--accent-strong);
-  border-color: var(--accent-strong);
+  background: var(--surface-active);
+  border-color: var(--text);
   box-shadow: none;
 }
 
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 button.ghost {
-  background: rgba(255, 255, 255, 0.92);
+  background: var(--panel);
   color: var(--text);
   border: 1px solid var(--line);
   box-shadow: none;
+}
+
+button.ghost:hover {
+  background: var(--surface-sunken);
+  border-color: var(--detail);
 }
 
 input,
@@ -208,7 +244,7 @@ textarea {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
-  background: rgba(255, 255, 255, 0.96);
+  background: var(--panel-strong);
   padding: 14px 16px;
   color: var(--text);
   font-size: 14px;
@@ -217,14 +253,15 @@ textarea {
 input:focus,
 select:focus,
 textarea:focus {
-  outline: none;
-  border-color: rgba(23, 87, 255, 0.38);
-  box-shadow: 0 0 0 3px rgba(23, 87, 255, 0.08);
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-color: var(--accent);
+  box-shadow: none;
 }
 
 code {
   font-size: 0.95em;
-  background: rgba(23, 87, 255, 0.08);
+  background: var(--hover);
   border-radius: var(--radius-tag);
   padding: 2px 6px;
 }
@@ -247,11 +284,11 @@ code {
 .welcome-card {
   width: min(920px, 100%);
   background: var(--panel);
-  backdrop-filter: blur(14px);
-  border: 1px solid rgba(40, 58, 96, 0.1);
+  backdrop-filter: none;
+  border: 1px solid var(--line-soft);
   border-radius: var(--radius-panel);
   padding: 40px;
-  box-shadow: var(--shadow);
+  box-shadow: none;
 }
 
 .welcome-card h1 {
@@ -282,8 +319,10 @@ code {
 }
 
 .welcome-source-tab.is-active {
-  background: var(--accent);
-  color: #fff;
+  border-color: var(--text);
+  font-weight: 800;
+  background: var(--surface-active);
+  color: var(--text);
   border-color: var(--accent);
 }
 
@@ -332,10 +371,8 @@ code {
 }
 
 .welcome-source-panel--primary {
-  background:
-    linear-gradient(135deg, rgba(23, 87, 255, 0.06), rgba(255, 255, 255, 0.92)),
-    var(--panel-soft);
-  border-color: rgba(23, 87, 255, 0.18);
+  background: var(--panel-strong);
+  border-color: var(--line);
 }
 
 .welcome-source-title {
@@ -366,10 +403,9 @@ code {
   display: grid;
   gap: 16px;
   padding: 18px;
-  border: 1px solid rgba(23, 87, 255, 0.12);
-  border-radius: calc(var(--radius-panel) + 2px);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(245, 248, 255, 0.94));
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--panel-strong);
 }
 
 .folder-form--ftp .welcome-form-grid {
@@ -386,9 +422,9 @@ code {
   display: grid;
   gap: 6px;
   padding: 12px 14px;
-  border-radius: calc(var(--radius-control) + 2px);
-  background: rgba(23, 87, 255, 0.06);
-  border: 1px solid rgba(23, 87, 255, 0.12);
+  border-radius: var(--radius-control);
+  background: var(--hover);
+  border: 1px solid var(--accent);
 }
 
 .welcome-ftp-hint strong {
@@ -424,14 +460,14 @@ code {
 }
 
 .welcome-advanced-panel {
-  border: 1px dashed rgba(40, 58, 96, 0.18);
-  border-radius: calc(var(--radius-control) + 2px);
-  background: rgba(255, 255, 255, 0.72);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-control);
+  background: var(--panel-strong);
 }
 
 .welcome-advanced-panel[open] {
   border-style: solid;
-  background: rgba(255, 255, 255, 0.92);
+  background: var(--panel-strong);
 }
 
 .welcome-advanced-toggle-button {
@@ -461,7 +497,7 @@ code {
   display: inline-grid;
   place-items: center;
   border-radius: 999px;
-  background: rgba(23, 87, 255, 0.08);
+  background: var(--hover);
   color: var(--accent);
   font-size: 15px;
   font-weight: 800;
@@ -628,7 +664,7 @@ code {
 }
 
 .screen-settings-button:hover {
-  border-color: rgba(23, 87, 255, 0.3);
+  border-color: var(--accent);
   color: var(--accent);
 }
 
@@ -647,8 +683,8 @@ code {
   padding: 18px;
   border-radius: var(--radius-panel);
   background: var(--panel);
-  border: 1px solid rgba(40, 58, 96, 0.1);
-  box-shadow: var(--shadow);
+  border: 1px solid var(--line-soft);
+  box-shadow: none;
   overflow: hidden;
 }
 
@@ -657,8 +693,8 @@ code {
   content: "";
   position: absolute;
   inset: 0 0 auto 0;
-  height: 2px;
-  background: linear-gradient(90deg, var(--accent) 0 18%, rgba(23, 87, 255, 0.08) 18% 100%);
+  height: 1px;
+  background: var(--line);
 }
 
 .toolbar-field {
@@ -720,9 +756,9 @@ code {
   width: 46px;
   height: 46px;
   padding: 0;
-  border-radius: 12px;
-  border: 1px solid rgba(40, 58, 96, 0.14);
-  background: rgba(255, 255, 255, 0.98);
+  border-radius: var(--radius-control);
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
   color: var(--text);
   cursor: pointer;
   transition: background 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease;
@@ -736,18 +772,20 @@ code {
 }
 
 .toolbar-calendar-button:hover {
-  background: rgba(23, 87, 255, 0.08);
-  border-color: rgba(23, 87, 255, 0.3);
+  background: var(--hover);
+  border-color: var(--accent);
 }
 
 .toolbar-calendar-button.is-active {
-  background: var(--accent);
+  border-color: var(--text);
+  font-weight: 800;
+  background: var(--surface-active);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--text);
 }
 
 .toolbar-calendar-button.is-active:hover {
-  background: var(--accent-strong);
+  background: var(--surface-active-hover);
   border-color: var(--accent-strong);
 }
 
@@ -785,15 +823,17 @@ code {
 }
 
 .toolbar-period-preset.is-active {
-  background: var(--accent);
+  border-color: var(--text);
+  font-weight: 800;
+  background: var(--surface-active);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--text);
 }
 
 .toolbar-period-preset.is-active:hover {
-  background: var(--accent-strong);
+  background: var(--surface-active-hover);
   border-color: var(--accent-strong);
-  color: #fff;
+  color: var(--text);
 }
 
 .toolbar-sort-grid {
@@ -813,9 +853,9 @@ code {
   height: 44px;
   min-width: 0;
   padding: 0 10px;
-  border-radius: 12px;
-  border: 1px solid rgba(40, 58, 96, 0.14);
-  background: rgba(255, 255, 255, 0.98);
+  border-radius: var(--radius-control);
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
   color: var(--text);
   font-size: 11px;
   font-weight: 700;
@@ -825,21 +865,23 @@ code {
 
 .toolbar-channel-option:hover,
 .toolbar-sort-option:hover {
-  background: rgba(23, 87, 255, 0.08);
-  border-color: rgba(23, 87, 255, 0.3);
+  background: var(--hover);
+  border-color: var(--accent);
   color: var(--text);
 }
 
 .toolbar-channel-option.is-active,
 .toolbar-sort-option.is-active {
-  background: var(--accent);
+  border-color: var(--text);
+  font-weight: 800;
+  background: var(--surface-active);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--text);
 }
 
 .toolbar-channel-option.is-active:hover,
 .toolbar-sort-option.is-active:hover {
-  background: var(--accent-strong);
+  background: var(--surface-active-hover);
   border-color: var(--accent-strong);
 }
 
@@ -848,9 +890,9 @@ code {
   flex-direction: column;
   gap: 20px;
   padding: 28px 22px;
-  background: rgba(241, 245, 236, 0.9);
+  background: var(--panel);
   border-right: 1px solid var(--line);
-  backdrop-filter: blur(14px);
+  backdrop-filter: none;
   height: 100vh;
   overflow: auto;
 }
@@ -881,7 +923,7 @@ code {
   min-height: 34px;
   padding: 8px 12px;
   border-radius: var(--radius-control);
-  background: rgba(255, 255, 255, 0.92);
+  background: var(--panel-strong);
   border: 1px solid var(--line);
   font-family: var(--font-mono);
   font-size: 11px;
@@ -898,8 +940,8 @@ code {
 .wash-list-panel,
 .plot-card {
   background: var(--panel);
-  border: 1px solid rgba(40, 58, 96, 0.1);
-  box-shadow: var(--shadow);
+  border: 1px solid var(--line-soft);
+  box-shadow: none;
 }
 
 .wash-list-panel {
@@ -958,7 +1000,7 @@ code {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted);
-  background: rgba(23, 87, 255, 0.04);
+  background: var(--hover);
   border-bottom: 1px solid var(--line);
 }
 
@@ -989,7 +1031,7 @@ code {
   height: 69px;
   padding: 10px 16px;
   border-bottom: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.88);
+  background: var(--panel-strong);
   transition: background-color 140ms ease, box-shadow 140ms ease;
   border-radius: 0;
   border-left: 0;
@@ -1007,14 +1049,14 @@ code {
 }
 
 .wash-row:hover {
-  background: rgba(23, 87, 255, 0.05);
+  background: var(--hover);
   color: var(--text);
   box-shadow: inset 3px 0 0 var(--accent);
   transform: none;
 }
 
 .wash-row:focus-visible {
-  outline: 2px solid rgba(23, 87, 255, 0.38);
+  outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
 
@@ -1061,18 +1103,18 @@ body.wash-result-hidden [data-wash-result-row] {
   margin-left: auto;
   padding: 0;
   border-radius: var(--radius-control);
-  border-color: rgba(23, 87, 255, 0.28);
-  background: rgba(23, 87, 255, 0.08);
-  color: var(--accent);
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
+  color: var(--text);
   font-family: var(--font-mono);
   font-size: 11px;
   letter-spacing: 0.08em;
 }
 
 .wash-row-pdf-button:hover {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #ffffff;
+  background: var(--surface-active);
+  border-color: var(--detail);
+  color: var(--text);
 }
 
 .wash-row-pdf-button:disabled {
@@ -1092,7 +1134,7 @@ body.wash-result-hidden [data-wash-result-row] {
   min-height: 24px;
   padding: 3px 8px;
   border-radius: var(--radius-tag);
-  border: 1px solid rgba(40, 58, 96, 0.08);
+  border: 1px solid var(--line-soft);
   background: var(--tag-bg);
   font-size: 11px;
   font-weight: 600;
@@ -1110,14 +1152,14 @@ body.wash-result-hidden [data-wash-result-row] {
   padding: 14px 16px;
   text-align: left;
   border-radius: var(--radius-panel);
-  background: rgba(255, 255, 255, 0.72);
+  background: var(--panel-strong);
   color: var(--text);
   box-shadow: none;
 }
 
 .wash-entry:hover,
 .wash-entry.active {
-  background: rgba(23, 87, 255, 0.08);
+  background: var(--hover);
   color: var(--text);
 }
 
@@ -1156,7 +1198,7 @@ body.wash-result-hidden [data-wash-result-row] {
   text-overflow: ellipsis;
   font-size: 12px;
   line-height: 1.32;
-  color: #4a5565;
+  color: var(--muted);
 }
 
 .wash-entry-meta {
@@ -1184,13 +1226,27 @@ body.wash-result-hidden [data-wash-result-row] {
 }
 
 .badge.ok {
-  background: var(--success-bg);
-  color: var(--success-text);
+  background: var(--panel-soft);
+  border-color: var(--line);
+  color: var(--text);
 }
 
 .badge.warn {
-  background: var(--warn-bg);
-  color: var(--warn);
+  gap: 5px;
+  background: var(--alarm-bg);
+  border: 2px solid var(--alarm);
+  color: var(--alarm-dark);
+  font-weight: 800;
+}
+
+/* Форма дублирует цвет: квадрат = приоритет P1 (STYLE.md §1).
+   Без этого признак аварии теряется при дальтонизме и в оттенках серого. */
+.badge.warn::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  flex: none;
+  background: var(--alarm);
 }
 
 .main-panel {
@@ -1281,7 +1337,7 @@ body.wash-result-hidden [data-wash-result-row] {
   margin-top: 18px;
   border-radius: var(--radius-panel);
   overflow: hidden;
-  background: #ffffff;
+  background: var(--panel-strong);
   min-height: 620px;
   border: 1px solid var(--line);
   position: relative;
@@ -1299,7 +1355,7 @@ body.wash-result-hidden [data-wash-result-row] {
 .chart-host {
   position: relative;
   padding: 12px;
-  background: #ffffff;
+  background: var(--panel-strong);
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto auto;
   align-items: stretch;
@@ -1386,7 +1442,7 @@ body.wash-result-hidden [data-wash-result-row] {
   display: grid;
   gap: 10px;
   padding: 12px 14px 14px;
-  border-top: 1px solid rgba(38, 67, 49, 0.08);
+  border-top: 1px solid var(--line-soft);
 }
 
 .wash-chart-controls-title {
@@ -1409,9 +1465,9 @@ body.wash-result-hidden [data-wash-result-row] {
   gap: 8px;
   min-width: 0;
   padding: 10px 12px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid rgba(40, 58, 96, 0.1);
+  border-radius: var(--radius-control);
+  background: var(--panel-strong);
+  border: 1px solid var(--line-soft);
   border-left: 3px solid var(--wash-chart-series-color, var(--accent));
   transition: border-color 140ms ease;
 }
@@ -1453,9 +1509,9 @@ body.wash-result-hidden [data-wash-result-row] {
   display: flex;
   align-items: center;
   min-height: 34px;
-  border-radius: 10px;
-  border: 1px solid rgba(40, 58, 96, 0.12);
-  background: rgba(255, 255, 255, 0.9);
+  border-radius: var(--radius-control);
+  border: 1px solid var(--line-soft);
+  background: var(--panel-strong);
   transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 
@@ -1470,7 +1526,7 @@ body.wash-result-hidden [data-wash-result-row] {
   height: 26px;
   padding: 0;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-control);
   background: transparent;
   box-shadow: none;
   cursor: pointer;
@@ -1482,7 +1538,7 @@ body.wash-result-hidden [data-wash-result-row] {
 
 .wash-chart-color-input-shell input[type="color"]::-webkit-color-swatch {
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-control);
 }
 
 .wash-chart-select-shell {
@@ -1507,13 +1563,13 @@ body.wash-result-hidden [data-wash-result-row] {
 
 .wash-chart-color-input-shell:hover,
 .wash-chart-select-shell:hover {
-  border-color: rgba(23, 87, 255, 0.24);
+  border-color: var(--accent);
 }
 
 .wash-chart-color-input-shell:focus-within,
 .wash-chart-select-shell:focus-within {
-  border-color: rgba(23, 87, 255, 0.34);
-  box-shadow: 0 0 0 3px rgba(23, 87, 255, 0.08);
+  border-color: var(--accent);
+  box-shadow: none;
 }
 
 .wash-chart-color-input-shell input[type="color"]:focus,
@@ -1530,15 +1586,16 @@ body.wash-result-hidden [data-wash-result-row] {
   max-width: 260px;
   padding: 12px 14px;
   border-radius: var(--radius-panel);
-  background: rgba(26, 36, 48, 0.94);
-  color: #fff;
+  background: var(--text);
+  color: var(--bg);
+  border: 1px solid var(--text);
   font-size: 12px;
   line-height: 1.55;
   pointer-events: none;
   opacity: 0;
   transform: translateY(6px);
   transition: opacity 120ms ease, transform 120ms ease;
-  box-shadow: 0 16px 40px rgba(26, 36, 48, 0.2);
+  box-shadow: none;
 }
 
 .wash-chart-tooltip.visible {
@@ -1602,8 +1659,8 @@ body.desktop-shell .object-editor-panel {
 .object-editor-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(24, 36, 48, 0.28);
-  backdrop-filter: blur(6px);
+  background: rgba(63, 63, 63, 0.35);
+  backdrop-filter: none;
 }
 
 .object-editor-panel {
@@ -1614,9 +1671,9 @@ body.desktop-shell .object-editor-panel {
   margin: 0;
   padding: 18px;
   border-radius: var(--radius-panel);
-  background: rgba(247, 249, 252, 0.98);
-  border: 1px solid rgba(40, 58, 96, 0.12);
-  box-shadow: var(--shadow);
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  box-shadow: none;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 14px;
@@ -1673,8 +1730,8 @@ body.desktop-shell .object-editor-panel {
   place-items: center;
   width: 34px;
   height: 34px;
-  border-radius: 10px;
-  background: rgba(23, 87, 255, 0.09);
+  border-radius: var(--radius-control);
+  background: var(--hover);
   color: var(--accent);
   flex: none;
 }
@@ -1697,7 +1754,7 @@ body.desktop-shell .object-editor-panel {
 .settings-section {
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
-  background: rgba(255, 255, 255, 0.6);
+  background: var(--panel-strong);
   overflow: hidden;
 }
 
@@ -1737,7 +1794,7 @@ body.desktop-shell .object-editor-panel {
 }
 
 .settings-section-title:hover {
-  background: rgba(23, 87, 255, 0.04);
+  background: var(--hover);
 }
 
 .settings-section-body {
@@ -1782,7 +1839,7 @@ body.desktop-shell .object-editor-panel {
   border-radius: 50%;
   flex: none;
   background: var(--settings-chart-color, var(--accent));
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+  box-shadow: inset 0 0 0 1px var(--line);
 }
 
 .settings-chart-name {
@@ -1856,7 +1913,7 @@ body.desktop-shell .object-editor-panel {
   padding: 0;
   border: 0;
   border-radius: 999px;
-  background: rgba(40, 58, 96, 0.2);
+  background: var(--off);
   position: relative;
   cursor: pointer;
   transition: background-color 140ms ease;
@@ -1870,13 +1927,14 @@ body.desktop-shell .object-editor-panel {
   width: 16px;
   height: 16px;
   border-radius: 999px;
-  background: #fff;
-  box-shadow: 0 1px 3px rgba(18, 28, 45, 0.28);
+  background: var(--panel-strong);
+  border: 1px solid var(--detail);
+  box-shadow: none;
   transition: transform 140ms ease;
 }
 
 .settings-option input[type="checkbox"]:checked {
-  background: var(--accent);
+  background: var(--on);
 }
 
 .settings-option input[type="checkbox"]:checked::after {
@@ -1884,7 +1942,7 @@ body.desktop-shell .object-editor-panel {
 }
 
 .settings-option input[type="checkbox"]:focus-visible {
-  outline: 2px solid rgba(23, 87, 255, 0.4);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
@@ -1923,9 +1981,9 @@ body.desktop-shell .object-editor-panel {
   gap: 10px;
   align-items: center;
   padding: 8px 10px;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid rgba(40, 58, 96, 0.1);
+  border-radius: var(--radius-control);
+  background: var(--panel-strong);
+  border: 1px solid var(--line-soft);
 }
 
 .object-editor-row-meta {
@@ -1947,7 +2005,7 @@ body.desktop-shell .object-editor-panel {
   min-height: 26px;
   padding: 0 8px;
   border-radius: 999px;
-  background: rgba(40, 58, 96, 0.06);
+  background: var(--line-soft);
   color: var(--text);
   font-family: var(--font-mono);
   font-size: 10px;
@@ -1999,59 +2057,59 @@ body.desktop-shell .object-editor-panel {
 .object-editor-row-button {
   min-height: 28px;
   padding: 0 9px;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   font-size: 10px;
   letter-spacing: 0.08em;
 }
 
 .object-editor-row-button--primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+  background: var(--panel-strong);
+  border: 2px solid var(--text);
+  color: var(--text);
 }
 
 .object-editor-row-button--primary:hover {
-  background: var(--accent-strong);
-  border-color: var(--accent-strong);
+  background: var(--surface-active);
+  border-color: var(--text);
 }
 
 .object-editor-toolbar-button {
   min-height: 40px;
   padding: 0 16px;
-  border-radius: 12px;
+  border-radius: var(--radius-control);
 }
 
 .object-editor-toolbar-button--primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+  background: var(--panel-strong);
+  border: 2px solid var(--text);
+  color: var(--text);
 }
 
 .object-editor-toolbar-button--primary:hover {
-  background: var(--accent-strong);
-  border-color: var(--accent-strong);
+  background: var(--surface-active);
+  border-color: var(--text);
 }
 
 .object-editor-toolbar-button--success {
-  background: #1f9b57;
-  border-color: #1f9b57;
-  color: #fff;
+  background: var(--panel-strong);
+  border: 2px solid var(--text);
+  color: var(--text);
 }
 
 .object-editor-toolbar-button--success:hover {
-  background: #178249;
-  border-color: #178249;
+  background: var(--surface-active);
+  border-color: var(--text);
 }
 
 .object-editor-toolbar-button--danger {
-  background: #d5483b;
-  border-color: #d5483b;
-  color: #fff;
+  background: var(--panel);
+  border: 2px solid var(--alarm);
+  color: var(--alarm-dark);
 }
 
 .object-editor-toolbar-button--danger:hover {
-  background: #bb3b30;
-  border-color: #bb3b30;
+  background: var(--alarm-bg);
+  border-color: var(--alarm);
 }
 
 .object-editor-row-button:disabled,
@@ -2070,7 +2128,7 @@ body.desktop-shell .object-editor-panel {
 .object-editor-create-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(24, 36, 48, 0.18);
+  background: rgba(63, 63, 63, 0.35);
 }
 
 .object-editor-create-panel {
@@ -2080,29 +2138,29 @@ body.desktop-shell .object-editor-panel {
   max-height: calc(100% - 56px);
   overflow: auto;
   padding: 16px;
-  border-radius: 18px;
-  background: #ffffff;
-  border: 1px solid rgba(40, 58, 96, 0.1);
-  box-shadow: 0 24px 60px rgba(24, 36, 48, 0.18);
+  border-radius: var(--radius-control);
+  background: var(--panel-strong);
+  border: 1px solid var(--line-soft);
+  box-shadow: none;
 }
 
 .object-editor-create-panel[data-state="neutral"] {
-  border-color: rgba(40, 58, 96, 0.1);
+  border-color: var(--line-soft);
 }
 
 .object-editor-create-panel[data-state="ok"] {
-  border-color: rgba(28, 110, 47, 0.3);
-  box-shadow: 0 24px 60px rgba(28, 110, 47, 0.12);
+  border-color: var(--line-soft);
+  box-shadow: none;
 }
 
 .object-editor-create-panel[data-state="warning"] {
-  border-color: rgba(139, 90, 0, 0.24);
-  box-shadow: 0 24px 60px rgba(139, 90, 0, 0.1);
+  border-color: var(--surface-sunken);
+  box-shadow: none;
 }
 
 .object-editor-create-panel[data-state="error"] {
-  border-color: rgba(194, 67, 47, 0.24);
-  box-shadow: 0 24px 60px rgba(194, 67, 47, 0.1);
+  border-color: var(--alarm-bg);
+  box-shadow: none;
 }
 
 .object-editor-create-form {
@@ -2121,34 +2179,34 @@ body.desktop-shell .object-editor-panel {
 
 .object-editor-create-feedback {
   padding: 10px 12px;
-  border-radius: 12px;
-  border: 1px solid rgba(40, 58, 96, 0.1);
+  border-radius: var(--radius-control);
+  border: 1px solid var(--line-soft);
   font-size: 12px;
   line-height: 1.45;
 }
 
 .object-editor-create-feedback[data-state="neutral"] {
-  background: rgba(241, 245, 251, 0.92);
+  background: var(--panel);
   color: var(--muted);
-  border-color: rgba(40, 58, 96, 0.1);
+  border-color: var(--line-soft);
 }
 
 .object-editor-create-feedback[data-state="error"] {
   background: var(--warn-bg);
   color: var(--warn);
-  border-color: rgba(194, 67, 47, 0.18);
+  border-color: var(--alarm-bg);
 }
 
 .object-editor-create-feedback[data-state="warning"] {
-  background: rgba(255, 243, 221, 0.92);
-  color: #8b5a00;
-  border-color: rgba(139, 90, 0, 0.18);
+  background: var(--surface-sunken);
+  color: var(--text);
+  border-color: var(--surface-sunken);
 }
 
 .object-editor-create-feedback[data-state="ok"] {
   background: var(--success-bg);
   color: var(--success-text);
-  border-color: rgba(28, 110, 47, 0.16);
+  border-color: var(--line-soft);
 }
 
 .object-editor-choice-grid {
@@ -2168,9 +2226,9 @@ body.desktop-shell .object-editor-panel {
   height: 44px;
   min-width: 0;
   padding: 0;
-  border-radius: 12px;
-  border: 1px solid rgba(40, 58, 96, 0.14);
-  background: rgba(255, 255, 255, 0.98);
+  border-radius: var(--radius-control);
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
   color: var(--text);
   font-size: 13px;
   font-weight: 700;
@@ -2184,24 +2242,23 @@ body.desktop-shell .object-editor-panel {
 }
 
 .object-editor-choice:hover {
-  background: rgba(23, 87, 255, 0.08);
-  border-color: rgba(23, 87, 255, 0.3);
+  background: var(--hover);
+  border-color: var(--accent);
   color: var(--text);
 }
 
 .object-editor-choice.is-selected {
-  background: var(--accent);
+  border-color: var(--text);
+  font-weight: 800;
+  background: var(--surface-active);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--text);
 }
 
 .chart-modal-backdrop {
   position: absolute;
   inset: 0;
-  background:
-    radial-gradient(circle at top, rgba(255, 255, 255, 0.16), transparent 54%),
-    rgba(15, 23, 42, 0.36);
-  backdrop-filter: blur(10px);
+  background: rgba(63, 63, 63, 0.45);
 }
 
 .chart-modal-panel {
@@ -2211,13 +2268,10 @@ body.desktop-shell .object-editor-panel {
   max-width: 100%;
   max-height: calc(100vh - 40px);
   padding: 22px;
-  border-radius: 24px;
-  border: 1px solid rgba(40, 58, 96, 0.12);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(244, 248, 253, 0.97));
-  box-shadow:
-    0 30px 80px rgba(18, 28, 45, 0.22),
-    0 8px 22px rgba(18, 28, 45, 0.08);
+  border-radius: var(--radius-control);
+  border: 1px solid var(--line-soft);
+  background: var(--panel-strong);
+  box-shadow: none;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 16px;
@@ -2264,7 +2318,7 @@ body.desktop-shell .object-editor-panel {
 .chart-modal-button,
 .chart-modal-nav-button {
   min-height: 50px;
-  border-radius: 14px;
+  border-radius: var(--radius-control);
   padding: 0 20px;
   font-size: 12px;
   font-weight: 800;
@@ -2281,27 +2335,27 @@ body.desktop-shell .object-editor-panel {
 }
 
 .chart-modal-button--primary {
-  background: linear-gradient(180deg, #356af1 0%, #2458de 100%);
-  border-color: #2458de;
-  color: #fff;
-  box-shadow: 0 14px 26px rgba(36, 88, 222, 0.22);
+  background: var(--panel-strong);
+  border: 2px solid var(--text);
+  color: var(--text);
+  box-shadow: none;
 }
 
 .chart-modal-button--primary:hover {
-  background: linear-gradient(180deg, #2e61e3 0%, #1d4dc5 100%);
-  border-color: #1d4dc5;
+  background: var(--surface-active);
+  border-color: var(--text);
 }
 
 .chart-modal-button--secondary {
-  background: rgba(255, 255, 255, 0.94);
+  background: var(--panel-strong);
   color: var(--text);
-  border-color: rgba(40, 58, 96, 0.14);
+  border-color: var(--line);
 }
 
 .chart-modal-button--secondary:hover {
-  background: rgba(35, 92, 224, 0.08);
-  border-color: rgba(35, 92, 224, 0.22);
-  color: #214fc4;
+  background: var(--hover);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .chart-modal-icon-button {
@@ -2309,7 +2363,7 @@ body.desktop-shell .object-editor-panel {
   min-width: 50px;
   height: 50px;
   padding: 0;
-  border-radius: 16px;
+  border-radius: var(--radius-control);
   display: inline-grid;
   place-items: center;
   flex: 0 0 auto;
@@ -2326,15 +2380,15 @@ body.desktop-shell .object-editor-panel {
 }
 
 .chart-modal-icon-button--danger {
-  background: rgba(213, 72, 59, 0.1);
-  color: #cf3f35;
-  border-color: rgba(213, 72, 59, 0.2);
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
 }
 
 .chart-modal-icon-button--danger:hover {
-  background: #d5483b;
-  border-color: #d5483b;
-  color: #fff;
+  background: var(--surface-active);
+  border-color: var(--detail);
+  color: var(--text);
 }
 
 .chart-modal-actions--compact {
@@ -2343,12 +2397,11 @@ body.desktop-shell .object-editor-panel {
 
 .chart-modal-summary-card {
   width: 100%;
-  border-radius: 18px;
+  border-radius: var(--radius-control);
   padding: 16px 18px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(246, 249, 255, 0.96));
-  border: 1px solid rgba(40, 58, 96, 0.1);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  background: var(--panel-strong);
+  border: 1px solid var(--line-soft);
+  box-shadow: none;
 }
 
 .chart-modal-table {
@@ -2361,7 +2414,7 @@ body.desktop-shell .object-editor-panel {
   padding: 9px 0;
   text-align: left;
   vertical-align: top;
-  border-bottom: 1px solid rgba(106, 120, 109, 0.12);
+  border-bottom: 1px solid var(--line-soft);
   font-size: 13px;
   line-height: 1.45;
 }
@@ -2410,14 +2463,11 @@ body.desktop-shell .object-editor-panel {
   min-height: 0;
   width: 100%;
   min-height: min(760px, calc(100vh - 240px));
-  border-radius: 20px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.995), rgba(244, 247, 252, 0.97));
-  border: 1px solid rgba(40, 58, 96, 0.1);
+  border-radius: var(--radius-control);
+  background: var(--panel-strong);
+  border: 1px solid var(--line-soft);
   overflow: hidden;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.72),
-    0 12px 30px rgba(18, 28, 45, 0.08);
+  box-shadow: none;
 }
 
 .chart-modal-nav {
@@ -2433,23 +2483,23 @@ body.desktop-shell .object-editor-panel {
   align-items: center;
   display: inline-flex;
   gap: 14px;
-  background: rgba(255, 255, 255, 0.92);
+  background: var(--panel-strong);
   color: var(--text);
-  border-color: rgba(40, 58, 96, 0.12);
+  border-color: var(--line-soft);
 }
 
 .chart-modal-nav-button:hover:not(:disabled) {
-  background: rgba(35, 92, 224, 0.08);
-  border-color: rgba(35, 92, 224, 0.24);
-  color: #214fc4;
+  background: var(--hover);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .chart-modal-nav-button:disabled {
   opacity: 0.42;
   cursor: not-allowed;
-  background: rgba(247, 249, 253, 0.94);
-  color: rgba(44, 62, 80, 0.58);
-  border-color: rgba(40, 58, 96, 0.1);
+  background: var(--panel);
+  color: rgba(63, 63, 63, 0.35);
+  border-color: var(--line-soft);
 }
 
 .chart-modal-nav-button--next {
@@ -2619,7 +2669,7 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
   padding: 12px 14px;
   text-align: left;
   border-radius: var(--radius-panel);
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--panel-strong);
   color: var(--text);
   box-shadow: none;
 }
@@ -2629,16 +2679,16 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
 }
 
 .related-row:hover {
-  background: rgba(23, 87, 255, 0.08);
+  background: var(--hover);
   color: var(--text);
 }
 
 .notice.error {
   padding: 14px 16px;
   border-radius: var(--radius-panel);
-  background: rgba(194, 67, 47, 0.1);
-  border: 1px solid rgba(194, 67, 47, 0.16);
-  color: #8b3525;
+  background: var(--alarm-bg);
+  border: 1px solid var(--alarm-bg);
+  color: var(--alarm-dark);
   font-size: 13px;
   line-height: 1.5;
 }
@@ -2646,7 +2696,7 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
 .technical-empty {
   padding: 20px;
   border-radius: var(--radius-panel);
-  background: rgba(255, 255, 255, 0.88);
+  background: var(--panel-strong);
   border: 1px dashed var(--line);
 }
 
@@ -2654,28 +2704,12 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
 .skeleton {
   position: relative;
   overflow: hidden;
-  background: rgba(40, 58, 96, 0.08);
-  border-radius: 6px;
+  background: var(--surface-sunken);
+  border-radius: var(--radius-control);
 }
 
 .skeleton::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  transform: translateX(-100%);
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(255, 255, 255, 0.6),
-    transparent
-  );
-  animation: skeleton-shimmer 1.2s ease-in-out infinite;
-}
-
-@keyframes skeleton-shimmer {
-  100% {
-    transform: translateX(100%);
-  }
+  content: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2718,7 +2752,7 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
   width: 100%;
   height: 100%;
   min-height: 320px;
-  border-radius: 16px;
+  border-radius: var(--radius-control);
 }
 
 /* ---- Часы в шапке -------------------------------------------------------- */
@@ -2750,7 +2784,7 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
   border: 1px solid var(--line);
   border-left: 3px solid var(--accent);
   background: var(--panel-strong);
-  box-shadow: var(--shadow);
+  box-shadow: none;
   color: var(--text);
   font-size: 13px;
   line-height: 1.35;
@@ -2849,7 +2883,7 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
   height: 193mm;
   overflow: hidden;
   margin: 0 auto;
-  color: #111a16;
+  color: #2b2b2b;
   background: #ffffff;
   font-family: var(--font-sans);
   break-inside: avoid;
@@ -2861,12 +2895,12 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
   gap: 10mm;
   align-items: center;
   padding-bottom: 2mm;
-  border-bottom: 1px solid #cfd8d3;
+  border-bottom: 1px solid #d6d6d8;
 }
 
 .chart-print-kicker,
 .chart-print-stamp span {
-  color: #5d6a63;
+  color: #6e6e70;
   font-family: var(--font-mono);
   font-size: 7.5pt;
   font-weight: 700;
@@ -2877,7 +2911,7 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
 .chart-print-title-block h1 {
   margin: 1mm 0 0;
   max-width: 190mm;
-  color: #111a16;
+  color: #2b2b2b;
   font-size: 14pt;
   line-height: 1.1;
   letter-spacing: 0;
@@ -2885,7 +2919,7 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
 
 .chart-print-title-block p {
   margin-top: 1mm;
-  color: #3a463f;
+  color: #6e6e70;
   font-size: 9pt;
   font-weight: 700;
   line-height: 1.3;
@@ -2899,7 +2933,7 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
 .chart-print-stamp strong {
   display: block;
   margin-top: 0.8mm;
-  color: #111a16;
+  color: #2b2b2b;
   font-size: 9.5pt;
   line-height: 1.25;
 }
@@ -2911,7 +2945,7 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
 .chart-print-summary-card {
   margin: 0;
   padding: 0;
-  border: 1px solid #ccd2db;
+  border: 1px solid #d6d6d8;
   border-radius: 0;
   background: #ffffff;
   box-shadow: none;
@@ -2926,22 +2960,22 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
   padding: 1.1mm 3mm;
   font-size: 8.5pt;
   line-height: 1.25;
-  border: 1px solid #dce0e7;
+  border: 1px solid #d6d6d8;
   vertical-align: middle;
 }
 
 .chart-print-summary-card .chart-modal-table th {
   width: 48mm;
-  color: #5c6573;
+  color: #6e6e70;
   font-weight: 700;
   font-size: 7.5pt;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  background: #eef1f4;
+  background: #ececee;
 }
 
 .chart-print-summary-card .chart-modal-table td {
-  color: #111a16;
+  color: #2b2b2b;
   font-weight: 600;
 }
 
@@ -2964,7 +2998,7 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
   min-height: 0;
   padding: 0;
   overflow: hidden;
-  background: #ffffff;
+  background: var(--panel-strong);
 }
 
 .chart-host--print .wash-chart-canvas {
@@ -2999,7 +3033,7 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
 }
 
 .chart-host--print .wash-chart-legend-item {
-  color: #222f28;
+  color: var(--text);
   font-size: 9pt;
   font-weight: 800;
   line-height: 1.25;
@@ -3066,7 +3100,7 @@ body.modal-export-mode .chart-print-document {
   height: 193mm;
   overflow: hidden;
   margin: 0 auto;
-  color: #111a16;
+  color: #2b2b2b;
   background: #ffffff;
   font-family: var(--font-sans);
   break-inside: avoid;
@@ -3124,7 +3158,7 @@ body.modal-export-mode .chart-print-document {
     width: 100%;
     height: 193mm;
     overflow: hidden;
-    color: #111a16;
+    color: #2b2b2b;
     background: #ffffff;
     font-family: var(--font-sans);
     break-inside: avoid;
@@ -3302,8 +3336,8 @@ body.modal-export-mode .chart-print-document {
   display: grid;
   place-items: center;
   padding: 28px;
-  background: rgba(245, 247, 251, 0.78);
-  backdrop-filter: blur(10px);
+  background: var(--panel);
+  backdrop-filter: none;
 }
 
 .workspace-job-overlay[hidden] {
@@ -3312,10 +3346,10 @@ body.modal-export-mode .chart-print-document {
 
 .workspace-job-card {
   width: min(640px, 100%);
-  background: rgba(255, 255, 255, 0.97);
-  border: 1px solid rgba(40, 58, 96, 0.12);
+  background: var(--panel-strong);
+  border: 1px solid var(--line-soft);
   border-radius: var(--radius-panel);
-  box-shadow: var(--shadow);
+  box-shadow: none;
   padding: 28px;
 }
 
@@ -3353,8 +3387,8 @@ body.modal-export-mode .chart-print-document {
   height: 10px;
   border-radius: 999px;
   overflow: hidden;
-  background: rgba(23, 87, 255, 0.08);
-  border: 1px solid rgba(23, 87, 255, 0.12);
+  background: var(--surface-sunken);
+  border: 1px solid var(--line);
 }
 
 .workspace-job-progress span {
@@ -3362,7 +3396,7 @@ body.modal-export-mode .chart-print-document {
   height: 100%;
   width: 12%;
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--accent) 0%, #4f83ff 100%);
+  background: var(--manual);
   transition: width 180ms ease;
 }
 
@@ -3428,7 +3462,7 @@ body.modal-export-mode .chart-print-document {
     max-height: calc(100vh - 16px);
     padding: 12px;
     gap: 10px;
-    border-radius: 18px;
+    border-radius: var(--radius-control);
   }
 
   .chart-modal-header {
@@ -3438,7 +3472,7 @@ body.modal-export-mode .chart-print-document {
 
   .chart-modal-summary-card {
     padding: 12px;
-    border-radius: 16px;
+    border-radius: var(--radius-control);
   }
 
   .object-editor-panel {
@@ -3493,7 +3527,7 @@ body.modal-export-mode .chart-print-document {
 
   .chart-modal-frame {
     min-height: min(520px, calc(100vh - 230px));
-    border-radius: 16px;
+    border-radius: var(--radius-control);
   }
 
   .chart-modal-actions {
@@ -3560,7 +3594,7 @@ body.modal-export-mode .chart-print-document {
   background: var(--panel-soft);
 }
 .ftp-source-item.is-active {
-  border-color: rgba(23, 87, 255, 0.4);
+  border-color: var(--accent);
   box-shadow: inset 3px 0 0 var(--accent);
 }
 .ftp-source-info {

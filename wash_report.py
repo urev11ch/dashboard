@@ -869,21 +869,26 @@ def build_object_overviews(chunks: Sequence[DbAnalysisChunk]) -> list[ObjectOver
     )
 
 def operation_color(process_id: int) -> str:
+    # Полосы фаз — это фон, а не данные: они дают контекст, но не должны
+    # соперничать за внимание с кривыми и признаком аварии. Отсюда бледные
+    # малонасыщенные тона; красный, оранжевый и жёлтый исключены полностью
+    # (ISA-101: алармовые цвета не используются больше нигде). Фазы различимы
+    # и по подписи, так что цвет не единственный носитель информации.
     if process_id in {1, 2, 3, 4, 7, 8, 11, 12, 15, 16, 19, 20}:
-        return "#bfdbfe"
+        return "#d7dee6"
     if process_id in {5, 6, 22, 23, 29, 30}:
-        return "#fdba74"
+        return "#dfd9d0"
     if process_id in {9, 10, 24, 25, 31, 32}:
-        return "#f9a8d4"
+        return "#ddd8e4"
     if process_id in {13, 14}:
-        return "#c4b5fd"
+        return "#cfe0dd"
     if process_id in {17, 18}:
-        return "#fca5a5"
+        return "#d9dcd2"
     if process_id in {21, 28, 37}:
-        return "#86efac"
+        return "#d4e0d8"
     if process_id in {50, 55}:
-        return "#d1d5db"
-    return "#e5e7eb"
+        return "#d6d6d8"
+    return "#e4e4e6"
 
 def operation_label(process_name: str) -> str:
     return re.sub(r"\s*\([^)]*\)", "", process_name).strip()

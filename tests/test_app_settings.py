@@ -236,8 +236,13 @@ def test_chart_style_defaults():
     ]
     ret = next(item for item in defaults if item["id"] == "temperature_return")
     assert ret["lineStyle"] == "dashed"
-    assert ret["color"] == "#dc2626"
+    assert ret["color"] == "#3e7c8c"
     assert ret["label"]
+
+    # Палитра ISA-101: алармовые оттенки (красный/оранжевый/жёлтый) за кривыми
+    # не закреплены — иначе нормальный тренд читается как аварийный признак.
+    alarm_hues = {"#dc2626", "#ef4444", "#f97316", "#eab308", "#e22028", "#ec8629"}
+    assert not ({item["color"].lower() for item in defaults} & alarm_hues)
 
 
 # ---- триггер автообновления -------------------------------------------------

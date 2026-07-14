@@ -54,7 +54,7 @@
   // иначе fallback — защита от инъекции через атрибуты style/stroke.
   function sanitizeCssColor(value) {
     const color = String(value || "");
-    return /^#[0-9a-fA-F]{3,8}$|^[a-zA-Z]+$/.test(color) ? color : "#627164";
+    return /^#[0-9a-fA-F]{3,8}$|^[a-zA-Z]+$/.test(color) ? color : "#6e6e70";
   }
 
   function normalizeStoredStyleEntry(entry) {
@@ -607,7 +607,7 @@
             ry: 10,
             width: labelWidth,
             height: 22,
-            fill: "#ffffff",
+            fill: "#f4f4f4",
             stroke: badge.series.color,
             "stroke-width": 1.2,
             "data-series-stroke": badge.series.id,
@@ -719,7 +719,7 @@
           y: 0,
           width: chartLayout.width,
           height: chartLayout.height,
-          fill: "#ffffff",
+          fill: "#f4f4f4",
         })
       );
 
@@ -751,7 +751,7 @@
             height: segment.labelHeight,
             rx: 11,
             ry: 11,
-            fill: "#ffffff",
+            fill: "#f4f4f4",
             stroke: segment.color,
             "stroke-width": 1.2,
             opacity: 0.98,
@@ -775,7 +775,7 @@
           {
             x: segment.labelX,
             y: segment.labelY + 1,
-            fill: "#314338",
+            fill: "#3f3f3f",
             "font-size": chartLayout.width >= MODAL_CHART_WIDTH ? 10 : 9,
             "font-weight": 800,
             "text-anchor": "middle",
@@ -797,7 +797,7 @@
               y1: y,
               x2: chartLayout.width - chartLayout.right,
               y2: y,
-              stroke: "rgba(38, 67, 49, 0.09)",
+              stroke: "rgba(63, 63, 63, 0.10)",
               "stroke-width": 1,
             })
           );
@@ -808,7 +808,7 @@
               y1: y,
               x2: chartLayout.left,
               y2: y,
-              stroke: "rgba(38, 67, 49, 0.18)",
+              stroke: "rgba(63, 63, 63, 0.22)",
               "stroke-width": 1,
             })
           );
@@ -818,7 +818,7 @@
             {
               x: chartLayout.left - 10,
               y: y + 4,
-              fill: "#627164",
+              fill: "#6e6e70",
               "font-size": chartLayout.axisTickFontSize,
               "font-weight": 600,
               "text-anchor": "end",
@@ -833,7 +833,7 @@
             y1: layout.top,
             x2: chartLayout.left,
             y2: bottom,
-            stroke: "rgba(38, 67, 49, 0.18)",
+            stroke: "rgba(63, 63, 63, 0.22)",
             "stroke-width": 1,
           })
         );
@@ -844,7 +844,7 @@
             y1: bottom,
             x2: chartLayout.width - chartLayout.right,
             y2: bottom,
-            stroke: "rgba(38, 67, 49, 0.18)",
+            stroke: "rgba(63, 63, 63, 0.22)",
             "stroke-width": 1,
           })
         );
@@ -854,7 +854,7 @@
           {
             x: 24,
             y: layout.top + layout.height / 2,
-            fill: "#627164",
+            fill: "#6e6e70",
             "font-size": chartLayout.axisLabelFontSize,
             "font-weight": 700,
             "text-anchor": "middle",
@@ -926,7 +926,7 @@
             y1: plotBottom,
             x2: x,
             y2: plotBottom + 8,
-            stroke: "rgba(38, 67, 49, 0.18)",
+            stroke: "rgba(63, 63, 63, 0.22)",
             "stroke-width": 1,
           })
         );
@@ -936,7 +936,7 @@
           {
             x,
             y: plotBottom + 24,
-            fill: "#627164",
+            fill: "#6e6e70",
             "font-size": container.classList.contains("chart-host--modal") ? 13 : 11,
             "font-weight": 700,
             "text-anchor": anchor,
@@ -1073,7 +1073,7 @@
         y1: plotTop,
         x2: chartLayout.left,
         y2: plotBottom,
-        stroke: "rgba(32, 49, 38, 0.35)",
+        stroke: "rgba(63, 63, 63, 0.40)",
         "stroke-width": 1,
         "stroke-dasharray": "4 4",
         opacity: 0,
@@ -1085,7 +1085,7 @@
         const dot = createSvgNode("circle", {
           r: 4,
           fill: series.color,
-          stroke: "#ffffff",
+          stroke: "#f4f4f4",
           "stroke-width": 2,
           opacity: 0,
           "data-chart-interactive": "hover-dot",
