@@ -459,7 +459,12 @@ def load_object_name_overrides_from_file(path: Path) -> dict[tuple[int, int], st
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as error:
+        # Битый файл переименований молча терял бы ВСЕ пользовательские имена
+        # объектов — оставляем след в логе, чтобы причину было видно.
+        logger.warning(
+            "Не удалось прочитать файл имён объектов %s: %s", path, error
+        )
         return {}
 
     if not isinstance(payload, dict):
@@ -609,9 +614,9 @@ def read_samples(
                             temperature_supply=optional_metric(row[3]),
                             pressure_supply=optional_metric(row[4]),
                             flow_supply=optional_metric(row[5]),
-                            process=int(row[6] or 0),
-                            program=int(row[7] or 0),
-                            object_id=int(row[8] or 0),
+                            process=int(float(row[6] or 0)),
+                            program=int(float(row[7] or 0)),
+                            object_id=int(float(row[8] or 0)),
                         )
                     except (ValueError, TypeError):
                         skipped_rows += 1
@@ -664,7 +669,12 @@ def median_sample_period(samples: Sequence[Sample], max_gap_seconds: float) -> f
     if not deltas:
         return 0.0
     deltas.sort()
-    return deltas[len(deltas) // 2]
+    middle = len(deltas) // 2
+    # Настоящая медиана: на чётной выборке — среднее двух центральных, иначе
+    # период систематически смещён вверх (брали верхний из пары).
+    if len(deltas) % 2 == 0:
+        return (deltas[middle - 1] + deltas[middle]) / 2.0
+    return deltas[middle]
 
 def build_segments(
     samples: Sequence[Sample],
@@ -1128,13 +1138,15 @@ def merge_channel_samples(streams: Sequence[Sequence[Sample]]) -> list[Sample]:
     файлы режут мойку по полуночи, а перекрывающиеся выгрузки повторяют одни и
     те же строки.
 
-    Дубликат ищем по (объект, метка времени) — без объекта в ключе строки
-    разных объектов с одной меткой молча терялись. Из копий берём ту, где
-    меньше NULL-метрик (обрыв связи панели пишет строку с пустыми полями)."""
-    best: dict[tuple[float, int], Sample] = {}
+    Дубликат ищем по (метка времени, объект, процесс, программа) — без этих полей
+    в ключе разные строки с одной меткой (другой объект/процесс/программа) молча
+    терялись. Настоящие повторы перекрывающихся выгрузок совпадают по всем четырём
+    полям и по-прежнему схлопываются. Из копий берём ту, где меньше NULL-метрик
+    (обрыв связи панели пишет строку с пустыми полями)."""
+    best: dict[tuple[float, int, int, int], Sample] = {}
     for stream in streams:
         for sample in stream:
-            key = (sample.ts, sample.object_id)
+            key = (sample.ts, sample.object_id, sample.process, sample.program)
             existing = best.get(key)
             if existing is None or filled_metric_count(sample) > filled_metric_count(existing):
                 best[key] = sample

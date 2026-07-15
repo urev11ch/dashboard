@@ -107,6 +107,10 @@ def acquire_single_instance_lock() -> bool:
             kernel32.CreateMutexW.restype = wintypes.HANDLE
             handle = kernel32.CreateMutexW(None, False, "Local\\OptiCIP-Dashboard-SingleInstance")
             if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
+                # CreateMutexW и при ERROR_ALREADY_EXISTS отдаёт валидный хэндл на
+                # существующий мьютекс — закрываем, чтобы не течь хэндлом.
+                if handle:
+                    kernel32.CloseHandle(handle)
                 return False
             if handle:
                 _single_instance_guard = handle
@@ -430,11 +434,22 @@ def show_window_error(window: "webview.Window", message: str) -> None:
         logging.exception("Window destroy failed after navigation error")
 
 
-def load_desktop_window_url(bridge: "DesktopBridge", window: "webview.Window", target_url: str) -> None:
-    logging.info("Waiting for desktop window before loading %s", target_url)
+def load_desktop_window_url(bridge: "DesktopBridge", window: "webview.Window", server: "DesktopServer") -> None:
+    logging.info("Waiting for desktop window before starting local UI")
     if not window.events.shown.wait(20):
-        logging.error("Desktop window was not shown in time; cannot load %s", target_url)
+        logging.error("Desktop window was not shown in time; cannot start local UI")
         show_window_error(window, "Окно приложения не открылось за отведённое время.")
+        return
+
+    # Loading-окно уже на экране — теперь поднимаем локальный сервер. Холодный
+    # старт может занять до 60 c (wait_until_ready), и всё это время пользователь
+    # видит сплэш, а не пустоту/«зависшее» приложение.
+    try:
+        server.start()
+        logging.info("Local UI server ready at %s", server.url)
+    except Exception:
+        logging.exception("Local UI server failed to start")
+        show_window_error(window, "Не удалось запустить локальный UI.")
         return
 
     time.sleep(0.35)
@@ -446,8 +461,8 @@ def load_desktop_window_url(bridge: "DesktopBridge", window: "webview.Window", t
         logging.exception("Не удалось центрировать окно при открытии")
 
     try:
-        window.load_url(target_url)
-        logging.info("Desktop window navigation requested: %s", target_url)
+        window.load_url(server.url)
+        logging.info("Desktop window navigation requested: %s", server.url)
     except Exception:
         logging.exception("Desktop window navigation failed")
         show_window_error(window, "Не удалось загрузить локальный web-интерфейс.")
@@ -573,6 +588,11 @@ class DesktopServer:
 
     def stop(self) -> None:
         self.server.should_exit = True
+        # Поток мог не стартовать вовсе (окно не показалось до старта сервера):
+        # join() по непущенному потоку бросил бы RuntimeError. is_alive()==False
+        # означает «не запускался или уже завершился» — join не нужен.
+        if not self.thread.is_alive():
+            return
         self.thread.join(timeout=5)
         if self.thread.is_alive():
             logging.warning("Local UI server thread did not stop within 5 seconds")
@@ -1193,17 +1213,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    # Сервер НЕ стартуем здесь: сначала показываем loading-окно, а старт сервера
+    # (блокирующий, до 60 c) уходит в load_desktop_window_url после события shown —
+    # иначе на холодном старте .exe окна нет несколько секунд. Ошибку старта там же
+    # показываем в уже открытом окне, а server.stop() гарантирует общий finally ниже.
     server = DesktopServer(web_app)
-    try:
-        server.start()
-    except Exception as exc:  # pragma: no cover - startup failures are environment-specific
-        logging.exception("Local UI server failed to start")
-        show_fatal_error(
-            "Не удалось запустить локальный UI.\n\n"
-            f"{exc}\n\n"
-            f"Лог: {LOG_PATH}"
-        )
-        return 1
 
     bridge = DesktopBridge()
     window = None
@@ -1233,7 +1247,7 @@ def main(argv: list[str] | None = None) -> int:
 
         webview.start(
             load_desktop_window_url,
-            args=(bridge, window, server.url),
+            args=(bridge, window, server),
             gui=resolve_gui_backend(),
             private_mode=False,
             storage_path=str(resolve_webview_storage_path()),

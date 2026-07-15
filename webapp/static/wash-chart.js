@@ -421,7 +421,7 @@
   }
 
   function describePanels(payload) {
-    return payload.panels
+    return (payload.panels || [])
       .map((panel, panelIndex) => {
         const series = payload.series.filter((item) => item.panel === panelIndex && item.points?.length);
         if (!series.length) {
@@ -433,7 +433,15 @@
           return null;
         }
 
-        const [rangeMin, rangeMax] = padRange(Math.min(...values), Math.max(...values));
+        // Цикл вместо Math.min(...values): spread большого массива бросает
+        // RangeError (лимит аргументов), а серии могут вырасти.
+        let valuesMin = values[0];
+        let valuesMax = values[0];
+        for (let i = 1; i < values.length; i += 1) {
+          if (values[i] < valuesMin) valuesMin = values[i];
+          if (values[i] > valuesMax) valuesMax = values[i];
+        }
+        const [rangeMin, rangeMax] = padRange(valuesMin, valuesMax);
         const ticks = buildAxisTicks(rangeMin, rangeMax);
 
         return {
@@ -566,68 +574,6 @@
     return Math.abs(points[left][0] - targetTimestamp) < Math.abs(points[previous][0] - targetTimestamp)
       ? left
       : previous;
-  }
-
-  function renderSeriesBadges(svg, panelLayouts, scaleX, scaleY, chartLayout) {
-    panelLayouts.forEach((panelLayout) => {
-      const badges = panelLayout.panel.series
-        .map((series) => {
-          const point = series.points.at(-1);
-          if (!point) {
-            return null;
-          }
-
-          return {
-            series,
-            value: point[1],
-            x: scaleX(point[0]),
-            y: scaleY(point[1], panelLayout.top, panelLayout.height, panelLayout.panel),
-          };
-        })
-        .filter(Boolean)
-        .sort((left, right) => left.y - right.y);
-
-      for (let index = 1; index < badges.length; index += 1) {
-        if (badges[index].y - badges[index - 1].y < 22) {
-          badges[index].y = badges[index - 1].y + 22;
-        }
-      }
-
-      badges.forEach((badge) => {
-        const label = formatValue(badge.value, badge.series.unit);
-        const labelWidth = clamp(label.length * 7.2 + 16, 68, 116);
-        const x = Math.min(badge.x + 10, chartLayout.width - chartLayout.right - labelWidth);
-        const y = clamp(badge.y - 12, panelLayout.top + 4, panelLayout.top + panelLayout.height - 22);
-
-        svg.append(
-          createSvgNode("rect", {
-            x,
-            y,
-            rx: 10,
-            ry: 10,
-            width: labelWidth,
-            height: 22,
-            fill: "#ffffff",
-            stroke: badge.series.color,
-            "stroke-width": 1.2,
-            "data-series-stroke": badge.series.id,
-          })
-        );
-
-        appendSvgText(
-          svg,
-          {
-            x: x + 8,
-            y: y + 15,
-            fill: badge.series.color,
-            "font-size": 11,
-            "font-weight": 700,
-            "data-series-fill": badge.series.id,
-          },
-          label
-        );
-      });
-    });
   }
 
   function mount(container, payload) {
@@ -880,8 +826,12 @@
           // Нефинитные значения (NaN/null) пропускаем с разрывом линии: следующая
           // валидная точка начинает новый сегмент с M, иначе кривая ломается целиком.
           const pathParts = [];
+          // Точка без валидных соседей даёт «M x y» без последующего «L» — на SVG
+          // такой субпуть невидим (hover её показывает, а линии нет). Рисуем маркер.
+          const isolatedDots = [];
+          const seriesPoints = series.points;
           let previousValid = false;
-          series.points.forEach(([timestamp, value]) => {
+          seriesPoints.forEach(([timestamp, value], index) => {
             if (!Number.isFinite(timestamp) || !Number.isFinite(value)) {
               previousValid = false;
               return;
@@ -889,6 +839,14 @@
             const x = scaleX(timestamp);
             const y = scaleY(value, layout.top, layout.height, layout.panel);
             pathParts.push(`${previousValid ? "L" : "M"} ${x.toFixed(2)} ${y.toFixed(2)}`);
+            const nextPoint = seriesPoints[index + 1];
+            const nextValid =
+              Array.isArray(nextPoint) &&
+              Number.isFinite(nextPoint[0]) &&
+              Number.isFinite(nextPoint[1]);
+            if (!previousValid && !nextValid) {
+              isolatedDots.push({ x, y });
+            }
             previousValid = true;
           });
           const path = pathParts.join(" ");
@@ -910,6 +868,18 @@
           }
 
           svg.append(createSvgNode("path", pathAttributes));
+
+          isolatedDots.forEach((dot) => {
+            svg.append(
+              createSvgNode("circle", {
+                cx: dot.x,
+                cy: dot.y,
+                r: layout.panel.panelIndex === 0 ? 2.4 : 2,
+                fill: series.color,
+                "data-series-fill": series.id,
+              })
+            );
+          });
         });
       });
 
@@ -1028,6 +998,26 @@
         }
       };
 
+      // Живое обновление типа линии без пересборки DOM (полный render() дороже и
+      // мигает): точечно правим stroke-dasharray существующих путей серии.
+      const applyLiveSeriesLineStyle = (seriesId, lineStyleId) => {
+        const option = getLineStyleOption(lineStyleId);
+        container.querySelectorAll("[data-series-stroke]").forEach((node) => {
+          if (node.getAttribute("data-series-stroke") !== seriesId) {
+            return;
+          }
+          if (option.dasharray) {
+            node.setAttribute("stroke-dasharray", option.dasharray);
+          } else {
+            node.removeAttribute("stroke-dasharray");
+          }
+        });
+        const liveSeries = styledPayload.series.find((series) => series.id === seriesId);
+        if (liveSeries) {
+          liveSeries.dasharray = option.dasharray;
+        }
+      };
+
       controls.querySelectorAll("[data-series-color]").forEach((input) => {
         input.addEventListener("input", (event) => {
           const seriesId = event.currentTarget.dataset.seriesColor;
@@ -1057,12 +1047,13 @@
           if (!seriesId) {
             return;
           }
+          const lineStyleId = getLineStyleOption(event.currentTarget.value).id;
           styleState[seriesId] = {
             ...(styleState[seriesId] || {}),
-            lineStyle: getLineStyleOption(event.currentTarget.value).id,
+            lineStyle: lineStyleId,
           };
           persistSeriesStyleState();
-          render();
+          applyLiveSeriesLineStyle(seriesId, lineStyleId);
         });
       });
 
@@ -1115,6 +1106,31 @@
 
       const panelIndexToLayout = new Map(panelLayouts.map((layout) => [layout.panel.panelIndex, layout]));
 
+      // Порог «свежести» точки для тултипа: ~3 медианных периода логирования
+      // серии. Через больший зазор (панель молчала) ближайшая точка — не
+      // «текущее значение», а устаревшее: её в тултипе не показываем.
+      const seriesGapThreshold = styledPayload.series.map((series) => {
+        const seriesPoints = series.points || [];
+        if (seriesPoints.length < 2) {
+          return Infinity;
+        }
+        const deltas = [];
+        for (let i = 1; i < seriesPoints.length; i += 1) {
+          const delta = seriesPoints[i][0] - seriesPoints[i - 1][0];
+          if (Number.isFinite(delta) && delta > 0) {
+            deltas.push(delta);
+          }
+        }
+        if (!deltas.length) {
+          return Infinity;
+        }
+        deltas.sort((left, right) => left - right);
+        const middle = Math.floor(deltas.length / 2);
+        const median =
+          deltas.length % 2 === 0 ? (deltas[middle - 1] + deltas[middle]) / 2 : deltas[middle];
+        return median * 3;
+      });
+
       const updateHover = (event) => {
         const overlayBounds = overlay.getBoundingClientRect();
         const hostBounds = canvas.getBoundingClientRect();
@@ -1145,6 +1161,11 @@
           }
 
           const point = series.points[pointIndex];
+          // Ближайшая точка за пределами зазора — значение устарело, не показываем.
+          if (Math.abs(point[0] - nearestTimestamp) > seriesGapThreshold[seriesIndex]) {
+            hoverDots[seriesIndex].setAttribute("opacity", 0);
+            return;
+          }
           const layout = panelIndexToLayout.get(series.panel);
           if (!layout) {
             hoverDots[seriesIndex].setAttribute("opacity", 0);

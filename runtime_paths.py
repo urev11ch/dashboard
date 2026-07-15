@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import atexit
 import logging
 import os
+import shutil
 import stat
 import sys
 import tempfile
@@ -119,7 +121,11 @@ def resolve_cache_root(dirname: str) -> Path:
             candidate,
             error,
         )
-        return Path(tempfile.mkdtemp(prefix=f"{LINUX_RUNTIME_DIRNAME}-{dirname}-"))
+        temp_dir = Path(tempfile.mkdtemp(prefix=f"{LINUX_RUNTIME_DIRNAME}-{dirname}-"))
+        # Иначе на многопользовательской POSIX-машине каждый запуск с недоступным
+        # кэшем оставлял бы «висящий» каталог в /tmp — чистим при выходе.
+        atexit.register(shutil.rmtree, temp_dir, ignore_errors=True)
+        return temp_dir
 
 
 def _resolve_posix_state_root() -> Path:

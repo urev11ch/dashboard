@@ -63,26 +63,39 @@ def main() -> None:
         raise SystemExit(2)
 
     # Проверяем порт заранее: вместо непонятного traceback/выхода uvicorn —
-    # понятное сообщение. Семейство адресов берём из getaddrinfo, иначе для ::1
-    # проверка падала бы на AF_INET и врала про «занятый порт».
-    try:
-        family, socktype, proto, _canonname, sockaddr = socket.getaddrinfo(
-            host, port, type=socket.SOCK_STREAM
-        )[0]
-    except socket.gaierror:
-        print(f"Не удалось разрешить адрес HOST={host}.", file=sys.stderr)
-        raise SystemExit(2)
+    # понятное сообщение. Перебираем ВСЕ адреса из getaddrinfo: при host=localhost
+    # первым по RFC 6724 может прийти ::1, и при отключённом IPv6 проба падала бы,
+    # хотя uvicorn поднялся бы на 127.0.0.1. Порт свободен, если связался хоть один.
+    # PORT=0 (эфемерный порт) не проверяем — проба и uvicorn взяли бы разные порты.
+    if port != 0:
+        try:
+            addr_infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        except socket.gaierror:
+            print(f"Не удалось разрешить адрес HOST={host}.", file=sys.stderr)
+            raise SystemExit(2)
 
-    try:
-        with socket.socket(family, socktype, proto) as probe:
-            probe.bind(sockaddr)
-    except OSError:
-        print(
-            f"Порт {port} занят — закройте другой экземпляр приложения "
-            "или укажите другой порт: PORT=<номер>.",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
+        last_error: OSError | None = None
+        bound_any = False
+        for family, socktype, proto, _canonname, sockaddr in addr_infos:
+            try:
+                with socket.socket(family, socktype, proto) as probe:
+                    # SO_REUSEADDR — иначе после перезапуска сокет в TIME_WAIT
+                    # ложно выглядит занятым.
+                    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    probe.bind(sockaddr)
+                bound_any = True
+                break
+            except OSError as error:
+                last_error = error
+
+        if not bound_any:
+            print(
+                f"Порт {port} занят — закройте другой экземпляр приложения "
+                "или укажите другой порт: PORT=<номер>."
+                + (f" ({last_error})" if last_error else ""),
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
 
     uvicorn.run("webapp.app:app", host=host, port=port, reload=False)
 

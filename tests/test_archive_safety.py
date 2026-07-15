@@ -45,9 +45,11 @@ def test_extract_zip_skips_traversal_members(tmp_path):
 def test_ftp_relative_target_sanitizes_windows_names():
     # Обычное имя раскладывается относительно корня.
     assert app._ftp_relative_target("/datalog", "/datalog/sub/a.db") == Path("sub", "a.db")
-    # Имя с Windows-обходом сводится к безопасному базовому имени.
+    # Имя с Windows-обходом сводится к безопасному одиночному имени с хешем пути
+    # (хеш — чтобы разные файлы с одинаковым базовым именем не затирали друг друга).
     target = app._ftp_relative_target("/datalog", "/datalog/..\\..\\evil.db")
-    assert target == Path("evil.db")
+    assert len(target.parts) == 1 and ".." not in str(target)
+    assert str(target).startswith("evil-") and str(target).endswith(".db")
     # Двоеточие (drive-relative на Windows) заменяется.
     target = app._ftp_relative_target("/datalog", "/datalog/C:x.db")
     assert ":" not in str(target) and len(target.parts) == 1

@@ -1,7 +1,6 @@
 """Тесты ограничения дискового кэша: TTL, бюджет с LRU-эвикцией и удаление
 предыдущей версии записи того же источника."""
 import os
-import pickle
 import time
 
 import webapp.app as app
@@ -173,7 +172,22 @@ def test_save_pickle_cache_is_atomic_with_unique_temp(tmp_path, monkeypatch):
     app.save_pickle_cache(target, {"a": 2})
 
     assert len(seen) == 2 and seen[0] != seen[1]  # имена .tmp уникальны
-    assert pickle.loads(target.read_bytes()) == {"a": 2}
+    # Файл кэша подписан HMAC (32 байта в начале) — читаем через публичный API.
+    assert app.load_pickle_cache(target) == {"a": 2}
+
+
+def test_load_pickle_cache_rejects_tampered_entry(tmp_path):
+    # HMAC-подпись — defense-in-depth: подменённый файл кэша не должен доходить
+    # до pickle.loads (unpickle чужих данных = выполнение кода).
+    target = tmp_path / "db-tamper.pkl"
+    app.save_pickle_cache(target, {"secret": 1})
+    assert app.load_pickle_cache(target) == {"secret": 1}
+
+    blob = target.read_bytes()
+    # Портим полезную нагрузку, подпись оставляем прежней — проверка не пройдёт.
+    target.write_bytes(blob + b"tampered")
+    assert app.load_pickle_cache(target) is None
+    assert not target.exists()  # невалидная запись удалена
 
 
 def test_path_cache_signature_tolerates_missing_file(tmp_path):

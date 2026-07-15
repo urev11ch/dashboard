@@ -5,12 +5,14 @@ import base64
 import ipaddress
 import json
 import hashlib
+import hmac
 import ftplib
 import logging
 import os
 import pickle
 import posixpath
 import re
+import secrets
 import shutil
 import sqlite3
 import sys
@@ -1072,9 +1074,21 @@ def _ftp_relative_target(remote_root: str, remote_file: str) -> Path:
     relative = relative.lstrip("/")
     safe_path = safe_archive_member_path(relative)
     if safe_path is None:
-        # Запасной вариант: только базовое имя, без Windows-разделителей и `:`.
-        fallback = PurePosixPath(remote_file.replace("\\", "/")).name.replace(":", "_")
-        return Path(fallback or "download.db")
+        # Запасной вариант: базовое имя + короткий хеш полного пути. Без хеша два
+        # разных удалённых файла с одинаковым именем (из разных папок) затирали бы
+        # друг друга в зеркале. Хеш вставляем перед расширением, чтобы имя всё ещё
+        # распознавалось как .db/архив.
+        base = PurePosixPath(remote_file.replace("\\", "/")).name.replace(":", "_")
+        digest = hashlib.sha1(remote_file.encode("utf-8")).hexdigest()[:8]
+        if base:
+            dot = base.rfind(".")
+            if dot > 0:
+                fallback = f"{base[:dot]}-{digest}{base[dot:]}"
+            else:
+                fallback = f"{base}-{digest}"
+        else:
+            fallback = f"download-{digest}.db"
+        return Path(fallback)
     return safe_path
 
 
@@ -1887,12 +1901,26 @@ def save_app_settings(raw: Any) -> dict[str, Any]:
     return settings
 
 
+def _deep_merge_settings(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Рекурсивное слияние: вложенные словари (result_labels, concentration_norms)
+    сливаются по ключам, а не затираются целиком. Иначе частичный POST без второй
+    фазы концентрации молча сбрасывал бы недостающие ключи в дефолт/None."""
+    merged = dict(base)
+    for key, value in override.items():
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge_settings(existing, value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def update_app_settings(source: dict[str, Any]) -> dict[str, Any]:
     """Частичное обновление настроек: переданные поля накладываются поверх
     сохранённых. Чтение и запись — под общим локом, иначе два параллельных
     запроса читают одно состояние и второй затирает изменения первого."""
     with app_settings_lock:
-        merged = {**load_app_settings(), **source}
+        merged = _deep_merge_settings(load_app_settings(), source)
         return save_app_settings(merged)
 
 
@@ -2416,13 +2444,54 @@ def workspace_analysis_cache_path(cache_key: str) -> Path:
     return ANALYSIS_CACHE_ROOT / f"workspace-{cache_key}.pkl"
 
 
+_cache_hmac_key: bytes | None = None
+_cache_hmac_key_lock = threading.Lock()
+CACHE_HMAC_DIGEST_SIZE = 32  # sha256
+
+
+def cache_hmac_key() -> bytes:
+    """Секрет для подписи записей кэша, хранится в приватном 0700-каталоге кэша.
+    HMAC — defense-in-depth поверх прав доступа: даже если файл кэша подменят,
+    неверная подпись отсеет его ДО unpickle (pickle.load на чужих данных = RCE).
+    Если ключ не прочитать/не сохранить — генерируем новый: старые записи просто
+    не пройдут проверку и будут перечитаны (промах кэша, не сбой)."""
+    global _cache_hmac_key
+    if _cache_hmac_key is not None:
+        return _cache_hmac_key
+    with _cache_hmac_key_lock:
+        if _cache_hmac_key is not None:
+            return _cache_hmac_key
+        key_path = ANALYSIS_CACHE_ROOT / "cache-hmac.key"
+        try:
+            existing = key_path.read_bytes()
+            if len(existing) >= CACHE_HMAC_DIGEST_SIZE:
+                _cache_hmac_key = existing
+                return existing
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logging.warning("Не удалось прочитать ключ подписи кэша, генерирую новый.")
+        key = secrets.token_bytes(CACHE_HMAC_DIGEST_SIZE)
+        try:
+            atomic_write_bytes(key_path, key)
+            os.chmod(key_path, 0o600)
+        except OSError:
+            logging.warning("Не удалось сохранить ключ подписи кэша — кэш станет одноразовым.")
+        _cache_hmac_key = key
+        return key
+
+
 def load_pickle_cache(path: Path) -> Any | None:
     """Промах кэша не должен ронять джоб: битый пикл даёт что угодно
     (IndexError/KeyError/TypeError/ImportError после смены формата чанков), а не
-    только PickleError — поэтому ловим Exception и выбрасываем запись."""
+    только PickleError — поэтому ловим Exception и выбрасываем запись.
+
+    Перед unpickle проверяем HMAC-подпись (первые 32 байта файла): запись без
+    валидной подписи (подмена, старый формат, чужой ключ) выбрасывается, не
+    доходя до pickle.loads."""
     try:
         with path.open("rb") as handle:
-            return pickle.load(handle)
+            blob = handle.read()
     except FileNotFoundError:
         return None
     except Exception:
@@ -2430,9 +2499,25 @@ def load_pickle_cache(path: Path) -> Any | None:
         remove_cache_entry(path)
         return None
 
+    signature, data = blob[:CACHE_HMAC_DIGEST_SIZE], blob[CACHE_HMAC_DIGEST_SIZE:]
+    expected = hmac.new(cache_hmac_key(), data, hashlib.sha256).digest()
+    if len(blob) < CACHE_HMAC_DIGEST_SIZE or not hmac.compare_digest(signature, expected):
+        logging.warning("Подпись записи кэша не совпала, удаляю: %s", path.name)
+        remove_cache_entry(path)
+        return None
+
+    try:
+        return pickle.loads(data)
+    except Exception:
+        logging.warning("Повреждённая запись кэша, удаляю: %s", path.name)
+        remove_cache_entry(path)
+        return None
+
 
 def save_pickle_cache(path: Path, payload: Any) -> None:
-    atomic_write_bytes(path, pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
+    data = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
+    signature = hmac.new(cache_hmac_key(), data, hashlib.sha256).digest()
+    atomic_write_bytes(path, signature + data)
 
 
 def load_cached_db_analysis(db_path: Path) -> core.DbAnalysisChunk | None:
@@ -3036,7 +3121,9 @@ async def ftp_auto_refresh_loop() -> None:
 
 
 def parse_cycle_key(key: str) -> tuple[str, int, int, int, int, int]:
-    parts = key.split("::", 5)
+    # Режем справа: последние 5 полей — числа, а source_db (путь) сам может
+    # содержать «::». split слева отдал бы часть пути в channel и врал бы 400.
+    parts = key.rsplit("::", 5)
     if len(parts) != 6:
         raise HTTPException(status_code=400, detail="Некорректный ключ мойки.")
     source_db, channel, object_id, program_id, start_ts, end_ts = parts
@@ -3880,9 +3967,11 @@ def update_check() -> JSONResponse:
 
 @app.get("/api/wash-details")
 def wash_details(key: str) -> JSONResponse:
+    # Снимок анализа берём под локом, тяжёлую сборку (чтение настроек с диска,
+    # оценка концентрации) делаем снаружи — на state_lock ждут SSE и все запросы.
     with state_lock:
         analysis = require_analysis()
-        return JSONResponse(build_wash_detail(analysis, key))
+    return JSONResponse(build_wash_detail(analysis, key))
 
 
 @app.get("/api/wash-chart-data")

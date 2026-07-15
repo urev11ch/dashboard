@@ -1,5 +1,27 @@
 (function () {
   const appState = window.__WASH_APP__ || {};
+
+  // Обёртка над fetch с таймаутом. Без неё зависший бэкенд/FTP (TCP без RST)
+  // никогда не резолвит промис: кнопка «Обновляю…»/«Сохраняю PDF…» залипает
+  // навсегда (finally не срабатывает). По таймауту — abort и понятная ошибка.
+  const DEFAULT_FETCH_TIMEOUT_MS = 30000;
+  function fetchWithTimeout(resource, options) {
+    const opts = options || {};
+    const timeout =
+      typeof opts.timeout === "number" ? opts.timeout : DEFAULT_FETCH_TIMEOUT_MS;
+    const { timeout: _ignored, ...rest } = opts;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    return fetch(resource, { ...rest, signal: controller.signal })
+      .catch((error) => {
+        if (error && error.name === "AbortError") {
+          throw new Error("Превышено время ожидания ответа сервера.");
+        }
+        throw error;
+      })
+      .finally(() => clearTimeout(timer));
+  }
+
   const folderPickerButtons = Array.from(document.querySelectorAll("[data-folder-picker]"));
   const folderDefaultButtons = Array.from(document.querySelectorAll("[data-folder-default]"));
   // Подписи результата мойки (ключи/значения по умолчанию совпадают с сервером).
@@ -269,7 +291,7 @@
   }
 
   async function fetchWorkspaceJobStatus() {
-    const response = await fetch("/api/workspace-job");
+    const response = await fetchWithTimeout("/api/workspace-job");
     if (!response.ok) {
       throw new Error("workspace-job-status-failed");
     }
@@ -386,7 +408,7 @@
         workspaceJobCancelButton.textContent = "Отменяю...";
 
         try {
-          await fetch("/api/workspace-job/cancel", { method: "POST" });
+          await fetchWithTimeout("/api/workspace-job/cancel", { method: "POST" });
         } catch (_error) {
           workspaceJobCancelButton.disabled = false;
           workspaceJobCancelButton.textContent = "Отменить";
@@ -724,12 +746,29 @@
     toastRoot.append(toast);
     // Запускаем анимацию появления на следующем кадре.
     requestAnimationFrame(() => toast.classList.add("is-visible"));
+    let removed = false;
     const remove = () => {
+      // Ручное закрытие и авто-таймер не должны сработать дважды: гасим таймер
+      // и выходим, если уже удаляли.
+      if (removed) {
+        return;
+      }
+      removed = true;
+      window.clearTimeout(autoTimer);
       toast.classList.remove("is-visible");
       window.setTimeout(() => toast.remove(), 200);
     };
-    window.setTimeout(remove, duration);
+    const autoTimer = window.setTimeout(remove, duration);
     toast.addEventListener("click", remove);
+  }
+
+  // Запуск async-обработчика из обработчика события «fire-and-forget»:
+  // гарантированно гасим возможный reject (иначе unhandled rejection —
+  // например, если внутренний catch модалки сам бросит при рендере ошибки).
+  function runHandler(promise) {
+    Promise.resolve(promise).catch((error) => {
+      console.error("Необработанная ошибка обработчика:", error);
+    });
   }
 
   // ---- Часы (текущее время) ---------------------------------------------
@@ -982,7 +1021,7 @@
   }
 
   async function fetchWorkspaceData() {
-    const response = await fetch("/api/workspace-data");
+    const response = await fetchWithTimeout("/api/workspace-data");
     if (!response.ok) {
       throw new Error("workspace-data-request-failed");
     }
@@ -1036,7 +1075,7 @@
   }
 
   async function startWorkspaceRefresh() {
-    const response = await fetch("/api/workspace/refresh", { method: "POST" });
+    const response = await fetchWithTimeout("/api/workspace/refresh", { method: "POST" });
     if (!response.ok) {
       let errorMessage = "Не удалось запустить обновление.";
       try {
@@ -1290,7 +1329,7 @@
       }
 
       if (mode === "object_asc") {
-        return left.object.localeCompare(right.object, "ru") || rightStartTs - leftStartTs;
+        return String(left.object || "").localeCompare(String(right.object || ""), "ru") || rightStartTs - leftStartTs;
       }
 
       if (mode === "duration_desc") {
@@ -1618,7 +1657,7 @@
     }
 
     const generation = workspaceDataGeneration;
-    const request = fetch(`/api/wash-details?key=${encodeURIComponent(key)}`)
+    const request = fetchWithTimeout(`/api/wash-details?key=${encodeURIComponent(key)}`)
       .then((response) => {
         if (!response.ok) {
           throw new Error("wash-details-request-failed");
@@ -1658,7 +1697,7 @@
     }
 
     const generation = workspaceDataGeneration;
-    const request = fetch(url)
+    const request = fetchWithTimeout(url)
       .then((response) => {
         if (!response.ok) {
           throw new Error("chart-data-request-failed");
@@ -1752,7 +1791,7 @@
   }
 
   async function persistObjectName(channel, objectId, name = "", mode = "set") {
-    const response = await fetch("/api/object-name", {
+    const response = await fetchWithTimeout("/api/object-name", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1962,7 +2001,7 @@
   }
 
   async function fetchDiagnostics() {
-    const response = await fetch("/api/diagnostics", { headers: { Accept: "application/json" } });
+    const response = await fetchWithTimeout("/api/diagnostics", { headers: { Accept: "application/json" } });
     if (!response.ok) {
       throw new Error("diagnostics-fetch-failed");
     }
@@ -2136,7 +2175,7 @@
   }
 
   async function fetchAppSettings() {
-    const response = await fetch("/api/settings", { headers: { Accept: "application/json" } });
+    const response = await fetchWithTimeout("/api/settings", { headers: { Accept: "application/json" } });
     if (!response.ok) {
       throw new Error("settings-fetch-failed");
     }
@@ -2145,7 +2184,7 @@
   }
 
   async function saveAppSettings(patch) {
-    const response = await fetch("/api/settings", {
+    const response = await fetchWithTimeout("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ settings: patch }),
@@ -2158,7 +2197,7 @@
   }
 
   async function fetchChartStyles() {
-    const response = await fetch("/api/chart-styles", { headers: { Accept: "application/json" } });
+    const response = await fetchWithTimeout("/api/chart-styles", { headers: { Accept: "application/json" } });
     if (!response.ok) {
       throw new Error("chart-styles-fetch-failed");
     }
@@ -2170,7 +2209,7 @@
   }
 
   async function saveChartStyles(series) {
-    const response = await fetch("/api/chart-styles", {
+    const response = await fetchWithTimeout("/api/chart-styles", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ series }),
@@ -2673,7 +2712,7 @@
         stopCleanupTimer();
         cleanupConfirmOk.disabled = true;
         try {
-          const response = await fetch("/api/archives/cleanup", { method: "POST" });
+          const response = await fetchWithTimeout("/api/archives/cleanup", { method: "POST" });
           if (!response.ok) {
             throw new Error("cleanup-failed");
           }
@@ -2746,7 +2785,7 @@
       chartCacheClear.addEventListener("click", async () => {
         chartCacheClear.disabled = true;
         try {
-          const response = await fetch("/api/chart-cache/clear", { method: "POST" });
+          const response = await fetchWithTimeout("/api/chart-cache/clear", { method: "POST" });
           if (!response.ok) {
             throw new Error("clear-failed");
           }
@@ -2851,7 +2890,7 @@
 
   async function checkForUpdates(notifyUpToDate = false) {
     try {
-      const response = await fetch("/api/update-check", { headers: { Accept: "application/json" } });
+      const response = await fetchWithTimeout("/api/update-check", { headers: { Accept: "application/json" } });
       if (!response.ok) {
         return;
       }
@@ -3448,7 +3487,7 @@
         if (!element.dataset.openWashKey) {
           return;
         }
-        element.addEventListener("click", () => openWashModal(element.dataset.openWashKey));
+        element.addEventListener("click", () => runHandler(openWashModal(element.dataset.openWashKey)));
       });
 
       void mountChart(modalRoot, detail, requestId);
@@ -3528,7 +3567,7 @@
     if (!row || !washList.contains(row) || !row.dataset.key) {
       return;
     }
-    openWashModal(row.dataset.key);
+    runHandler(openWashModal(row.dataset.key));
   });
   washList.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" && event.key !== " ") {
@@ -3542,13 +3581,19 @@
       return;
     }
     event.preventDefault();
-    openWashModal(row.dataset.key);
+    runHandler(openWashModal(row.dataset.key));
   });
   // Смена ширины окна может изменить высоту строки (медиа-запросы) и режим
   // виртуализации — кэш отрисованного окна сбрасываем, чтобы высоты перемерились.
+  // Дебаунс: во время перетаскивания рамки resize сыплется десятками в секунду,
+  // а нам достаточно перемерить строки один раз, когда размер устоялся.
+  let resizeDebounceTimer = 0;
   window.addEventListener("resize", () => {
-    invalidateRenderedWashWindow();
-    scheduleVirtualizedWashList();
+    window.clearTimeout(resizeDebounceTimer);
+    resizeDebounceTimer = window.setTimeout(() => {
+      invalidateRenderedWashWindow();
+      scheduleVirtualizedWashList();
+    }, 120);
   });
 
   if (fluidWashListQuery) {
@@ -3646,7 +3691,7 @@
 
   const openSettingsButton = document.querySelector("#openSettings");
   if (openSettingsButton) {
-    openSettingsButton.addEventListener("click", () => openSettings());
+    openSettingsButton.addEventListener("click", () => runHandler(openSettings()));
   }
 
   initClock();

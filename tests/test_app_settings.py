@@ -44,6 +44,17 @@ def test_save_load_roundtrip(tmp_path, monkeypatch):
     }
 
 
+def test_update_app_settings_deep_merges_nested(tmp_path, monkeypatch):
+    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    app.save_app_settings(
+        {"concentration_norms": {"alkali": 1.5, "acid": 2.5}}
+    )
+    # Частичный патч только одной фазы концентрации не должен обнулять вторую
+    # (раньше поверхностный merge сбрасывал недостающие ключи в None).
+    updated = app.update_app_settings({"concentration_norms": {"acid": 9.0}})
+    assert updated["concentration_norms"] == {"alkali": 1.5, "acid": 9.0}
+
+
 def test_concentration_verdict_downgrades_completed():
     labels = {"completed": "", "check": ""}
     # Концентрация ниже нормы делает завершённую мойку «требующей проверки».
