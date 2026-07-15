@@ -2332,6 +2332,11 @@
                   <input type="text" class="settings-text-input" data-setting-result-label="${field.key}" maxlength="120" placeholder="${escapeHtml(field.def)}" value="${escapeHtml(resultLabels[field.key] || field.def)}" autocomplete="off" spellcheck="false">
                 </div>
               `).join("")}
+              <p class="settings-note">Требовать финальный шаг «Окончание мойки»: если включено, мойка без него помечается «требует проверки». Многие станции этот шаг не пишут — по умолчанию выключено.</p>
+              <label class="settings-option">
+                <span class="settings-option-text"><strong>Требовать шаг окончания мойки</strong></span>
+                <input type="checkbox" data-setting-require-completion ${settings.require_completion_step ? "checked" : ""}>
+              </label>
 
               <h4 class="settings-group-title">Нормативы концентрации</h4>
               <p class="settings-note">Мин. концентрация рабочего раствора за фазу сравнивается с нормативом. Ниже нормы — мойка помечается «требует проверки». Нормативы вводятся вручную (проценты), пустое поле — фаза не оценивается.</p>
@@ -2586,6 +2591,21 @@
     resultLabelInputs.forEach((input) => {
       input.addEventListener("change", persistResultLabels);
     });
+
+    const requireCompletionToggle = settingsRoot.querySelector("[data-setting-require-completion]");
+    if (requireCompletionToggle) {
+      requireCompletionToggle.addEventListener("change", async (event) => {
+        try {
+          await saveAppSettings({ require_completion_step: Boolean(event.currentTarget.checked) });
+          // Пересчёт статуса мойки — на чтении, поэтому обновляем список сразу.
+          if (appState.hasWorkspace) {
+            hydrateWorkspaceData({ resetScroll: false }).catch(() => {});
+          }
+        } catch (_error) {
+          showToast("Не удалось сохранить настройки.", "error");
+        }
+      });
+    }
 
     const checkUpdatesToggle = settingsRoot.querySelector("[data-setting-check-updates]");
     if (checkUpdatesToggle) {

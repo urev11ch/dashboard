@@ -107,7 +107,9 @@ ANALYSIS_CACHE_MAX_ENTRIES = 2048
 # Сколько источников помним для удаления предыдущей версии их кэша.
 CACHE_SOURCE_REGISTRY_LIMIT = 512
 DB_ANALYSIS_CACHE_VERSION = 3
-WORKSPACE_ANALYSIS_CACHE_VERSION = 4
+# v5: сэмплы вынесены из workspace-пикла в отдельные side-файлы по потокам
+# (ws-samples-*), а в RAM подтягиваются лениво — см. make_sample_loader.
+WORKSPACE_ANALYSIS_CACHE_VERSION = 5
 CHART_PAYLOAD_DISK_CACHE_VERSION = 2
 CHART_PAYLOAD_CACHE_LIMIT = 64
 DB_ANALYSIS_MAX_WORKERS = 4
@@ -148,6 +150,10 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "concentration_eval_enabled": False,
     "concentration_norms": {"alkali": None, "acid": None},
     "concentration_tolerance_percent": 10.0,
+    # Требовать финальный шаг «Окончание мойки» (process 21): при True мойка без
+    # него понижается до «Требует проверки». По умолчанию выключено — многие
+    # станции не пишут этот шаг, и его отсутствие не должно считаться ошибкой.
+    "require_completion_step": False,
 }
 ARCHIVE_RETENTION_MIN_DAYS = 1
 ARCHIVE_RETENTION_MAX_DAYS = 730
@@ -592,9 +598,58 @@ def format_ftp_display_label(config: dict[str, Any]) -> str:
 
 
 # ---- защищённое хранение паролей ---------------------------------------
-# На Windows используем DPAPI (CryptProtectData) — пароль шифруется ключом
-# текущего пользователя ОС. На других платформах (dev) — обратимое кодирование
-# (не шифрование), чтобы не хранить совсем уж в чистом виде.
+# Windows — DPAPI (CryptProtectData), пароль шифруется ключом пользователя ОС.
+# Linux/macOS — системное хранилище секретов через keyring (Secret Service /
+# Keychain). Если хранилища нет (headless/CI/контейнер) — фолбэк на обратимое
+# base64-кодирование (не шифрование), чтобы приложение всё равно работало.
+KEYRING_SERVICE = "OptiCIP Dashboard FTP"
+
+
+def _keyring_backend() -> Any | None:
+    """Модуль keyring, если он есть и не на Windows (там DPAPI). None — нет keyring."""
+    if sys.platform == "win32":
+        return None
+    try:
+        import keyring
+    except Exception:
+        return None
+    return keyring
+
+
+def _keyring_store(secret_id: str, value: str) -> bool:
+    keyring = _keyring_backend()
+    if keyring is None or not secret_id:
+        return False
+    try:
+        keyring.set_password(KEYRING_SERVICE, secret_id, value)
+        return True
+    except Exception:
+        # Нет backend'а (NoKeyringError) или сбой доступа — уходим в base64-фолбэк.
+        logging.warning("Системное хранилище секретов недоступно, использую локальное кодирование.")
+        return False
+
+
+def _keyring_fetch(secret_id: str) -> str:
+    keyring = _keyring_backend()
+    if keyring is None or not secret_id:
+        return ""
+    try:
+        return keyring.get_password(KEYRING_SERVICE, secret_id) or ""
+    except Exception:
+        logging.warning("Не удалось прочитать пароль из системного хранилища секретов.")
+        return ""
+
+
+def _keyring_delete(secret_id: str) -> None:
+    keyring = _keyring_backend()
+    if keyring is None or not secret_id:
+        return
+    try:
+        keyring.delete_password(KEYRING_SERVICE, secret_id)
+    except Exception:
+        pass  # best-effort очистка; запись могла отсутствовать (был base64-фолбэк)
+
+
 def _dpapi_crypt(data: bytes, *, protect: bool) -> bytes | None:
     if sys.platform != "win32":
         return None
@@ -619,13 +674,19 @@ def _dpapi_crypt(data: bytes, *, protect: bool) -> bytes | None:
         ctypes.windll.kernel32.LocalFree(blob_out.pbData)
 
 
-def protect_secret(value: str) -> str:
+def protect_secret(value: str, secret_id: str = "") -> str:
+    """Токен-обёртка над паролем. Схемы: `dpapi:` (Windows), `keyring:<id>`
+    (секрет в системном хранилище, в токене только ссылка), `b64:` (фолбэк).
+    secret_id нужен для keyring — обычно id FTP-подключения."""
     raw = (value or "").encode("utf-8")
     if not raw:
         return ""
     blob = _dpapi_crypt(raw, protect=True)
     if blob is not None:
         return "dpapi:" + base64.b64encode(blob).decode("ascii")
+    # Не-Windows: системное хранилище секретов, если доступно и есть id.
+    if _keyring_store(secret_id, value):
+        return "keyring:" + secret_id
     return "b64:" + base64.b64encode(raw).decode("ascii")
 
 
@@ -640,6 +701,8 @@ def unprotect_secret(token: str) -> str:
             return ""
         raw = _dpapi_crypt(blob, protect=False)
         return raw.decode("utf-8") if raw is not None else ""
+    if token.startswith("keyring:"):
+        return _keyring_fetch(token[len("keyring:"):])
     if token.startswith("b64:"):
         try:
             return base64.b64decode(token[4:]).decode("utf-8")
@@ -699,7 +762,7 @@ def upsert_ftp_connection(config: dict[str, Any], label: str = "") -> dict[str, 
         "host": config["host"],
         "port": config["port"],
         "username": config["username"],
-        "password_enc": protect_secret(config.get("password", "")),
+        "password_enc": protect_secret(config.get("password", ""), secret_id=conn_id),
         "path": config["path"],
         "passive": bool(config.get("passive", True)),
     }
@@ -789,6 +852,10 @@ def delete_ftp_connection(conn_id: str) -> None:
         if registry.get("active_id") == conn_id:
             registry["active_id"] = None
         save_ftp_sources_registry(registry)
+
+    # Убираем пароль из системного хранилища (если он там был) — иначе утечка.
+    if existed:
+        _keyring_delete(conn_id)
 
     # Папку профиля удаляем только для подключения, которое реально было в
     # реестре, id которого соответствует формату (hex, см. ftp_connection_id) и
@@ -1821,7 +1888,31 @@ def normalize_app_settings(raw: Any) -> dict[str, Any]:
             data.get("concentration_tolerance_percent"),
             DEFAULT_APP_SETTINGS["concentration_tolerance_percent"],
         ),
+        "require_completion_step": _coerce_bool(
+            data.get("require_completion_step"),
+            DEFAULT_APP_SETTINGS["require_completion_step"],
+        ),
     }
+
+
+def resolve_cycle_default_status(
+    analysis: core.AnalysisResult, cycle: core.Cycle, *, require_completion_step: bool
+) -> str:
+    """Базовый статус мойки с учётом тумблера «требовать шаг окончания».
+    Применяется на чтении (как и оценка концентрации), поэтому смена настройки
+    действует сразу, без переанализа. При включённом требовании берём готовый
+    индекс ядра (посчитан с require_completion_step=True); при выключенном —
+    пересчитываем из операций без требования финального шага."""
+    if require_completion_step:
+        return analysis.cycle_results_by_key.get(
+            core.make_cycle_key(cycle),
+            core.cycle_result_label_from_operations(
+                cycle.operations, require_completion_step=True
+            ),
+        )
+    return core.cycle_result_label_from_operations(
+        cycle.operations, require_completion_step=False
+    )
 
 
 def resolve_result_label(default_label: str, result_labels: dict[str, str] | None) -> str:
@@ -2367,14 +2458,18 @@ def cleanup_stale_workspace_cache(source_key: str, cache_key: str) -> None:
     if previous_key is None:
         return
     remove_cache_entry(workspace_analysis_cache_path(previous_key))
-    prefix = f"chart-{previous_key[:CHART_CACHE_KEY_PREFIX_LEN]}-"
+    # Графики и side-файлы сэмплов прошлого анализа — по префиксам с его ключом.
+    chart_prefix = f"chart-{previous_key[:CHART_CACHE_KEY_PREFIX_LEN]}-"
+    samples_prefix = f"ws-samples-{previous_key[:WS_SAMPLES_KEY_PREFIX_LEN]}-"
     try:
-        stale_charts = [
-            path for path in ANALYSIS_CACHE_ROOT.iterdir() if path.name.startswith(prefix)
+        stale = [
+            path
+            for path in ANALYSIS_CACHE_ROOT.iterdir()
+            if path.name.startswith(chart_prefix) or path.name.startswith(samples_prefix)
         ]
     except OSError:
         return
-    for path in stale_charts:
+    for path in stale:
         remove_cache_entry(path)
 
 
@@ -2555,6 +2650,53 @@ def save_cached_db_analysis(db_path: Path, chunk: core.DbAnalysisChunk) -> None:
         cleanup_stale_db_analysis_cache(db_path, cache_key)
 
 
+# Сэмплы одного анализа лежат по одному side-файлу на поток (канал). Префикс
+# включает ключ анализа — чтобы находить и чистить их вместе с workspace-пиклом.
+WS_SAMPLES_KEY_PREFIX_LEN = 16
+# Сколько потоков сэмплов держать загруженными в процессе (LRU): график читает
+# по одному потоку на канал, каналов обычно единицы — этого хватает без роста RAM.
+SAMPLE_STREAM_LRU_LIMIT = 4
+_sample_stream_cache: "OrderedDict[tuple[str, str], list[core.Sample]]" = OrderedDict()
+_sample_stream_cache_lock = threading.Lock()
+
+
+def ws_samples_path(cache_key: str, stream_key: str) -> Path:
+    prefix = cache_key[:WS_SAMPLES_KEY_PREFIX_LEN]
+    stream_hash = hashlib.sha1(stream_key.encode("utf-8")).hexdigest()[:16]
+    return ANALYSIS_CACHE_ROOT / f"ws-samples-{prefix}-{stream_hash}.pkl"
+
+
+def make_sample_loader(cache_key: str) -> Callable[[str], list[core.Sample]]:
+    """Ленивый загрузчик потока сэмплов с диска с LRU-кэшем в процессе. Позволяет
+    держать в RAM метаданные анализа без всех сэмплов — они читаются по запросу
+    графика/оценки концентрации. Отсутствие файла (эвикция/повреждение) → []."""
+    def loader(stream_key: str) -> list[core.Sample]:
+        if not stream_key:
+            return []
+        cache_id = (cache_key, stream_key)
+        with _sample_stream_cache_lock:
+            cached = _sample_stream_cache.get(cache_id)
+            if cached is not None:
+                _sample_stream_cache.move_to_end(cache_id)
+                return cached
+
+        path = ws_samples_path(cache_key, stream_key)
+        with analysis_cache_lock:
+            payload = load_pickle_cache(path)
+            if payload is not None:
+                touch_cache_entry(path)
+        samples = payload if isinstance(payload, list) else []
+
+        with _sample_stream_cache_lock:
+            _sample_stream_cache[cache_id] = samples
+            _sample_stream_cache.move_to_end(cache_id)
+            while len(_sample_stream_cache) > SAMPLE_STREAM_LRU_LIMIT:
+                _sample_stream_cache.popitem(last=False)
+        return samples
+
+    return loader
+
+
 def load_cached_workspace_analysis(cache_key: str) -> tuple[core.AnalysisResult, list[str]] | None:
     """Сводный анализ источника из кэша вместе со списком пропущенных (битых)
     баз — при попадании в кэш пользователь должен видеть то же предупреждение."""
@@ -2574,7 +2716,14 @@ def load_cached_workspace_analysis(cache_key: str) -> tuple[core.AnalysisResult,
         raw_skipped = payload.get("skipped_db_files")
         skipped = [str(name) for name in raw_skipped] if isinstance(raw_skipped, list) else []
         touch_cache_entry(cache_path)
-        return analysis, skipped
+        # Держим side-файлы сэмплов «тёплыми» рядом с их анализом, чтобы LRU не
+        # вытеснил их раньше самого анализа.
+        for stream_key in analysis.sample_stream_by_channel.values():
+            touch_cache_entry(ws_samples_path(cache_key, stream_key))
+
+    # Сэмплы — лениво с диска (в пикле их нет), метаданные остаются в RAM.
+    analysis.sample_loader = make_sample_loader(cache_key)
+    return analysis, skipped
 
 
 def save_cached_workspace_analysis(
@@ -2584,15 +2733,22 @@ def save_cached_workspace_analysis(
     source_key: str = "",
     skipped_db_files: list[str] | None = None,
 ) -> None:
-    cache_path = workspace_analysis_cache_path(cache_key)
-    payload = {
-        "version": WORKSPACE_ANALYSIS_CACHE_VERSION,
-        "cache_key": cache_key,
-        "analysis": analysis,
-        "skipped_db_files": list(skipped_db_files or []),
-    }
     with analysis_cache_lock:
-        save_pickle_cache(cache_path, payload)
+        # Сэмплы пишем отдельными файлами по потокам, из workspace-пикла их
+        # убираем — так метаданные малы, а RAM освобождается (см. ниже).
+        for stream_key, samples in analysis.samples_by_db.items():
+            save_pickle_cache(ws_samples_path(cache_key, stream_key), samples)
+
+        analysis.samples_by_db = {}
+        analysis.sample_loader = make_sample_loader(cache_key)
+
+        payload = {
+            "version": WORKSPACE_ANALYSIS_CACHE_VERSION,
+            "cache_key": cache_key,
+            "analysis": analysis,  # __getstate__ отбросит sample_loader, samples пусты
+            "skipped_db_files": list(skipped_db_files or []),
+        }
+        save_pickle_cache(workspace_analysis_cache_path(cache_key), payload)
         if source_key:
             cleanup_stale_workspace_cache(source_key, cache_key)
 
@@ -3155,9 +3311,8 @@ def build_wash_rows(analysis: core.AnalysisResult) -> list[dict[str, Any]]:
     for cycle in analysis.sorted_cycles:
         cycle_key = core.make_cycle_key(cycle)
         date_time = core.format_ts(cycle.start_ts)
-        default_status = analysis.cycle_results_by_key.get(
-            cycle_key,
-            core.cycle_result_label_from_operations(cycle.operations),
+        default_status = resolve_cycle_default_status(
+            analysis, cycle, require_completion_step=settings["require_completion_step"]
         )
         concentration = evaluate_cycle_concentration(analysis, cycle, settings)
         status, result_kind = apply_concentration_verdict(
@@ -3304,9 +3459,8 @@ def set_cached_chart_payload(analysis_revision: int, key: str, payload: dict[str
 def build_wash_detail(analysis: core.AnalysisResult, key: str) -> dict[str, Any]:
     cycle = find_cycle(analysis, key)
     settings = load_app_settings()
-    default_status = analysis.cycle_results_by_key.get(
-        key,
-        core.cycle_result_label_from_operations(cycle.operations),
+    default_status = resolve_cycle_default_status(
+        analysis, cycle, require_completion_step=settings["require_completion_step"]
     )
     concentration = evaluate_cycle_concentration(analysis, cycle, settings)
     status, result_kind = apply_concentration_verdict(

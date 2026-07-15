@@ -1,9 +1,11 @@
 """Тесты ограничения дискового кэша: TTL, бюджет с LRU-эвикцией и удаление
 предыдущей версии записи того же источника."""
 import os
+import sqlite3
 import time
 
 import webapp.app as app
+import wash_report as core
 
 
 def _write_entry(root, name, size, age_seconds):
@@ -188,6 +190,60 @@ def test_load_pickle_cache_rejects_tampered_entry(tmp_path):
     target.write_bytes(blob + b"tampered")
     assert app.load_pickle_cache(target) is None
     assert not target.exists()  # невалидная запись удалена
+
+
+def _make_wash_db(path):
+    connection = sqlite3.connect(str(path))
+    connection.execute(
+        "CREATE TABLE data ([time@timestamp] REAL, data_format_0, data_format_1,"
+        " data_format_2, data_format_3, data_format_4, data_format_5,"
+        " data_format_6, data_format_7)"
+    )
+    rows = [(1000.0 + i, 1.0 + i, 60.0, 65.0, 2.0, 10.0, 6, 3, 4) for i in range(6)]
+    connection.executemany("INSERT INTO data VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+    connection.commit()
+    connection.close()
+
+
+def test_workspace_samples_offloaded_and_lazy_loaded(tmp_path, monkeypatch):
+    # Сэмплы выносятся из RAM в side-файлы и подтягиваются лениво, отдавая те же
+    # точки, что и резидентный анализ.
+    monkeypatch.setattr(app, "ANALYSIS_CACHE_ROOT", tmp_path)
+    app._sample_stream_cache.clear()
+
+    db_path = tmp_path / "Canal_1_20260101.db"
+    _make_wash_db(db_path)
+    chunk = core.analyze_single_db_file(db_path)
+    cache_key = "k" * 40
+    analysis = core.build_analysis_result(
+        [db_path],
+        output_dir=tmp_path,
+        max_gap_seconds=core.DEFAULT_MAX_GAP_SECONDS,
+        chunks=[chunk],
+        analysis_cache_key=cache_key,
+    )
+    cycles = analysis.sorted_cycles
+    assert cycles, "ожидали хотя бы одну мойку"
+
+    def samples_of(a):
+        return {
+            core.make_cycle_key(c): [s.ts for s in core.analysis_samples_for_cycle(a, c)]
+            for c in a.sorted_cycles
+        }
+
+    baseline = samples_of(analysis)
+    assert sum(len(v) for v in baseline.values()) > 0
+
+    app.save_cached_workspace_analysis(cache_key, analysis, source_key="src")
+    # Сэмплы больше не в RAM, но лениво отдаются те же самые.
+    assert analysis.samples_by_db == {}
+    assert analysis.sample_loader is not None
+    assert samples_of(analysis) == baseline
+
+    # Свежая загрузка из кэша — тоже без резидентных сэмплов, доступ ленивый.
+    loaded, _skipped = app.load_cached_workspace_analysis(cache_key)
+    assert loaded.samples_by_db == {}
+    assert samples_of(loaded) == baseline
 
 
 def test_path_cache_signature_tolerates_missing_file(tmp_path):

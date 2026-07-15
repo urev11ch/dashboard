@@ -1244,9 +1244,32 @@
     return render();
   }
 
-  window.WashChart = {
-    mount,
-    hydrate: hydrateSeriesStylesFromServer,
-    setSeriesStyles,
-  };
+  if (typeof window !== "undefined") {
+    window.WashChart = {
+      mount,
+      hydrate: hydrateSeriesStylesFromServer,
+      setSeriesStyles,
+    };
+  }
+
+  // Экспорт чистых функций для unit-тестов (Node/Vitest). В браузере module
+  // не определён — эта ветка не выполняется и на рантайм не влияет.
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = {
+      clamp,
+      isValidHexColor,
+      escapeHtml,
+      sanitizeCssColor,
+      formatValue,
+      getNiceStep,
+      padRange,
+      buildAxisTicks,
+      buildTimeTicks,
+      buildPanelHeights,
+      getTickPrecision,
+      formatAxisValue,
+      findNearestPointIndex,
+      getLineStyleOption,
+    };
+  }
 })();

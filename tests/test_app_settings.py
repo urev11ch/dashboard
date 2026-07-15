@@ -21,6 +21,7 @@ def test_defaults_when_missing(tmp_path, monkeypatch):
         "concentration_eval_enabled": False,
         "concentration_norms": {"alkali": None, "acid": None},
         "concentration_tolerance_percent": 10.0,
+        "require_completion_step": False,
     }
 
 
@@ -41,6 +42,7 @@ def test_save_load_roundtrip(tmp_path, monkeypatch):
         "concentration_eval_enabled": False,
         "concentration_norms": {"alkali": None, "acid": None},
         "concentration_tolerance_percent": 10.0,
+        "require_completion_step": False,
     }
 
 

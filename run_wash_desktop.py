@@ -452,7 +452,11 @@ def load_desktop_window_url(bridge: "DesktopBridge", window: "webview.Window", s
         show_window_error(window, "Не удалось запустить локальный UI.")
         return
 
-    time.sleep(0.35)
+    # Ждём готовности рендерера (событие loaded сплэша) вместо магической паузы.
+    # Таймаут-фолбэк: если событие не пришло (нет webview-бэкенда/иная сборка) —
+    # всё равно продолжаем, как раньше делал sleep.
+    if not bridge.splash_ready.wait(3.0):
+        logging.info("Событие loaded сплэша не получено за таймаут — продолжаем")
 
     # Открываем окно по центру экрана в уменьшённом размере (не на весь экран).
     try:
@@ -624,6 +628,33 @@ class DesktopBridge:
         # Окно открывается в уменьшённом (не развёрнутом) режиме — см. center_on_open.
         # Состояние используется кастомной кнопкой «развернуть/восстановить».
         self._maximized = False
+        # Взводится по событию `loaded` сплэша (рендерер готов) — заменяет
+        # магическую паузу перед центрированием и переходом на серверный URL.
+        # Ручной Event (не авто-сброс): раннее срабатывание не теряется.
+        self.splash_ready = threading.Event()
+
+    def _on_splash_loaded(self) -> None:
+        self.splash_ready.set()
+        # Снимаем подписку после первого срабатывания: `loaded` приходит и на
+        # целевой URL, второй раз он нам не нужен.
+        window = self._window
+        if window is not None:
+            try:
+                window.events.loaded -= self._on_splash_loaded
+            except Exception:
+                pass
+
+    def watch_splash_loaded(self) -> None:
+        """Подписка на первый `loaded` (готовность рендерера сплэша). Вызывать
+        сразу после create_window, до webview.start — иначе событие можно
+        пропустить."""
+        window = self._window
+        if window is None:
+            return
+        try:
+            window.events.loaded += self._on_splash_loaded
+        except Exception:
+            logging.exception("Не удалось подписаться на событие loaded")
 
     def bind_window(self, window: webview.Window) -> None:
         self._window = window
@@ -1244,6 +1275,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         if window is not None:
             bridge.bind_window(window)
+            # Подписаться на loaded ДО webview.start, иначе событие сплэша можно
+            # пропустить (окно грузит инлайн-HTML почти мгновенно).
+            bridge.watch_splash_loaded()
 
         webview.start(
             load_desktop_window_url,

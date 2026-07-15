@@ -1,5 +1,6 @@
 """Тесты FTP-конфигурации, хранения паролей и списка объектов."""
 import ftplib
+import sys
 
 import pytest
 
@@ -50,6 +51,32 @@ def test_secret_roundtrip():
     assert app.unprotect_secret(token) == "s3cret"
     assert app.protect_secret("") == ""
     assert app.unprotect_secret("") == ""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="на Windows путь через DPAPI")
+def test_secret_roundtrip_via_keyring(monkeypatch):
+    # Эмулируем доступное системное хранилище секретов.
+    vault: dict[str, str] = {}
+
+    def fake_store(secret_id, value):
+        vault[secret_id] = value
+        return True
+
+    monkeypatch.setattr(app, "_keyring_store", fake_store)
+    monkeypatch.setattr(app, "_keyring_fetch", lambda secret_id: vault.get(secret_id, ""))
+
+    token = app.protect_secret("s3cret", secret_id="conn123")
+    assert token == "keyring:conn123"     # в токене только ссылка, не пароль
+    assert "s3cret" not in token
+    assert app.unprotect_secret(token) == "s3cret"
+
+
+def test_secret_falls_back_to_b64_without_keyring(monkeypatch):
+    # Нет системного хранилища (headless/CI) — обратимый base64-фолбэк.
+    monkeypatch.setattr(app, "_keyring_store", lambda secret_id, value: False)
+    token = app.protect_secret("s3cret", secret_id="conn123")
+    assert token.startswith("b64:") and token != "s3cret"
+    assert app.unprotect_secret(token) == "s3cret"
 
 
 def test_connection_id_is_stable_and_distinct():

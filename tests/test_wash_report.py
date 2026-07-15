@@ -110,6 +110,24 @@ def test_cycle_result_label_from_operations():
     assert core.cycle_result_label_from_operations(unfinished) == "Требует проверки"
 
 
+def test_cycle_result_label_completion_step_optional():
+    # require_completion_step=False: мойка без финального «Окончание мойки» (21)
+    # больше не понижается до «Требует проверки».
+    unfinished = [core.PROCESS_NAMES[6]]
+    assert (
+        core.cycle_result_label_from_operations(unfinished, require_completion_step=False)
+        == "Завершено штатно"
+    )
+    # Паузы всё равно учитываются даже без требования финального шага.
+    with_pause = [core.PROCESS_NAMES[6], core.PROCESS_NAMES[55]]
+    assert (
+        core.cycle_result_label_from_operations(with_pause, require_completion_step=False)
+        == "Завершено, были паузы"
+    )
+    # По умолчанию (True) поведение прежнее.
+    assert core.cycle_result_label_from_operations(unfinished) == "Требует проверки"
+
+
 def test_format_ts_handles_bad_timestamp():
     # не должно падать на «битой» метке времени
     assert core.format_ts(10**30) == "н/д"

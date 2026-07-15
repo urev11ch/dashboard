@@ -220,6 +220,18 @@ class AnalysisResult:
     sample_ranges_by_cycle_key: dict[str, tuple[int, int]]
     cycle_results_by_key: dict[str, str]
     analysis_cache_key: str = ""
+    # Ленивый загрузчик потока сэмплов по ключу потока. Если задан, а samples_by_db
+    # для потока пуст — сэмплы подтягиваются с диска по запросу (график/оценка
+    # концентрации), а не держатся все в RAM. Не сериализуется (см. __getstate__).
+    sample_loader: Callable[[str], list["Sample"]] | None = None
+
+    def __getstate__(self) -> dict[str, Any]:
+        # sample_loader — замыкание над дисковым кэшем, не пиклится.
+        return {name: getattr(self, name) for name in self.__slots__ if name != "sample_loader"}
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        for name in self.__slots__:
+            setattr(self, name, state.get(name))
 
 @dataclass(slots=True)
 class DbAnalysisChunk:
@@ -352,10 +364,18 @@ def build_cycle_result_index(
 def analysis_segments_for_cycle(analysis: AnalysisResult, cycle: Cycle) -> Sequence[Segment]:
     return analysis.segments_by_cycle_key.get(make_cycle_key(cycle), ())
 
+def stream_samples(analysis: AnalysisResult, stream_key: str) -> list[Sample]:
+    """Поток сэмплов канала: из RAM, если резидентен, иначе через ленивый
+    загрузчик (с диска). Пустой список — если ни того, ни другого нет."""
+    samples = analysis.samples_by_db.get(stream_key)
+    if samples is None and analysis.sample_loader is not None and stream_key:
+        samples = analysis.sample_loader(stream_key)
+    return samples or []
+
 def analysis_samples_for_cycle(analysis: AnalysisResult, cycle: Cycle) -> list[Sample]:
     cycle_key = make_cycle_key(cycle)
     stream_key = analysis.sample_stream_by_channel.get(cycle.channel, "")
-    samples = analysis.samples_by_db.get(stream_key, [])
+    samples = stream_samples(analysis, stream_key)
     start_index, end_index = analysis.sample_ranges_by_cycle_key.get(cycle_key, (0, 0))
     if start_index >= end_index:
         return []
@@ -937,9 +957,16 @@ def pluralize(count: int, one: str, few: str, many: str) -> str:
         return few
     return many
 
-def cycle_result_label(cycle_segments: Sequence[Segment]) -> str:
+def cycle_result_label(
+    cycle_segments: Sequence[Segment], *, require_completion_step: bool = True
+) -> str:
     has_pause = any(segment.process_id in {50, 55} for segment in cycle_segments)
-    completed = bool(cycle_segments) and cycle_segments[-1].process_id == 21
+    # require_completion_step=False: не требуем финальный «Окончание мойки» (21) —
+    # мойка без него не понижается до «Требует проверки». Тумблер в настройках.
+    completed = (
+        not require_completion_step
+        or (bool(cycle_segments) and cycle_segments[-1].process_id == 21)
+    )
     if completed and not has_pause:
         return "Завершено штатно"
     if completed and has_pause:
@@ -948,9 +975,14 @@ def cycle_result_label(cycle_segments: Sequence[Segment]) -> str:
         return "Требует проверки, были паузы"
     return "Требует проверки"
 
-def cycle_result_label_from_operations(operation_names: Sequence[str]) -> str:
+def cycle_result_label_from_operations(
+    operation_names: Sequence[str], *, require_completion_step: bool = True
+) -> str:
     has_pause = any(name in PAUSE_PROCESS_NAMES for name in operation_names)
-    completed = bool(operation_names) and operation_names[-1] == COMPLETED_PROCESS_NAME
+    completed = (
+        not require_completion_step
+        or (bool(operation_names) and operation_names[-1] == COMPLETED_PROCESS_NAME)
+    )
     if completed and not has_pause:
         return "Завершено штатно"
     if completed and has_pause:
