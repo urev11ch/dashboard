@@ -156,7 +156,7 @@
             submitForm(targetForm);
           }
         } catch (_error) {
-          window.alert("Не удалось открыть выбор папки. Попробуйте ещё раз.");
+          showToast("Не удалось открыть выбор папки. Попробуйте ещё раз.", "error");
         } finally {
           button.disabled = false;
           button.textContent = originalLabel;
@@ -370,6 +370,7 @@
         await hydrateWorkspaceData({ resetScroll: false });
         setScreenError("");
         setWorkspaceJobVisible(false);
+        showToast("Данные обновлены", "success");
       } catch (_error) {
         window.location.reload();
       }
@@ -387,6 +388,12 @@
 
     setScreenError(status.error || status.message || "");
     setWorkspaceJobVisible(false);
+
+    if (status.status === "cancelled") {
+      showToast("Обновление отменено", "info");
+    } else {
+      showToast(status.error || status.message || "Не удалось обновить данные.", "error");
+    }
   }
 
   function initWorkspaceJobStatusFeed() {
@@ -2054,8 +2061,13 @@
       if (!response?.ok && !response?.cancelled) {
         throw new Error("desktop-pdf-save-failed");
       }
+      if (response?.ok) {
+        showToast("PDF сохранён", "success");
+      } else if (response?.cancelled) {
+        showToast("Сохранение PDF отменено", "info");
+      }
     } catch (_error) {
-      window.alert("Не удалось сохранить PDF. Попробуйте ещё раз.");
+      showToast("Не удалось сохранить PDF. Попробуйте ещё раз.", "error");
     } finally {
       if (cleanupDetachedDocument) {
         clearDetachedPrintDocument();
@@ -2091,7 +2103,7 @@
       const detail = await getDetail(key);
       await saveGraphPdf(detail, button);
     } catch (_error) {
-      window.alert("Не удалось сохранить PDF. Попробуйте ещё раз.");
+      showToast("Не удалось сохранить PDF. Попробуйте ещё раз.", "error");
     }
   }
 
@@ -2458,6 +2470,7 @@
         if (autoRefreshMinutes && saved && Number.isFinite(Number(saved.ftp_auto_refresh_minutes))) {
           autoRefreshMinutes.value = Number(saved.ftp_auto_refresh_minutes);
         }
+        showToast("Настройки сохранены", "success");
       } catch (_error) {
         showToast("Не удалось сохранить настройки.", "error");
       }
@@ -2478,6 +2491,7 @@
           if (saved && typeof saved.default_folder_path === "string") {
             event.currentTarget.value = saved.default_folder_path;
           }
+          showToast("Настройки сохранены", "success");
         } catch (_error) {
           showToast("Не удалось сохранить настройки.", "error");
         }
@@ -2526,6 +2540,7 @@
         const saved = await saveChartStyles(collectChartStyleSeries());
         // Применяем к кэшу графиков, чтобы следующий открытый график сразу учёл изменения.
         window.WashChart?.setSeriesStyles?.(saved);
+        showToast("Оформление графика сохранено", "success");
       } catch (_error) {
         showToast("Не удалось сохранить оформление графика.", "error");
       }
@@ -2584,6 +2599,7 @@
         if (appState.hasWorkspace) {
           hydrateWorkspaceData({ resetScroll: false }).catch(() => {});
         }
+        showToast("Настройки сохранены", "success");
       } catch (_error) {
         showToast("Не удалось сохранить настройки.", "error");
       }
@@ -2601,6 +2617,7 @@
           if (appState.hasWorkspace) {
             hydrateWorkspaceData({ resetScroll: false }).catch(() => {});
           }
+          showToast("Настройки сохранены", "success");
         } catch (_error) {
           showToast("Не удалось сохранить настройки.", "error");
         }
@@ -2616,6 +2633,7 @@
           if (enabled) {
             checkForUpdates(true);
           }
+          showToast("Настройки сохранены", "success");
         } catch (_error) {
           showToast("Не удалось сохранить настройки.", "error");
         }
@@ -2660,6 +2678,7 @@
         if (retentionDays && saved && Number.isFinite(Number(saved.archive_retention_days))) {
           retentionDays.value = Number(saved.archive_retention_days);
         }
+        showToast("Настройки сохранены", "success");
       } catch (_error) {
         showToast("Не удалось сохранить настройки.", "error");
       }
@@ -3212,7 +3231,7 @@
         const validation = getAddObjectDialogState(addDialog);
         if (validation.blocked) {
           updateAddObjectDialogState(addDialog);
-          window.alert(validation.message);
+          showToast(validation.message, "error");
           return;
         }
 
@@ -3231,9 +3250,10 @@
             listRoot.innerHTML = renderObjectEditorRows();
           }
           closeAddObjectDialog();
+          showToast("Объект добавлен", "success");
         } catch (error) {
           updateAddObjectDialogState(addDialog);
-          window.alert(error instanceof Error ? error.message : "Не удалось добавить объект в JSON.");
+          showToast(error instanceof Error ? error.message : "Не удалось добавить объект в JSON.", "error");
         } finally {
           if (submitButton) {
             submitButton.disabled = false;
@@ -3269,8 +3289,9 @@
         if (listRoot) {
           listRoot.innerHTML = renderObjectEditorRows();
         }
+        showToast("Название сохранено", "success");
       } catch (error) {
-        window.alert(error instanceof Error ? error.message : "Не удалось сохранить название объекта.");
+        showToast(error instanceof Error ? error.message : "Не удалось сохранить название объекта.", "error");
       } finally {
         if (submitButton) {
           submitButton.disabled = false;
@@ -3321,8 +3342,9 @@
         if (listRoot) {
           listRoot.innerHTML = renderObjectEditorRows();
         }
+        showToast("Название сброшено", "success");
       } catch (error) {
-        window.alert(error instanceof Error ? error.message : "Не удалось сбросить название объекта.");
+        showToast(error instanceof Error ? error.message : "Не удалось сбросить название объекта.", "error");
       } finally {
         button.disabled = false;
         button.textContent = originalLabel;
@@ -3546,6 +3568,93 @@
     }
   }
 
+  // ---- Клавиатурная навигация ------------------------------------------------
+  function isTypingTarget(element) {
+    if (!element) {
+      return false;
+    }
+    const tag = element.tagName;
+    return (
+      tag === "INPUT" ||
+      tag === "TEXTAREA" ||
+      tag === "SELECT" ||
+      element.isContentEditable === true
+    );
+  }
+
+  function isAnyOverlayOpen() {
+    return [modalRoot, printRoot, objectEditorRoot, settingsRoot, diagnosticsRoot].some(
+      (root) => root && !root.hidden
+    );
+  }
+
+  function focusWashRowByKey(key) {
+    if (!key) {
+      return false;
+    }
+    const escaped = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(key) : key;
+    const element = washList.querySelector(`.wash-row[data-key="${escaped}"]`);
+    if (!element) {
+      return false;
+    }
+    element.focus({ preventScroll: true });
+    element.scrollIntoView({ block: "nearest" });
+    return true;
+  }
+
+  // Стрелочная навигация по списку с учётом виртуализации: если целевая строка
+  // вне отрисованного окна, сначала подвигаем scrollTop и синхронно
+  // перерисовываем окно, затем ставим фокус.
+  function moveWashSelection(delta, { fromEdge = false } = {}) {
+    const items = state.displayItems;
+    if (!items || !items.length) {
+      return false;
+    }
+    const rowIndices = [];
+    for (let i = 0; i < items.length; i += 1) {
+      if (items[i].type === "row") {
+        rowIndices.push(i);
+      }
+    }
+    if (!rowIndices.length) {
+      return false;
+    }
+
+    const active = document.activeElement;
+    const currentKey =
+      active && washList.contains(active)
+        ? active.closest("[data-key]")?.dataset.key || ""
+        : "";
+    let pos = currentKey
+      ? rowIndices.findIndex((index) => items[index].row.key === currentKey)
+      : -1;
+
+    let nextPos;
+    if (pos === -1 || fromEdge) {
+      nextPos = delta > 0 ? 0 : rowIndices.length - 1;
+    } else {
+      nextPos = Math.min(rowIndices.length - 1, Math.max(0, pos + delta));
+    }
+
+    const targetIndex = rowIndices[nextPos];
+    const targetKey = items[targetIndex].row.key;
+
+    if (isWashListVirtualized()) {
+      const offsets = state.displayOffsets;
+      const rowHeight = washListMetrics.rowHeight;
+      const viewport = washList.clientHeight;
+      const top = offsets[targetIndex] || 0;
+      if (top < washList.scrollTop) {
+        washList.scrollTop = top;
+      } else if (top + rowHeight > washList.scrollTop + viewport) {
+        washList.scrollTop = top + rowHeight - viewport;
+      }
+      renderVirtualizedWashList();
+    }
+
+    return focusWashRowByKey(targetKey);
+  }
+
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       if (!diagnosticsRoot.hidden) {
@@ -3563,6 +3672,22 @@
       if (!modalRoot.hidden) {
         closeChartModal();
       }
+      return;
+    }
+
+    // «/» — быстрый фокус в поиск (когда не печатаем в поле и нет открытых окон).
+    if (
+      event.key === "/" &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey &&
+      !isTypingTarget(event.target) &&
+      !isAnyOverlayOpen() &&
+      searchInput
+    ) {
+      event.preventDefault();
+      searchInput.focus();
+      searchInput.select();
     }
   });
   window.addEventListener("afterprint", () => {
@@ -3590,6 +3715,16 @@
     runHandler(openWashModal(row.dataset.key));
   });
   washList.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      moveWashSelection(event.key === "ArrowDown" ? 1 : -1);
+      return;
+    }
+    if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      moveWashSelection(event.key === "Home" ? 1 : -1, { fromEdge: true });
+      return;
+    }
     if (event.key !== "Enter" && event.key !== " ") {
       return;
     }
@@ -3644,6 +3779,13 @@
   // channelFilter и sortOrder — скрытые input'ы (значение меняют кнопки тулбара,
   // которые сами вызывают renderWashList): input/change они не эмитят, слушатели
   // на них никогда не срабатывали.
+  // ↓ из поиска переводит фокус на первую строку списка.
+  searchInput.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveWashSelection(1, { fromEdge: true });
+    }
+  });
   searchInput.addEventListener("input", scheduleSearchRender);
   searchInput.addEventListener("change", () => {
     // Отменяем отложенный дебаунс-рендер, чтобы не рисовать список дважды.
