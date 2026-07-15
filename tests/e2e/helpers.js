@@ -1,10 +1,10 @@
 import path from "node:path";
 
-// Гарантирует, что сервер проанализировал встроенную папку datalog и в списке
-// есть мойки. Анализ триггерим POST-ом /workspace/open, затем ждём завершения
-// джоба через /api/workspace-job.
+// Гарантирует, что сервер проанализировал папку-фикстуру с тестовыми .db и в
+// списке есть мойки. Фикстура лежит в репозитории (datalog/ в .gitignore и в CI
+// отсутствует). Анализ триггерим POST-ом /workspace/open, ждём завершения джоба.
 export async function ensureAnalysis(page) {
-  const datalog = path.resolve(process.cwd(), "datalog");
+  const fixtures = path.resolve(process.cwd(), "tests/e2e/fixtures");
   const already = await page.request.get("/api/workspace-data");
   const data = await already.json();
   if (data.has_analysis && data.summary?.cycle_count > 0) {
@@ -12,7 +12,7 @@ export async function ensureAnalysis(page) {
   }
 
   await page.request.post("/workspace/open", {
-    form: { path: datalog },
+    form: { path: fixtures },
   });
 
   for (let i = 0; i < 40; i += 1) {
