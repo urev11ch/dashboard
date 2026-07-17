@@ -80,6 +80,29 @@ Filename: "{app}\{#AppExe}"; Flags: nowait runasoriginaluser; Check: WantsRelaun
 Filename: "{app}\{#AppExe}"; Parameters: "--remove-autostart"; Flags: waituntilterminated runhidden skipifdoesntexist; RunOnceId: "RemoveAutostart"
 
 [Code]
+// Сброс кэша иконок оболочки. Путь установки и AppId у нас постоянные, поэтому
+// при обновлении поверх старой версии Проводник продолжает рисовать иконку,
+// запомненную при первой установке: ярлыки ссылаются на {app}\AppExe без
+// IconFilename, а кэш ключуется по пути и обновляется неохотно. Так у всех, кто
+// обновляется с 1.0.x, на рабочем столе оставалась прежняя иконка-капля, хотя в
+// .exe уже лежит новая. SHCNE_ASSOCCHANGED — штатный способ заставить оболочку
+// сбросить кэш иконок; файлы iconcache*.db при этом не трогаются и Проводник не
+// перезапускается.
+const
+  SHCNE_ASSOCCHANGED = $08000000;
+  SHCNF_IDLIST = $00000000;
+
+procedure SHChangeNotify(wEventId: Integer; uFlags: Cardinal; dwItem1: Cardinal; dwItem2: Cardinal);
+  external 'SHChangeNotify@shell32.dll stdcall';
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  // ssPostInstall — файлы уже скопированы и ярлыки созданы, но приложение из
+  // [Run] ещё не стартовало: оболочка перечитает иконку из нового .exe.
+  if CurStep = ssPostInstall then
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, 0, 0);
+end;
+
 // /RELAUNCH=1 передаёт только автообновление из приложения (см. [Run]).
 // При обычной ручной установке параметра нет — поведение мастера не меняется.
 function WantsRelaunch(): Boolean;
