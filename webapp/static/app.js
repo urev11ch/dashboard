@@ -2405,9 +2405,9 @@
             </section>
             <section class="settings-page" data-settings-page="updates" hidden>
               <h3 class="settings-page-title">Обновления и автозапуск</h3>
-              <label class="settings-option settings-option--disabled">
-                <span class="settings-option-text"><strong>Проверять обновления</strong><span class="settings-option-hint">Функция будет доступна позже</span></span>
-                <input type="checkbox" data-setting-check-updates disabled>
+              <label class="settings-option">
+                <span class="settings-option-text"><strong>Проверять обновления</strong><span class="settings-option-hint">Сверяет версию с последним релизом на GitHub при запуске</span></span>
+                <input type="checkbox" data-setting-check-updates ${settings.check_updates ? "checked" : ""}>
               </label>
               <label class="settings-option">
                 <span class="settings-option-text"><strong>Автозапуск с Windows</strong></span>
@@ -2936,8 +2936,13 @@
       const data = await response.json();
       if (data.update_available) {
         showToast(`Доступно обновление ${data.latest}. Смотрите GitHub Releases.`, "info", 8000);
-      } else if (notifyUpToDate && data.enabled) {
+      } else if (notifyUpToDate && data.enabled && data.latest) {
         showToast("Установлена последняя версия.", "success");
+      } else if (notifyUpToDate && data.enabled) {
+        // Пустой latest — это «не выяснили» (нет сети/релизов), а не «актуально»:
+        // бэкенд глушит ошибки запроса к GitHub и отдаёт "". Врать про
+        // актуальность нельзя — пользователь пропустит важное обновление.
+        showToast("Не удалось проверить обновления.", "info");
       }
     } catch (_error) {
       // тихо — проверка обновлений не критична

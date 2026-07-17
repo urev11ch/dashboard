@@ -3,6 +3,9 @@ name: Windows build
 on:
   push:
     branches: [main]
+    # Тег vX.Y.Z дополнительно публикует GitHub Release — его читает проверка
+    # обновлений в приложении (GET /api/update-check → releases/latest).
+    tags: ["v*"]
   workflow_dispatch: {}
 
 permissions:
@@ -11,6 +14,10 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    permissions:
+      # Нужно шагу «Publish GitHub Release» (gh release create). На сборках из
+      # main право не используется, но задаётся на job целиком.
+      contents: write
     env:
       # true, если в репозитории заданы секреты для подписи кода
       HAS_SIGNING: ${{ secrets.WINDOWS_PFX_BASE64 != '' }}
@@ -48,6 +55,20 @@ jobs:
           $version = python -c "import webapp; print(webapp.__version__)"
           "value=$version" >> $env:GITHUB_OUTPUT
 
+      - name: Verify tag matches app version
+        # Fail fast до сборки: иначе релиз v1.2.0 мог бы уехать с бинарником
+        # 1.1.0, и проверка обновлений у клиентов зациклилась бы на «доступно
+        # обновление» — установили, а версия та же.
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          $tag = "${{ github.ref_name }}" -replace '^v', ''
+          $version = "${{ steps.app_version.outputs.value }}"
+          if ($tag -ne $version) {
+            Write-Error "Тег $tag не совпадает с webapp/__init__.py ($version). Обновите __version__ или тег."
+            exit 1
+          }
+          Write-Host "Тег $tag совпадает с версией приложения."
+
       - name: Build executable
         run: pyinstaller --noconfirm OptiCIP-Dashboard.spec
 
@@ -82,3 +103,18 @@ jobs:
             dist/OptiCIP-Dashboard.exe
             installer_out/OptiCIP-Dashboard-Setup.exe
           if-no-files-found: error
+
+      - name: Publish GitHub Release
+        # Публикуем СРАЗУ боевым релизом (без --draft/--prerelease): приложение
+        # читает releases/latest, а тот пропускает и черновики, и пре-релизы —
+        # иначе релиз выйдет, но клиенты его не увидят.
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" `
+            "installer_out/OptiCIP-Dashboard-Setup.exe" `
+            "dist/OptiCIP-Dashboard.exe" `
+            --repo "${{ github.repository }}" `
+            --title "OptiCIP Dashboard ${{ steps.app_version.outputs.value }}" `
+            --generate-notes

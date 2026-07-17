@@ -1772,10 +1772,6 @@ body.desktop-shell .object-editor-panel {
   margin-top: 4px;
 }
 
-.settings-option--disabled {
-  opacity: 0.55;
-}
-
 @media (max-width: 720px) {
   .settings-macos {
     grid-template-columns: 1fr;
