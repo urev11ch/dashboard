@@ -6,6 +6,8 @@
 """
 import wash_report as core
 
+from webapp import app
+
 
 def _sample(ts: float, process_id: int, conc: float | None):
     return core.Sample(
@@ -102,3 +104,26 @@ def test_phase_without_data_is_unknown():
     samples = [_sample(0.0, ALKALI, None), _sample(1.0, ALKALI, None)]
     result = core.evaluate_concentration(samples, {"alkali": 2.0}, 0.0)
     assert result["kind"] is None
+
+
+def test_unavailable_samples_never_pass_as_completed():
+    """Недоступные сэмплы не должны выдавать мойку за успешную.
+
+    Раньше пропавший side-файл молча давал [], evaluate_concentration отвечала
+    kind=None, и мойка с концентрацией ниже нормы показывалась «Завершено
+    штатно» — тихая потеря брака. Вердикт обязан показать, что данных не было.
+    """
+    label, kind = app.apply_concentration_verdict(
+        "Завершено штатно", None, {"phases": [], "kind": "unavailable"}
+    )
+    assert kind == "check"
+    assert label == core.CONCENTRATION_UNAVAILABLE_LABEL
+
+
+def test_unavailable_samples_do_not_overwrite_existing_check_reason():
+    # Мойка и так требовала проверки — её причину не затираем (как и для "low").
+    label, kind = app.apply_concentration_verdict(
+        "Требует проверки", None, {"phases": [], "kind": "unavailable"}
+    )
+    assert kind == "check"
+    assert label == "Требует проверки"

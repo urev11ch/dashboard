@@ -191,10 +191,11 @@ _RESULT_CATEGORY_BY_DEFAULT = {
     "Требует проверки": "check",
     "Требует проверки, были паузы": "check",
 }
-# CONCENTRATION_LOW_LABEL намеренно НЕ в маппинге: это самостоятельная подпись,
-# которую apply_concentration_verdict показывает как есть (а категорию check
-# выставляет явно). В маппинге пустой result_labels свёл бы её к «Требует
-# проверки», и причина (концентрация) потерялась бы.
+# CONCENTRATION_LOW_LABEL и CONCENTRATION_UNAVAILABLE_LABEL намеренно НЕ в
+# маппинге: это самостоятельные подписи, которые apply_concentration_verdict
+# показывает как есть (а категорию check выставляет явно). В маппинге пустой
+# result_labels свёл бы их к «Требует проверки», и причина (концентрация ниже
+# нормы либо отсутствие данных) потерялась бы.
 # Идентификаторы стилей линий должны совпадать с LINE_STYLE_OPTIONS в wash-chart.js.
 CHART_LINE_STYLE_IDS = frozenset({"solid", "dashed", "dashdot", "dotted", "longdash"})
 CHART_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -1966,11 +1967,24 @@ def evaluate_cycle_concentration(
 
     None означает «функция выключена, нормативы не заданы или в мойке нет
     оцениваемых фаз» — в этом случае вердикт и payload остаются как раньше.
+
+    kind="unavailable" — отдельный случай: сэмплы мойки прочитать не удалось.
+    Возвращать здесь None нельзя, иначе мойка с концентрацией ниже нормы молча
+    показалась бы завершённой штатно (см. SampleStreamUnavailable).
     """
     if not settings.get("concentration_eval_enabled"):
         return None
+    try:
+        samples = core.analysis_samples_for_cycle(analysis, cycle)
+    except core.SampleStreamUnavailable:
+        logging.warning(
+            "Сэмплы мойки недоступны, концентрация не оценена: канал=%s, ключ=%s",
+            cycle.channel,
+            core.make_cycle_key(cycle),
+        )
+        return {"phases": [], "kind": "unavailable"}
     result = core.evaluate_concentration(
-        core.analysis_samples_for_cycle(analysis, cycle),
+        samples,
         settings.get("concentration_norms") or {},
         settings.get("concentration_tolerance_percent") or 0.0,
     )
@@ -1987,13 +2001,22 @@ def apply_concentration_verdict(
     Концентрация ниже нормы делает мойку «требующей проверки». Если базовый вердикт
     был «завершено», подпись меняется на «Концентрация ниже нормы» (чтобы причина
     была видна); если мойка и так требовала проверки — её текст не затираем.
+
+    Недоступные сэмплы ("unavailable") дают ту же категорию «требует проверки»:
+    оценка не выполнена, и выдавать это за успешную мойку нельзя — оператор должен
+    увидеть, что вердикт не подтверждён данными, а не поверить в тишину.
     """
     result_kind = resolve_result_kind(default_status)
     effective_status = default_status
-    if concentration is not None and concentration.get("kind") == "low":
+    kind = concentration.get("kind") if concentration is not None else None
+    if kind in ("low", "unavailable"):
         result_kind = "check"
         if resolve_result_kind(default_status) == "completed":
-            effective_status = core.CONCENTRATION_LOW_LABEL
+            effective_status = (
+                core.CONCENTRATION_LOW_LABEL
+                if kind == "low"
+                else core.CONCENTRATION_UNAVAILABLE_LABEL
+            )
     return resolve_result_label(effective_status, result_labels), result_kind
 
 
@@ -2679,9 +2702,19 @@ def save_cached_db_analysis(db_path: Path, chunk: core.DbAnalysisChunk) -> None:
 # Сэмплы одного анализа лежат по одному side-файлу на поток (канал). Префикс
 # включает ключ анализа — чтобы находить и чистить их вместе с workspace-пиклом.
 WS_SAMPLES_KEY_PREFIX_LEN = 16
-# Сколько потоков сэмплов держать загруженными в процессе (LRU): график читает
-# по одному потоку на канал, каналов обычно единицы — этого хватает без роста RAM.
-SAMPLE_STREAM_LRU_LIMIT = 4
+# Сколько потоков сэмплов держать загруженными в процессе (LRU).
+#
+# Лимит обязан покрывать число каналов источника. Сборка строк идёт по мойкам в
+# порядке ВРЕМЕНИ (sorted_cycles), то есть каналы чередуются, и любой лимит меньше
+# числа каналов вытесняется на каждом шаге: N моек → N полных чтений
+# многомегабайтного пикла с диска. С прежним значением 4 источник на пяти-шести
+# каналах ронял /api/workspace-data в минуты, причём каждые пять минут заново —
+# FTP-автообновление меняет ревизию и инвалидирует кэш строк.
+#
+# 12 — компромисс: покрывает реальные источники с запасом, но не даёт кэшу расти
+# бесконечно (потоки многомегабайтные). Источник с бо́льшим числом каналов снова
+# начнёт вытеснять — такие редки, и дешевле перечитать, чем держать всё в RAM.
+SAMPLE_STREAM_LRU_LIMIT = 12
 _sample_stream_cache: "OrderedDict[tuple[str, str], list[core.Sample]]" = OrderedDict()
 _sample_stream_cache_lock = threading.Lock()
 
@@ -2695,7 +2728,10 @@ def ws_samples_path(cache_key: str, stream_key: str) -> Path:
 def make_sample_loader(cache_key: str) -> Callable[[str], list[core.Sample]]:
     """Ленивый загрузчик потока сэмплов с диска с LRU-кэшем в процессе. Позволяет
     держать в RAM метаданные анализа без всех сэмплов — они читаются по запросу
-    графика/оценки концентрации. Отсутствие файла (эвикция/повреждение) → []."""
+    графика/оценки концентрации (о размере кэша см. SAMPLE_STREAM_LRU_LIMIT).
+
+    Отсутствие или порча файла — не пустой поток: загрузчик бросает
+    SampleStreamUnavailable, см. комментарий у самого исключения."""
     def loader(stream_key: str) -> list[core.Sample]:
         if not stream_key:
             return []
@@ -2707,11 +2743,21 @@ def make_sample_loader(cache_key: str) -> Callable[[str], list[core.Sample]]:
                 return cached
 
         path = ws_samples_path(cache_key, stream_key)
+        # Чтение и unpickle — вне analysis_cache_lock: он глобальный, его же берут
+        # фоновый анализ (save_cached_workspace_analysis) и чистка кэша, а распаковка
+        # десятков мегабайт под ним заставляла их ждать друг друга. Под локом
+        # оставляем только учёт обращения.
+        payload = load_pickle_cache(path)
+        if not isinstance(payload, list):
+            # None — файла нет или подпись не сошлась; не-список — формат побился.
+            # Отрицательный результат НЕ кэшируем: файл может появиться снова
+            # (переанализ), а закэшированная пустота пережила бы его.
+            raise core.SampleStreamUnavailable(
+                f"поток сэмплов недоступен: {path.name}"
+            )
         with analysis_cache_lock:
-            payload = load_pickle_cache(path)
-            if payload is not None:
-                touch_cache_entry(path)
-        samples = payload if isinstance(payload, list) else []
+            touch_cache_entry(path)
+        samples = payload
 
         with _sample_stream_cache_lock:
             _sample_stream_cache[cache_id] = samples

@@ -111,7 +111,15 @@ def build_cycle_chart_payload(
     analysis: core.AnalysisResult,
     cycle: core.Cycle,
 ) -> dict[str, Any]:
-    cycle_samples = core.analysis_samples_for_cycle(analysis, cycle)
+    try:
+        cycle_samples = core.analysis_samples_for_cycle(analysis, cycle)
+    except core.SampleStreamUnavailable:
+        # Для графика недоступный поток равен пустому: ниже он и так отдаёт
+        # has_data=False, и пользователь видит «нет данных» — то есть отсутствие
+        # данных здесь честно видно на экране. Ронять окно мойки 500-й незачем.
+        # В вердикте мойки этот же случай, наоборот, обязан быть заметен — там он
+        # переводит мойку в «требует проверки» (см. evaluate_cycle_concentration).
+        cycle_samples = []
     cycle_segments = core.analysis_segments_for_cycle(analysis, cycle)
 
     if not cycle_samples:

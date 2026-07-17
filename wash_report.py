@@ -93,6 +93,8 @@ ALKALI_PROCESS_ID = 6   # «Мойка щелочью»
 ACID_PROCESS_ID = 10    # «Мойка кислотой»
 # Стандартная строка вердикта, когда концентрация раствора ниже норматива.
 CONCENTRATION_LOW_LABEL = "Концентрация ниже нормы"
+# Вердикт, когда сэмплы мойки прочитать не удалось и оценивать нечем.
+CONCENTRATION_UNAVAILABLE_LABEL = "Нет данных для оценки"
 
 # Порядок и подписи оцениваемых фаз (для payload и UI).
 CONCENTRATION_PHASES = (
@@ -102,6 +104,19 @@ CONCENTRATION_PHASES = (
 
 class AnalysisCancelledError(RuntimeError):
     pass
+
+
+class SampleStreamUnavailable(RuntimeError):
+    """Поток сэмплов канала не удалось прочитать: side-файл вытеснен из дискового
+    кэша по бюджету, побился или не имеет валидной HMAC-подписи.
+
+    Отдельный тип нужен, чтобы отличать это от «поток пуст». Пустой поток —
+    законный результат (в мойке нет оцениваемых фаз), а недоступный означает, что
+    судить о мойке НЕ ПО ЧЕМУ. Раньше загрузчик в обоих случаях возвращал [], и
+    оценка концентрации на пустых сэмплах давала kind=None → вердикт оставался
+    базовым: мойка с концентрацией ниже нормы показывалась как «Завершено
+    штатно». Для журнала моек это тихая потеря брака, поэтому теперь загрузчик
+    бросает, а вызывающий обязан решить, что делать."""
 
 @dataclass(slots=True)
 class Sample:
@@ -366,7 +381,11 @@ def analysis_segments_for_cycle(analysis: AnalysisResult, cycle: Cycle) -> Seque
 
 def stream_samples(analysis: AnalysisResult, stream_key: str) -> list[Sample]:
     """Поток сэмплов канала: из RAM, если резидентен, иначе через ленивый
-    загрузчик (с диска). Пустой список — если ни того, ни другого нет."""
+    загрузчик (с диска). Пустой список — если потока нет ни там, ни там.
+
+    Загрузчик может бросить SampleStreamUnavailable (файл вытеснен/побился) —
+    исключение намеренно пробрасывается: подменить его пустым списком значит
+    выдать «данных нет» за «оценивать нечего»."""
     samples = analysis.samples_by_db.get(stream_key)
     if samples is None and analysis.sample_loader is not None and stream_key:
         samples = analysis.sample_loader(stream_key)
