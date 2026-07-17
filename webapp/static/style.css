@@ -1,20 +1,11 @@
 :root {
-  color-scheme: light;
-
-  /* Базовые триплеты (R G B) — из них через rgb(var(--x) / a) собираются все
-     полупрозрачные поверхности, линии и акцентные заливки. Тему меняем,
-     переопределяя эти триплеты и сплошные цвета ниже (см. блок dark). */
-  --surface: 255 255 255;      /* поверхности панелей/полей */
-  --ink: 40 58 96;             /* «чернила»: границы, разделители, ховер-заливки */
-  --accent-rgb: 23 87 255;     /* акцент для полупрозрачных заливок */
-
   --bg: #f5f7fb;
-  --panel: rgb(var(--surface) / 0.94);
-  --panel-strong: rgb(var(--surface) / 1);
+  --panel: rgba(255, 255, 255, 0.94);
+  --panel-strong: #ffffff;
   --panel-soft: #f1f5fb;
   --text: #1a2430;
   --muted: #6a7686;
-  --line: rgb(var(--ink) / 0.12);
+  --line: rgba(40, 58, 96, 0.12);
   --accent: #1757ff;
   --accent-strong: #0f46d2;
   --warn: #c2432f;
@@ -28,60 +19,6 @@
   --radius-tag: 3px;
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
   --font-mono: "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace;
-}
-
-/* ---- Тёмная тема ---------------------------------------------------------
-   По умолчанию следуем системной настройке ОС; переключатель в шапке ставит
-   на <html> data-theme="dark|light" и перебивает системное значение в любую
-   сторону. Правила ниже переопределяют только цветовые токены — вся геометрия
-   и компоненты остаются прежними, т.к. используют var(). */
-:root[data-theme="dark"],
-:root.theme-dark {
-  color-scheme: dark;
-  --surface: 26 33 48;         /* тёмная база панелей */
-  --ink: 176 196 232;          /* границы/разделители становятся светлыми */
-  --accent-rgb: 84 138 255;
-
-  --bg: #0e1420;
-  --panel: rgb(20 27 40 / 0.94);
-  --panel-strong: #1a2233;
-  --panel-soft: #141c2a;
-  --text: #e6ecf5;
-  --muted: #93a1b5;
-  --line: rgb(var(--ink) / 0.16);
-  --accent: #4f88ff;
-  --accent-strong: #6ea0ff;
-  --warn: #f0664f;
-  --shadow: 0 16px 32px rgba(0, 0, 0, 0.45);
-  --success-bg: #17301f;
-  --success-text: #6ee39a;
-  --warn-bg: #3a1c17;
-  --tag-bg: rgb(var(--accent-rgb) / 0.16);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]):not(.theme-light) {
-    color-scheme: dark;
-    --surface: 26 33 48;
-    --ink: 176 196 232;
-    --accent-rgb: 84 138 255;
-
-    --bg: #0e1420;
-    --panel: rgb(20 27 40 / 0.94);
-    --panel-strong: #1a2233;
-    --panel-soft: #141c2a;
-    --text: #e6ecf5;
-    --muted: #93a1b5;
-    --line: rgb(var(--ink) / 0.16);
-    --accent: #4f88ff;
-    --accent-strong: #6ea0ff;
-    --warn: #f0664f;
-    --shadow: 0 16px 32px rgba(0, 0, 0, 0.45);
-    --success-bg: #17301f;
-    --success-text: #6ee39a;
-    --warn-bg: #3a1c17;
-    --tag-bg: rgb(var(--accent-rgb) / 0.16);
-  }
 }
 
 * {
@@ -115,9 +52,9 @@ body {
   font-family: var(--font-sans);
   background-color: var(--bg);
   background-image:
-    linear-gradient(rgb(var(--accent-rgb) / 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgb(var(--accent-rgb) / 0.035) 1px, transparent 1px),
-    radial-gradient(circle at top left, rgb(var(--surface) / 0.9), rgb(var(--surface) / 0.92));
+    linear-gradient(rgba(23, 87, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(23, 87, 255, 0.035) 1px, transparent 1px),
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.9), rgba(245, 247, 251, 0.92));
   background-size: 24px 24px, 24px 24px, 100% 100%;
 }
 
@@ -206,7 +143,7 @@ body.desktop-shell .app-titlebar {
 }
 
 .app-titlebar-button:hover {
-  background: rgb(var(--ink) / 0.08);
+  background: rgba(40, 58, 96, 0.08);
   color: var(--text);
 }
 
@@ -259,7 +196,7 @@ button:hover {
 }
 
 button.ghost {
-  background: rgb(var(--surface) / 0.92);
+  background: rgba(255, 255, 255, 0.92);
   color: var(--text);
   border: 1px solid var(--line);
   box-shadow: none;
@@ -269,13 +206,13 @@ button.ghost {
    button.ghost перебивал button:hover по специфичности, и ghost-кнопки
    (шапка, пресеты периода, редактор и т. п.) не реагировали на наведение. */
 button.ghost:hover {
-  background: rgb(var(--accent-rgb) / 0.1);
+  background: rgba(23, 87, 255, 0.1);
   border-color: var(--accent);
   color: var(--accent);
 }
 
 button.ghost:hover:disabled {
-  background: rgb(var(--surface) / 0.92);
+  background: rgba(255, 255, 255, 0.92);
   border-color: var(--line);
   color: var(--text);
 }
@@ -286,7 +223,7 @@ textarea {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
-  background: rgb(var(--surface) / 0.96);
+  background: rgba(255, 255, 255, 0.96);
   padding: 14px 16px;
   color: var(--text);
   font-size: 14px;
@@ -296,13 +233,13 @@ input:focus,
 select:focus,
 textarea:focus {
   outline: none;
-  border-color: rgb(var(--accent-rgb) / 0.38);
-  box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / 0.08);
+  border-color: rgba(23, 87, 255, 0.38);
+  box-shadow: 0 0 0 3px rgba(23, 87, 255, 0.08);
 }
 
 code {
   font-size: 0.95em;
-  background: rgb(var(--accent-rgb) / 0.08);
+  background: rgba(23, 87, 255, 0.08);
   border-radius: var(--radius-tag);
   padding: 2px 6px;
 }
@@ -323,11 +260,10 @@ code {
 }
 
 .welcome-card {
-  position: relative;
   width: min(920px, 100%);
   background: var(--panel);
   backdrop-filter: blur(14px);
-  border: 1px solid rgb(var(--ink) / 0.1);
+  border: 1px solid rgba(40, 58, 96, 0.1);
   border-radius: var(--radius-panel);
   padding: 40px;
   box-shadow: var(--shadow);
@@ -412,9 +348,9 @@ code {
 
 .welcome-source-panel--primary {
   background:
-    linear-gradient(135deg, rgb(var(--accent-rgb) / 0.06), rgb(var(--surface) / 0.92)),
+    linear-gradient(135deg, rgba(23, 87, 255, 0.06), rgba(255, 255, 255, 0.92)),
     var(--panel-soft);
-  border-color: rgb(var(--accent-rgb) / 0.18);
+  border-color: rgba(23, 87, 255, 0.18);
 }
 
 .welcome-source-title {
@@ -445,10 +381,10 @@ code {
   display: grid;
   gap: 16px;
   padding: 18px;
-  border: 1px solid rgb(var(--accent-rgb) / 0.12);
+  border: 1px solid rgba(23, 87, 255, 0.12);
   border-radius: calc(var(--radius-panel) + 2px);
   background:
-    linear-gradient(180deg, rgb(var(--surface) / 0.98), rgb(var(--surface) / 0.94));
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(245, 248, 255, 0.94));
 }
 
 .folder-form--ftp .welcome-form-grid {
@@ -466,8 +402,8 @@ code {
   gap: 6px;
   padding: 12px 14px;
   border-radius: calc(var(--radius-control) + 2px);
-  background: rgb(var(--accent-rgb) / 0.06);
-  border: 1px solid rgb(var(--accent-rgb) / 0.12);
+  background: rgba(23, 87, 255, 0.06);
+  border: 1px solid rgba(23, 87, 255, 0.12);
 }
 
 .welcome-ftp-hint strong {
@@ -503,14 +439,14 @@ code {
 }
 
 .welcome-advanced-panel {
-  border: 1px dashed rgb(var(--ink) / 0.18);
+  border: 1px dashed rgba(40, 58, 96, 0.18);
   border-radius: calc(var(--radius-control) + 2px);
-  background: rgb(var(--surface) / 0.72);
+  background: rgba(255, 255, 255, 0.72);
 }
 
 .welcome-advanced-panel[open] {
   border-style: solid;
-  background: rgb(var(--surface) / 0.92);
+  background: rgba(255, 255, 255, 0.92);
 }
 
 .welcome-advanced-toggle-button {
@@ -540,7 +476,7 @@ code {
   display: inline-grid;
   place-items: center;
   border-radius: 999px;
-  background: rgb(var(--accent-rgb) / 0.08);
+  background: rgba(23, 87, 255, 0.08);
   color: var(--accent);
   font-size: 15px;
   font-weight: 800;
@@ -707,32 +643,8 @@ code {
 }
 
 .screen-settings-button:hover {
-  border-color: rgb(var(--accent-rgb) / 0.3);
+  border-color: rgba(23, 87, 255, 0.3);
   color: var(--accent);
-}
-
-/* Переключатель темы: иконки контурные (stroke), а не заливка. */
-.theme-toggle .theme-toggle-icon {
-  width: 18px;
-  height: 18px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.theme-toggle--welcome {
-  position: absolute;
-  top: 18px;
-  right: 18px;
-  width: 40px;
-  min-width: 40px;
-  height: 40px;
-  padding: 0;
-  display: inline-grid;
-  place-items: center;
-  z-index: 1;
 }
 
 .screen-stats {
@@ -750,7 +662,7 @@ code {
   padding: 18px;
   border-radius: var(--radius-panel);
   background: var(--panel);
-  border: 1px solid rgb(var(--ink) / 0.1);
+  border: 1px solid rgba(40, 58, 96, 0.1);
   box-shadow: var(--shadow);
   overflow: hidden;
 }
@@ -761,7 +673,7 @@ code {
   position: absolute;
   inset: 0 0 auto 0;
   height: 2px;
-  background: linear-gradient(90deg, var(--accent) 0 18%, rgb(var(--accent-rgb) / 0.08) 18% 100%);
+  background: linear-gradient(90deg, var(--accent) 0 18%, rgba(23, 87, 255, 0.08) 18% 100%);
 }
 
 .toolbar-field {
@@ -824,8 +736,8 @@ code {
   height: 46px;
   padding: 0;
   border-radius: 12px;
-  border: 1px solid rgb(var(--ink) / 0.14);
-  background: rgb(var(--surface) / 0.98);
+  border: 1px solid rgba(40, 58, 96, 0.14);
+  background: rgba(255, 255, 255, 0.98);
   color: var(--text);
   cursor: pointer;
   transition: background 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease;
@@ -839,8 +751,8 @@ code {
 }
 
 .toolbar-calendar-button:hover {
-  background: rgb(var(--accent-rgb) / 0.08);
-  border-color: rgb(var(--accent-rgb) / 0.3);
+  background: rgba(23, 87, 255, 0.08);
+  border-color: rgba(23, 87, 255, 0.3);
 }
 
 .toolbar-calendar-button.is-active {
@@ -917,8 +829,8 @@ code {
   min-width: 0;
   padding: 0 10px;
   border-radius: 12px;
-  border: 1px solid rgb(var(--ink) / 0.14);
-  background: rgb(var(--surface) / 0.98);
+  border: 1px solid rgba(40, 58, 96, 0.14);
+  background: rgba(255, 255, 255, 0.98);
   color: var(--text);
   font-size: 11px;
   font-weight: 700;
@@ -928,8 +840,8 @@ code {
 
 .toolbar-channel-option:hover,
 .toolbar-sort-option:hover {
-  background: rgb(var(--accent-rgb) / 0.08);
-  border-color: rgb(var(--accent-rgb) / 0.3);
+  background: rgba(23, 87, 255, 0.08);
+  border-color: rgba(23, 87, 255, 0.3);
   color: var(--text);
 }
 
@@ -984,7 +896,7 @@ code {
   min-height: 34px;
   padding: 8px 12px;
   border-radius: var(--radius-control);
-  background: rgb(var(--surface) / 0.92);
+  background: rgba(255, 255, 255, 0.92);
   border: 1px solid var(--line);
   font-family: var(--font-mono);
   font-size: 11px;
@@ -1001,7 +913,7 @@ code {
 .wash-list-panel,
 .plot-card {
   background: var(--panel);
-  border: 1px solid rgb(var(--ink) / 0.1);
+  border: 1px solid rgba(40, 58, 96, 0.1);
   box-shadow: var(--shadow);
 }
 
@@ -1061,7 +973,7 @@ code {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted);
-  background: rgb(var(--accent-rgb) / 0.04);
+  background: rgba(23, 87, 255, 0.04);
   border-bottom: 1px solid var(--line);
 }
 
@@ -1092,7 +1004,7 @@ code {
   height: 69px;
   padding: 10px 16px;
   border-bottom: 1px solid var(--line);
-  background: rgb(var(--surface) / 0.88);
+  background: rgba(255, 255, 255, 0.88);
   transition: background-color 140ms ease, box-shadow 140ms ease;
   border-radius: 0;
   border-left: 0;
@@ -1110,14 +1022,14 @@ code {
 }
 
 .wash-row:hover {
-  background: rgb(var(--accent-rgb) / 0.05);
+  background: rgba(23, 87, 255, 0.05);
   color: var(--text);
   box-shadow: inset 3px 0 0 var(--accent);
   transform: none;
 }
 
 .wash-row:focus-visible {
-  outline: 2px solid rgb(var(--accent-rgb) / 0.38);
+  outline: 2px solid rgba(23, 87, 255, 0.38);
   outline-offset: -2px;
 }
 
@@ -1164,8 +1076,8 @@ body.wash-result-hidden [data-wash-result-row] {
   margin-left: auto;
   padding: 0;
   border-radius: var(--radius-control);
-  border-color: rgb(var(--accent-rgb) / 0.28);
-  background: rgb(var(--accent-rgb) / 0.08);
+  border-color: rgba(23, 87, 255, 0.28);
+  background: rgba(23, 87, 255, 0.08);
   color: var(--accent);
   font-family: var(--font-mono);
   font-size: 11px;
@@ -1195,7 +1107,7 @@ body.wash-result-hidden [data-wash-result-row] {
   min-height: 24px;
   padding: 3px 8px;
   border-radius: var(--radius-tag);
-  border: 1px solid rgb(var(--ink) / 0.08);
+  border: 1px solid rgba(40, 58, 96, 0.08);
   background: var(--tag-bg);
   font-size: 11px;
   font-weight: 600;
@@ -1213,14 +1125,14 @@ body.wash-result-hidden [data-wash-result-row] {
   padding: 14px 16px;
   text-align: left;
   border-radius: var(--radius-panel);
-  background: rgb(var(--surface) / 0.72);
+  background: rgba(255, 255, 255, 0.72);
   color: var(--text);
   box-shadow: none;
 }
 
 .wash-entry:hover,
 .wash-entry.active {
-  background: rgb(var(--accent-rgb) / 0.08);
+  background: rgba(23, 87, 255, 0.08);
   color: var(--text);
 }
 
@@ -1384,7 +1296,7 @@ body.wash-result-hidden [data-wash-result-row] {
   margin-top: 18px;
   border-radius: var(--radius-panel);
   overflow: hidden;
-  background: var(--panel-strong);
+  background: #ffffff;
   min-height: 620px;
   border: 1px solid var(--line);
   position: relative;
@@ -1402,7 +1314,7 @@ body.wash-result-hidden [data-wash-result-row] {
 .chart-host {
   position: relative;
   padding: 12px;
-  background: var(--panel-strong);
+  background: #ffffff;
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto auto;
   align-items: stretch;
@@ -1513,8 +1425,8 @@ body.wash-result-hidden [data-wash-result-row] {
   min-width: 0;
   padding: 10px 12px;
   border-radius: 12px;
-  background: rgb(var(--surface) / 0.92);
-  border: 1px solid rgb(var(--ink) / 0.1);
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(40, 58, 96, 0.1);
   border-left: 3px solid var(--wash-chart-series-color, var(--accent));
   transition: border-color 140ms ease;
 }
@@ -1557,8 +1469,8 @@ body.wash-result-hidden [data-wash-result-row] {
   align-items: center;
   min-height: 34px;
   border-radius: 10px;
-  border: 1px solid rgb(var(--ink) / 0.12);
-  background: rgb(var(--surface) / 0.9);
+  border: 1px solid rgba(40, 58, 96, 0.12);
+  background: rgba(255, 255, 255, 0.9);
   transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 
@@ -1610,13 +1522,13 @@ body.wash-result-hidden [data-wash-result-row] {
 
 .wash-chart-color-input-shell:hover,
 .wash-chart-select-shell:hover {
-  border-color: rgb(var(--accent-rgb) / 0.24);
+  border-color: rgba(23, 87, 255, 0.24);
 }
 
 .wash-chart-color-input-shell:focus-within,
 .wash-chart-select-shell:focus-within {
-  border-color: rgb(var(--accent-rgb) / 0.34);
-  box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / 0.08);
+  border-color: rgba(23, 87, 255, 0.34);
+  box-shadow: 0 0 0 3px rgba(23, 87, 255, 0.08);
 }
 
 .wash-chart-color-input-shell input[type="color"]:focus,
@@ -1717,8 +1629,8 @@ body.desktop-shell .object-editor-panel {
   margin: 0;
   padding: 18px;
   border-radius: var(--radius-panel);
-  background: rgb(var(--surface) / 0.98);
-  border: 1px solid rgb(var(--ink) / 0.12);
+  background: rgba(247, 249, 252, 0.98);
+  border: 1px solid rgba(40, 58, 96, 0.12);
   box-shadow: var(--shadow);
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
@@ -1793,7 +1705,7 @@ body.desktop-shell .object-editor-panel {
 }
 
 .settings-nav-item:hover {
-  background: rgb(var(--accent-rgb) / 0.1);
+  background: rgba(23, 87, 255, 0.1);
   color: var(--accent);
 }
 
@@ -1950,7 +1862,7 @@ body.desktop-shell .object-editor-panel {
   width: 34px;
   height: 34px;
   border-radius: 10px;
-  background: rgb(var(--accent-rgb) / 0.09);
+  background: rgba(23, 87, 255, 0.09);
   color: var(--accent);
   flex: none;
 }
@@ -1973,7 +1885,7 @@ body.desktop-shell .object-editor-panel {
 .settings-section {
   border: 1px solid var(--line);
   border-radius: var(--radius-panel);
-  background: rgb(var(--surface) / 0.6);
+  background: rgba(255, 255, 255, 0.6);
   overflow: hidden;
 }
 
@@ -2013,7 +1925,7 @@ body.desktop-shell .object-editor-panel {
 }
 
 .settings-section-title:hover {
-  background: rgb(var(--accent-rgb) / 0.04);
+  background: rgba(23, 87, 255, 0.04);
 }
 
 .settings-section-body {
@@ -2132,7 +2044,7 @@ body.desktop-shell .object-editor-panel {
   padding: 0;
   border: 0;
   border-radius: 999px;
-  background: rgb(var(--ink) / 0.2);
+  background: rgba(40, 58, 96, 0.2);
   position: relative;
   cursor: pointer;
   transition: background-color 140ms ease;
@@ -2146,7 +2058,7 @@ body.desktop-shell .object-editor-panel {
   width: 16px;
   height: 16px;
   border-radius: 999px;
-  background: var(--panel-strong);
+  background: #fff;
   box-shadow: 0 1px 3px rgba(18, 28, 45, 0.28);
   transition: transform 140ms ease;
 }
@@ -2160,7 +2072,7 @@ body.desktop-shell .object-editor-panel {
 }
 
 .settings-option input[type="checkbox"]:focus-visible {
-  outline: 2px solid rgb(var(--accent-rgb) / 0.4);
+  outline: 2px solid rgba(23, 87, 255, 0.4);
   outline-offset: 2px;
 }
 
@@ -2200,8 +2112,8 @@ body.desktop-shell .object-editor-panel {
   align-items: center;
   padding: 8px 10px;
   border-radius: 14px;
-  background: rgb(var(--surface) / 0.92);
-  border: 1px solid rgb(var(--ink) / 0.1);
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(40, 58, 96, 0.1);
 }
 
 .object-editor-row-meta {
@@ -2223,7 +2135,7 @@ body.desktop-shell .object-editor-panel {
   min-height: 26px;
   padding: 0 8px;
   border-radius: 999px;
-  background: rgb(var(--ink) / 0.06);
+  background: rgba(40, 58, 96, 0.06);
   color: var(--text);
   font-family: var(--font-mono);
   font-size: 10px;
@@ -2357,13 +2269,13 @@ body.desktop-shell .object-editor-panel {
   overflow: auto;
   padding: 16px;
   border-radius: 18px;
-  background: var(--panel-strong);
-  border: 1px solid rgb(var(--ink) / 0.1);
+  background: #ffffff;
+  border: 1px solid rgba(40, 58, 96, 0.1);
   box-shadow: 0 24px 60px rgba(24, 36, 48, 0.18);
 }
 
 .object-editor-create-panel[data-state="neutral"] {
-  border-color: rgb(var(--ink) / 0.1);
+  border-color: rgba(40, 58, 96, 0.1);
 }
 
 .object-editor-create-panel[data-state="ok"] {
@@ -2398,7 +2310,7 @@ body.desktop-shell .object-editor-panel {
 .object-editor-create-feedback {
   padding: 10px 12px;
   border-radius: 12px;
-  border: 1px solid rgb(var(--ink) / 0.1);
+  border: 1px solid rgba(40, 58, 96, 0.1);
   font-size: 12px;
   line-height: 1.45;
 }
@@ -2406,7 +2318,7 @@ body.desktop-shell .object-editor-panel {
 .object-editor-create-feedback[data-state="neutral"] {
   background: rgba(241, 245, 251, 0.92);
   color: var(--muted);
-  border-color: rgb(var(--ink) / 0.1);
+  border-color: rgba(40, 58, 96, 0.1);
 }
 
 .object-editor-create-feedback[data-state="error"] {
@@ -2445,8 +2357,8 @@ body.desktop-shell .object-editor-panel {
   min-width: 0;
   padding: 0;
   border-radius: 12px;
-  border: 1px solid rgb(var(--ink) / 0.14);
-  background: rgb(var(--surface) / 0.98);
+  border: 1px solid rgba(40, 58, 96, 0.14);
+  background: rgba(255, 255, 255, 0.98);
   color: var(--text);
   font-size: 13px;
   font-weight: 700;
@@ -2460,8 +2372,8 @@ body.desktop-shell .object-editor-panel {
 }
 
 .object-editor-choice:hover {
-  background: rgb(var(--accent-rgb) / 0.08);
-  border-color: rgb(var(--accent-rgb) / 0.3);
+  background: rgba(23, 87, 255, 0.08);
+  border-color: rgba(23, 87, 255, 0.3);
   color: var(--text);
 }
 
@@ -2475,7 +2387,7 @@ body.desktop-shell .object-editor-panel {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(circle at top, rgb(var(--surface) / 0.16), transparent 54%),
+    radial-gradient(circle at top, rgba(255, 255, 255, 0.16), transparent 54%),
     rgba(15, 23, 42, 0.36);
   backdrop-filter: blur(10px);
 }
@@ -2488,9 +2400,9 @@ body.desktop-shell .object-editor-panel {
   max-height: calc(100vh - 40px);
   padding: 22px;
   border-radius: 24px;
-  border: 1px solid rgb(var(--ink) / 0.12);
+  border: 1px solid rgba(40, 58, 96, 0.12);
   background:
-    linear-gradient(180deg, rgb(var(--surface) / 0.99), rgb(var(--surface) / 0.97));
+    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(244, 248, 253, 0.97));
   box-shadow:
     0 30px 80px rgba(18, 28, 45, 0.22),
     0 8px 22px rgba(18, 28, 45, 0.08);
@@ -2560,7 +2472,7 @@ body.desktop-shell .object-editor-panel {
   background: linear-gradient(180deg, #356af1 0%, #2458de 100%);
   border-color: #2458de;
   color: #fff;
-  box-shadow: 0 14px 26px rgb(var(--accent-rgb) / 0.22);
+  box-shadow: 0 14px 26px rgba(36, 88, 222, 0.22);
 }
 
 .chart-modal-button--primary:hover {
@@ -2569,14 +2481,14 @@ body.desktop-shell .object-editor-panel {
 }
 
 .chart-modal-button--secondary {
-  background: rgb(var(--surface) / 0.94);
+  background: rgba(255, 255, 255, 0.94);
   color: var(--text);
-  border-color: rgb(var(--ink) / 0.14);
+  border-color: rgba(40, 58, 96, 0.14);
 }
 
 .chart-modal-button--secondary:hover {
-  background: rgb(var(--accent-rgb) / 0.08);
-  border-color: rgb(var(--accent-rgb) / 0.22);
+  background: rgba(35, 92, 224, 0.08);
+  border-color: rgba(35, 92, 224, 0.22);
   color: #214fc4;
 }
 
@@ -2622,9 +2534,9 @@ body.desktop-shell .object-editor-panel {
   border-radius: 18px;
   padding: 16px 18px;
   background:
-    linear-gradient(180deg, rgb(var(--surface) / 0.98), rgb(var(--surface) / 0.96));
-  border: 1px solid rgb(var(--ink) / 0.1);
-  box-shadow: inset 0 1px 0 rgb(var(--surface) / 0.72);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(246, 249, 255, 0.96));
+  border: 1px solid rgba(40, 58, 96, 0.1);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
 .chart-modal-table {
@@ -2688,11 +2600,11 @@ body.desktop-shell .object-editor-panel {
   min-height: min(760px, calc(100vh - 240px));
   border-radius: 20px;
   background:
-    linear-gradient(180deg, rgb(var(--surface) / 0.995), rgb(var(--surface) / 0.97));
-  border: 1px solid rgb(var(--ink) / 0.1);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.995), rgba(244, 247, 252, 0.97));
+  border: 1px solid rgba(40, 58, 96, 0.1);
   overflow: hidden;
   box-shadow:
-    inset 0 1px 0 rgb(var(--surface) / 0.72),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
     0 12px 30px rgba(18, 28, 45, 0.08);
 }
 
@@ -2709,23 +2621,23 @@ body.desktop-shell .object-editor-panel {
   align-items: center;
   display: inline-flex;
   gap: 14px;
-  background: rgb(var(--surface) / 0.92);
+  background: rgba(255, 255, 255, 0.92);
   color: var(--text);
-  border-color: rgb(var(--ink) / 0.12);
+  border-color: rgba(40, 58, 96, 0.12);
 }
 
 .chart-modal-nav-button:hover:not(:disabled) {
-  background: rgb(var(--accent-rgb) / 0.08);
-  border-color: rgb(var(--accent-rgb) / 0.24);
+  background: rgba(35, 92, 224, 0.08);
+  border-color: rgba(35, 92, 224, 0.24);
   color: #214fc4;
 }
 
 .chart-modal-nav-button:disabled {
   opacity: 0.42;
   cursor: not-allowed;
-  background: rgb(var(--surface) / 0.94);
+  background: rgba(247, 249, 253, 0.94);
   color: rgba(44, 62, 80, 0.58);
-  border-color: rgb(var(--ink) / 0.1);
+  border-color: rgba(40, 58, 96, 0.1);
 }
 
 .chart-modal-nav-button--next {
@@ -2895,7 +2807,7 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
   padding: 12px 14px;
   text-align: left;
   border-radius: var(--radius-panel);
-  background: rgb(var(--surface) / 0.9);
+  background: rgba(255, 255, 255, 0.9);
   color: var(--text);
   box-shadow: none;
 }
@@ -2905,7 +2817,7 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
 }
 
 .related-row:hover {
-  background: rgb(var(--accent-rgb) / 0.08);
+  background: rgba(23, 87, 255, 0.08);
   color: var(--text);
 }
 
@@ -2922,7 +2834,7 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
 .technical-empty {
   padding: 20px;
   border-radius: var(--radius-panel);
-  background: rgb(var(--surface) / 0.88);
+  background: rgba(255, 255, 255, 0.88);
   border: 1px dashed var(--line);
 }
 
@@ -2930,7 +2842,7 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
 .skeleton {
   position: relative;
   overflow: hidden;
-  background: rgb(var(--ink) / 0.08);
+  background: rgba(40, 58, 96, 0.08);
   border-radius: 6px;
 }
 
@@ -2942,7 +2854,7 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
   background: linear-gradient(
     90deg,
     transparent,
-    rgb(var(--surface) / 0.6),
+    rgba(255, 255, 255, 0.6),
     transparent
   );
   animation: skeleton-shimmer 1.2s ease-in-out infinite;
@@ -3109,7 +3021,7 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
   opacity: 0;
   pointer-events: none;
   z-index: -1;
-  background: var(--panel-strong);
+  background: #ffffff;
 }
 
 .chart-print-root[hidden] {
@@ -3126,7 +3038,7 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
   overflow: hidden;
   margin: 0 auto;
   color: #111a16;
-  background: var(--panel-strong);
+  background: #ffffff;
   font-family: var(--font-sans);
   break-inside: avoid;
 }
@@ -3189,7 +3101,7 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
   padding: 0;
   border: 1px solid #ccd2db;
   border-radius: 0;
-  background: var(--panel-strong);
+  background: #ffffff;
   box-shadow: none;
   break-inside: avoid;
 }
@@ -3240,7 +3152,7 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
   min-height: 0;
   padding: 0;
   overflow: hidden;
-  background: var(--panel-strong);
+  background: #ffffff;
 }
 
 .chart-host--print .wash-chart-canvas {
@@ -3294,7 +3206,7 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
 
 body.modal-export-mode {
   margin: 0;
-  background: var(--panel-strong);
+  background: #ffffff;
   overflow: visible !important;
   -webkit-print-color-adjust: exact;
   print-color-adjust: exact;
@@ -3343,7 +3255,7 @@ body.modal-export-mode .chart-print-document {
   overflow: hidden;
   margin: 0 auto;
   color: #111a16;
-  background: var(--panel-strong);
+  background: #ffffff;
   font-family: var(--font-sans);
   break-inside: avoid;
 }
@@ -3353,7 +3265,7 @@ body.modal-export-mode .chart-print-document {
   body.modal-print-mode {
     width: 100%;
     min-height: 100%;
-    background: var(--panel-strong);
+    background: #ffffff;
   }
 
   body.modal-print-mode {
@@ -3401,7 +3313,7 @@ body.modal-export-mode .chart-print-document {
     height: 193mm;
     overflow: hidden;
     color: #111a16;
-    background: var(--panel-strong);
+    background: #ffffff;
     font-family: var(--font-sans);
     break-inside: avoid;
   }
@@ -3578,7 +3490,7 @@ body.modal-export-mode .chart-print-document {
   display: grid;
   place-items: center;
   padding: 28px;
-  background: rgb(var(--surface) / 0.78);
+  background: rgba(245, 247, 251, 0.78);
   backdrop-filter: blur(10px);
 }
 
@@ -3588,8 +3500,8 @@ body.modal-export-mode .chart-print-document {
 
 .workspace-job-card {
   width: min(640px, 100%);
-  background: rgb(var(--surface) / 0.97);
-  border: 1px solid rgb(var(--ink) / 0.12);
+  background: rgba(255, 255, 255, 0.97);
+  border: 1px solid rgba(40, 58, 96, 0.12);
   border-radius: var(--radius-panel);
   box-shadow: var(--shadow);
   padding: 28px;
@@ -3629,8 +3541,8 @@ body.modal-export-mode .chart-print-document {
   height: 10px;
   border-radius: 999px;
   overflow: hidden;
-  background: rgb(var(--accent-rgb) / 0.08);
-  border: 1px solid rgb(var(--accent-rgb) / 0.12);
+  background: rgba(23, 87, 255, 0.08);
+  border: 1px solid rgba(23, 87, 255, 0.12);
 }
 
 .workspace-job-progress span {
@@ -3836,7 +3748,7 @@ body.modal-export-mode .chart-print-document {
   background: var(--panel-soft);
 }
 .ftp-source-item.is-active {
-  border-color: rgb(var(--accent-rgb) / 0.4);
+  border-color: rgba(23, 87, 255, 0.4);
   box-shadow: inset 3px 0 0 var(--accent);
 }
 .ftp-source-info {
