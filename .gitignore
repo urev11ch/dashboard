@@ -15,6 +15,16 @@ env/
 # Build artifacts
 build/
 dist/
+# Локальная сборка (build_windows.bat): окружение .build-venv — сотни МБ,
+# installer_out — готовый инсталлятор (~40 МБ), бутстраппер WebView2 качается
+# с сайта Microsoft. Всё воспроизводится сборкой, в репозитории не нужно.
+.build-venv/
+installer_out/
+MicrosoftEdgeWebview2Setup.exe
+
+# Ресурс версии .exe: генерируется из webapp/__init__.py (__version__) на каждой
+# сборке (OptiCIP-Dashboard.spec) — отслеживать его значит пачкать рабочее дерево.
+version_info.txt
 
 # OS / editor
 .DS_Store

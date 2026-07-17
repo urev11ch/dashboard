@@ -6,9 +6,11 @@
 #define AppName "OptiCIP Dashboard"
 ; Версия приходит из единого источника (webapp/__init__.py: __version__) —
 ; её передают build_windows.bat и CI: ISCC.exe /DAppVersion=1.2.3 installer.iss.
-; Значение ниже — только запасное, для ручного вызова ISCC без параметров.
+; Фолбэка здесь намеренно нет: он собирался бы молча и давал установщик, который
+; представляется системе не своей версией — а по ней идут «Программы и компоненты»
+; и обновление поверх. Лучше упасть на компиляции, чем выпустить такой релиз.
 #ifndef AppVersion
-  #define AppVersion "0.0.0"
+  #error AppVersion не задан. Запускайте build_windows.bat либо передайте версию явно: ISCC.exe /DAppVersion=1.2.3 installer.iss (номер — из webapp/__init__.py, __version__).
 #endif
 #define AppPublisher "OptiCIP"
 #define AppExe "OptiCIP-Dashboard.exe"
@@ -42,7 +44,13 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+; Без unchecked (было до 1.1.8): дашборд запускает оператор, ярлык на столе ему
+; нужен по умолчанию. Побочный и важный эффект — ярлык пересоздаётся при каждой
+; установке, включая тихое автообновление. Пока задача была unchecked, ярлык в
+; «Пуске» обновлялся всегда, а десктопный не трогался никогда — и именно на нём
+; дольше всего жила старая иконка. Теперь это второй рубеж на случай, если
+; сброс кэша иконок (ie4uinit в [Run]) где-то не сработает.
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
 Source: "dist\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
@@ -56,6 +64,24 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopico
 
 [Run]
 Filename: "{tmp}\MicrosoftEdgeWebview2Setup.exe"; Parameters: "/silent /install"; StatusMsg: "Установка среды Microsoft Edge WebView2..."; Check: not WebView2Installed; Flags: waituntilterminated
+; Сброс кэша иконок оболочки — половина «очисти» (половина «перерисуй» — это
+; SHChangeNotify в [Code], см. комментарий там). Без него обновившиеся с 1.0.x
+; продолжают видеть старую иконку в «Пуске» и на рабочем столе.
+;
+; ie4uinit — родная утилита оболочки: перестраивает кэш иконок, НЕ перезапуская
+; Проводник и не удаляя iconcache_*.db руками. Ручной рецепт (taskkill explorer +
+; del iconcache*.db) работает, но закрывает пользователю все окна папок — при
+; тихом автообновлении это выглядело бы как сбой, поэтому здесь он не годится.
+;
+; runasoriginaluser обязателен по той же причине, что и у строк ниже: кэш иконок
+; лежит в профиле пользователя (%LocalAppData%\Microsoft\Windows\Explorer), а
+; установщик работает с админским токеном. Без флага мы перестроили бы кэш
+; администратора, а у оператора осталась бы старая иконка — то есть тихо не
+; сделали бы ничего.
+;
+; skipifdoesntexist — подстраховка: ie4uinit есть во всех поддерживаемых
+; Windows, но отсутствие косметической утилиты не повод ронять установку.
+Filename: "{sys}\ie4uinit.exe"; Parameters: "-show"; Flags: runasoriginaluser runhidden skipifdoesntexist
 ; runasoriginaluser обязателен: установщик работает с админским токеном, и без
 ; этого флага приложение стартовало бы под администратором — его данные, ключ
 ; DPAPI (пароль FTP) и автозапуск HKCU достались бы админу, а не оператору.
@@ -80,14 +106,19 @@ Filename: "{app}\{#AppExe}"; Flags: nowait runasoriginaluser; Check: WantsRelaun
 Filename: "{app}\{#AppExe}"; Parameters: "--remove-autostart"; Flags: waituntilterminated runhidden skipifdoesntexist; RunOnceId: "RemoveAutostart"
 
 [Code]
-// Сброс кэша иконок оболочки. Путь установки и AppId у нас постоянные, поэтому
-// при обновлении поверх старой версии Проводник продолжает рисовать иконку,
-// запомненную при первой установке: ярлыки ссылаются на {app}\AppExe без
-// IconFilename, а кэш ключуется по пути и обновляется неохотно. Так у всех, кто
-// обновляется с 1.0.x, на рабочем столе оставалась прежняя иконка-капля, хотя в
-// .exe уже лежит новая. SHCNE_ASSOCCHANGED — штатный способ заставить оболочку
-// сбросить кэш иконок; файлы iconcache*.db при этом не трогаются и Проводник не
-// перезапускается.
+// Половина «перерисуй» в сбросе кэша иконок: сообщаем оболочке, что иконки
+// изменились. Путь установки и AppId у нас постоянные, поэтому при обновлении
+// поверх старой версии Проводник продолжает рисовать иконку, запомненную при
+// первой установке: ярлыки ссылаются на {app}\AppExe без IconFilename, а кэш
+// ключуется по пути целевого .exe. У обновившихся с 1.0.x из-за этого и в меню
+// «Пуск», и на рабочем столе оставалась прежняя иконка-капля, хотя в .exe с
+// 1.1.0 лежит новая (в панели задач при этом видна новая: иконку окна процесс
+// грузит из .exe напрямую, мимо кэша оболочки).
+//
+// ВАЖНО: одного этого вызова недостаточно — проверено на живой машине в 1.1.7.
+// На Windows 10/11 SHCNE_ASSOCCHANGED не вычищает iconcache_*.db для иконок,
+// уже закэшированных по пути. Половину «очисти» делает ie4uinit в [Run]; здесь
+// остаётся только уведомление оболочки о перерисовке.
 const
   SHCNE_ASSOCCHANGED = $08000000;
   SHCNF_IDLIST = $00000000;
@@ -97,9 +128,11 @@ procedure SHChangeNotify(wEventId: Integer; uFlags: Cardinal; dwItem1: Cardinal;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  // ssPostInstall — файлы уже скопированы и ярлыки созданы, но приложение из
-  // [Run] ещё не стартовало: оболочка перечитает иконку из нового .exe.
-  if CurStep = ssPostInstall then
+  // Именно ssDone, а не ssPostInstall: секция [Run] выполняется между ними, а
+  // порядок здесь важен — сначала ie4uinit чистит кэш, и только потом имеет
+  // смысл просить оболочку перерисовать. На ssPostInstall уведомление ушло бы
+  // до очистки и пропало впустую.
+  if CurStep = ssDone then
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, 0, 0);
 end;
 

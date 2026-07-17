@@ -11,9 +11,21 @@ on:
 permissions:
   contents: read
 
+# Группа включает github.ref, поэтому прогон по тегу v* и прогон по main живут в
+# РАЗНЫХ группах и не отменяют друг друга (при релизе оба указывают на один
+# коммит). cancel-in-progress выключен для тегов: такой прогон публикует GitHub
+# Release, и отмена на середине оставила бы релиз без части файлов.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+
 jobs:
   build:
     runs-on: windows-latest
+    # Полная сборка укладывается в ~15 минут. Лимит нужен против зависаний без
+    # вывода (Invoke-WebRequest за WebView2, choco), которые иначе держали бы
+    # раннер дефолтные 6 часов.
+    timeout-minutes: 30
     permissions:
       # Нужно шагу «Publish GitHub Release» (gh release create). На сборках из
       # main право не используется, но задаётся на job целиком.
@@ -23,14 +35,17 @@ jobs:
       HAS_SIGNING: ${{ secrets.WINDOWS_PFX_BASE64 != '' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
         # Версия зафиксирована (та же, что в build_windows.bat): на 3.13+ нет
         # готовых колёс pythonnet/pywebview.
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          # Кэш колёс pip: pythonnet/pywebview/uvicorn тянутся на каждой сборке.
+          cache: pip
+          cache-dependency-path: requirements-windows.txt
 
       - name: Install dependencies
         # Версии закреплены в requirements-windows.txt — сборка воспроизводима.
@@ -72,6 +87,42 @@ jobs:
       - name: Build executable
         run: pyinstaller --noconfirm OptiCIP-Dashboard.spec
 
+      - name: Smoke test executable
+        # Единственное место, где собранный .exe РЕАЛЬНО запускается до релиза.
+        # Без этого шага «собралось» = «файл есть на диске»: Analysis у
+        # PyInstaller разрешает только статические импорты, а шаг Upload с
+        # if-no-files-found: error проверяет лишь наличие файла. Именно так до
+        # заводских ПК доехал баг «Failed to load Python DLL» (чинили в
+        # 64116b5) — сборка была зелёной, бинарник не стартовал ни на одной
+        # машине.
+        #
+        # --selftest (run_wash_desktop.py, run_selftest) сделан ровно под этот
+        # шаг: он поднимает те же тяжёлые зависимости, что и обычный старт —
+        # `import webview`, мост pythonnet (load("netfx") + clr.AddReference) и
+        # FastAPI-приложение, — но НЕ открывает окно (на раннере нет сессии
+        # рабочего стола) и выходит кодом.
+        #
+        # ЧТО ловит: распаковку onefile-бутлоадера, загрузку Python DLL (класс
+        # 64116b5), топ-левел импорты, collect_all(webview) и мост pythonnet/clr.
+        # То есть весь набор, который иначе всплывал бы только у оператора при
+        # открытии окна.
+        #
+        # НЕ подходил --remove-autostart: он возвращает код ДО `import webview`,
+        # поэтому сломанный webview-хиддeнимпорт прошёл бы CI незамеченным.
+        #
+        # Start-Process, а не прямой вызов: exe собран с console=False
+        # (windowed), консоль его не дожидается и код возврата теряется.
+        # Путь резолвим в абсолютный — Start-Process берёт рабочий каталог из
+        # [Environment]::CurrentDirectory, а не из текущей локации PowerShell.
+        run: |
+          $exe = (Resolve-Path "dist\OptiCIP-Dashboard.exe").Path
+          $p = Start-Process $exe -ArgumentList '--selftest' -Wait -PassThru
+          if ($p.ExitCode -ne 0) {
+            Write-Error "Собранный .exe завершился с кодом $($p.ExitCode) — бинарник нерабочий, релиз останавливаем."
+            exit 1
+          }
+          Write-Host "Смоук-тест пройден: .exe стартует и корректно завершается."
+
       - name: Sign executable
         if: env.HAS_SIGNING == 'true'
         env:
@@ -96,7 +147,7 @@ jobs:
         run: pwsh ./scripts/sign.ps1 -Path "installer_out/OptiCIP-Dashboard-Setup.exe"
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: OptiCIP-Dashboard-windows
           path: |

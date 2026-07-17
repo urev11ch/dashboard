@@ -54,7 +54,11 @@ py -3.12 -m venv .build-venv
 .build-venv\Scripts\activate
 pip install -r requirements-windows.txt
 pyinstaller --noconfirm OptiCIP-Dashboard.spec
-"%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" /DAppVersion=1.0.0 installer.iss
+REM Версию не вписывайте руками: установщик представится системе тем номером,
+REM который вы передали, а не тем, что в .exe. Берём её из единого источника
+REM (webapp\__init__.py: __version__) — ровно как build_windows.bat.
+for /f "delims=" %%v in ('python -c "import webapp; print(webapp.__version__)"') do set "APP_VERSION=%%v"
+"%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" /DAppVersion=%APP_VERSION% installer.iss
 ```
 
 Версии зависимостей в `requirements-windows.txt` **закреплены** (`==`) — иначе
@@ -82,10 +86,20 @@ UPX в `OptiCIP-Dashboard.spec` намеренно выключен (`upx=False`
 #    webapp/__init__.py: __version__ = "1.2.0"
 git commit -am "Версия 1.2.0"
 
-# 2. Тег с тем же номером и префиксом v
-git tag v1.2.0
+# 2. Тег с тем же номером и префиксом v — обязательно аннотированный (-a)
+git tag -a v1.2.0 -m "OptiCIP Dashboard 1.2.0"
 git push origin main --follow-tags
+
+# 3. Убедиться, что тег действительно уехал (см. предупреждение ниже)
+git ls-remote --tags origin "v1.2.0"
 ```
+
+> **Тег обязан быть аннотированным.** `git tag v1.2.0` без `-a` создаёт
+> легковесный тег, а `git push --follow-tags` отправляет **только**
+> аннотированные — он молча его пропустит. При этом `main` уедет, тег останется
+> локально, релиз не соберётся, и `git push` ни словом об этом не сообщит.
+> Отсюда шаг 3: `ls-remote` — единственная быстрая проверка, что тег на сервере.
+> Альтернатива, если тег уже создан легковесным: `git push origin v1.2.0` явно.
 
 Пуш тега `v*` запускает `windows-build.yml`, который собирает установщик и
 публикует **GitHub Release** с `OptiCIP-Dashboard-Setup.exe` и `.exe`; описание
