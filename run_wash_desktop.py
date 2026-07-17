@@ -189,7 +189,16 @@ def configure_logging() -> Path:
         ],
         force=True,
     )
-    logging.info("Starting %s", APP_TITLE)
+    # Версия — первым делом: без неё по логу невозможно понять, какая сборка
+    # запускалась, а для приложения с автообновлением это первый вопрос при
+    # разборе любой жалобы.
+    try:
+        import webapp
+
+        version = webapp.__version__
+    except Exception:  # noqa: BLE001 — логирование не должно ронять старт
+        version = "unknown"
+    logging.info("Starting %s %s", APP_TITLE, version)
     logging.info("Python executable: %s", sys.executable)
     logging.info("Frozen: %s", getattr(sys, "frozen", False))
     return LOG_PATH
@@ -549,6 +558,12 @@ class DesktopServer:
             port=self.port,
             reload=False,
             log_level="warning",
+            # log_config=None обязателен: со своей конфигурацией uvicorn ставит
+            # логгерам propagate=False и пишет в stderr, а сборка windowed
+            # (console=False) — stderr уходит в никуда. Из-за этого НИ ОДНО
+            # необработанное исключение в эндпоинте не попадало в desktop.log.
+            # С None логгеры uvicorn всплывают в root, где наш файловый handler.
+            log_config=None,
             timeout_graceful_shutdown=3,
         )
         self.server = uvicorn.Server(self.config)
@@ -870,22 +885,29 @@ class DesktopBridge:
         поэтому сначала стартуем его, а следом закрываем окно — иначе установка
         упрётся в занятый .exe.
         """
-        if os.name != "nt":
-            return {"ok": False, "error": "Установка обновления доступна только в Windows."}
-
-        from webapp.app import state, state_lock
-
-        with state_lock:
-            job = state.update_job
-            # status == "ready" выставляется только после сверки sha256.
-            if job is None or job.status != "ready" or not job.path:
-                return {"ok": False, "error": "Обновление не скачано."}
-            installer = Path(job.path)
-
-        if not installer.is_file():
-            return {"ok": False, "error": "Файл обновления не найден."}
-
+        # Тело целиком в try: любое исключение отсюда pywebview превращает в
+        # отказ JS-промиса, и пользователь видит сырой Python-текст в тосте, а
+        # в логе не остаётся НИЧЕГО. Ловим сами — тогда причина попадёт в лог.
         try:
+            if os.name != "nt":
+                return {"ok": False, "error": "Установка обновления доступна только в Windows."}
+
+            from webapp.app import state, state_lock
+
+            with state_lock:
+                job = state.update_job
+                # status == "ready" выставляется только после сверки sha256.
+                if job is None or job.status != "ready" or not job.path:
+                    logging.warning("Запрошена установка, но обновление не скачано.")
+                    return {"ok": False, "error": "Обновление не скачано."}
+                installer = Path(job.path)
+                version = job.version
+
+            if not installer.is_file():
+                logging.error("Файл обновления пропал: %s", installer)
+                return {"ok": False, "error": "Файл обновления не найден."}
+
+            logging.info("Запускаю установщик обновления %s: %s", version, installer)
             subprocess.Popen(  # noqa: S603 — путь наш, из проверенного состояния
                 [
                     str(installer),
@@ -895,6 +917,7 @@ class DesktopBridge:
                 ],
                 close_fds=True,
             )
+            logging.info("Установщик запущен, закрываю окно через 1.5 с.")
         except Exception as error:  # noqa: BLE001
             logging.exception("Не удалось запустить установщик обновления")
             return {"ok": False, "error": f"Не удалось запустить установщик: {error}"}

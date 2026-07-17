@@ -4249,9 +4249,13 @@ def download_update_worker(job_id: str, asset: dict[str, Any], version: str) -> 
 
         actual = digest.hexdigest()
         if not hmac.compare_digest(actual, asset["sha256"]):
+            logging.error(
+                "sha256 обновления не совпал: ожидали %s, получили %s", asset["sha256"], actual
+            )
             raise ValueError("Контрольная сумма не совпала — файл повреждён или подменён.")
         if downloaded != asset["size"]:
             raise ValueError("Размер файла не совпал с заявленным в релизе.")
+        logging.info("Обновление %s скачано и проверено: %s", version, target)
 
         # Переименование — последний шаг: файл под финальным именем существует
         # только целиком проверенным.
@@ -4301,6 +4305,13 @@ def update_download() -> JSONResponse:
     job = UpdateJob(id=uuid.uuid4().hex, version=latest, total=asset["size"])
     with state_lock:
         state.update_job = job
+    logging.info(
+        "Начинаю скачивание обновления %s → %s (%s Б) с %s",
+        APP_VERSION,
+        latest,
+        asset["size"],
+        asset["url"],
+    )
     threading.Thread(
         target=download_update_worker,
         args=(job.id, asset, latest),
