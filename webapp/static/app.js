@@ -2409,10 +2409,10 @@
             </section>
             <section class="settings-page" data-settings-page="updates" hidden>
               <h3 class="settings-page-title">Обновления и автозапуск</h3>
-              <label class="settings-option">
-                <span class="settings-option-text"><strong>Проверять обновления</strong><span class="settings-option-hint">Сверяет версию с последним релизом на GitHub при запуске</span></span>
-                <input type="checkbox" data-setting-check-updates ${settings.check_updates ? "checked" : ""}>
-              </label>
+              <div class="settings-option">
+                <span class="settings-option-text"><strong>Проверка обновлений</strong><span class="settings-option-hint">Сверяет текущую версию ${escapeHtml(appState.appVersion || "")} с последним релизом на GitHub</span></span>
+                <button type="button" class="ghost" data-check-updates>Проверить</button>
+              </div>
               <label class="settings-option">
                 <span class="settings-option-text"><strong>Автозапуск с Windows</strong></span>
                 <input type="checkbox" data-setting-autostart ${settings.autostart ? "checked" : ""}>
@@ -2631,29 +2631,26 @@
       });
     }
 
-    const checkUpdatesToggle = settingsRoot.querySelector("[data-setting-check-updates]");
-    if (checkUpdatesToggle) {
-      checkUpdatesToggle.addEventListener("change", async (event) => {
-        const enabled = Boolean(event.currentTarget.checked);
+    // Проверка обновлений — явное действие: одна проверка на нажатие. Кнопку
+    // блокируем на время запроса, иначе несколько кликов подряд наплодят
+    // параллельных походов к GitHub.
+    const checkUpdatesButton = settingsRoot.querySelector("[data-check-updates]");
+    if (checkUpdatesButton) {
+      checkUpdatesButton.addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        button.textContent = "Проверяю…";
         try {
-          await saveAppSettings({ check_updates: enabled });
-          if (enabled) {
-            checkForUpdates(true);
-          } else {
-            // Выключили проверку — панель обновления должна уйти вместе с ней.
-            state.updateInfo = null;
-            renderUpdatePanel();
-          }
-          showToast("Настройки сохранены", "success");
-        } catch (_error) {
-          showToast("Не удалось сохранить настройки.", "error");
+          await checkForUpdates(true);
+        } finally {
+          button.disabled = false;
+          button.textContent = "Проверить";
         }
       });
     }
 
-    // Панель обновления живёт внутри настроек: отрисовываем по тому, что уже
-    // known из проверки при старте, и вешаем делегированный клик — разметка
-    // панели перерисовывается целиком на каждом шаге.
+    // Панель обновления перерисовывается целиком на каждом шаге, поэтому клик
+    // по кнопке установки — делегированный.
     renderUpdatePanel();
     const updatePanel = settingsRoot.querySelector("[data-update-panel]");
     if (updatePanel) {
@@ -2954,11 +2951,13 @@
     return `${size.toFixed(size >= 10 ? 0 : 1)} ${units[unitIndex]}`;
   }
 
-  async function checkForUpdates(notifyUpToDate = false) {
+  // Вызывается только кнопкой в настройках — одна проверка на нажатие.
+  // Результат всегда озвучиваем: пользователь нажал и ждёт ответа.
+  async function checkForUpdates() {
     try {
       const response = await fetchWithTimeout("/api/update-check", { headers: { Accept: "application/json" } });
       if (!response.ok) {
-        return;
+        throw new Error("update-check-failed");
       }
       const data = await response.json();
       state.updateInfo = data;
@@ -2967,19 +2966,19 @@
         // Куда вести — зависит от того, умеем ли ставить сами: в десктопе это
         // кнопка в настройках, в браузере остаётся страница релизов.
         const where = canInstallUpdate()
-          ? "Установить можно в настройках."
+          ? "Установить можно ниже."
           : "Смотрите GitHub Releases.";
         showToast(`Доступно обновление ${data.latest}. ${where}`, "info", 8000);
-      } else if (notifyUpToDate && data.enabled && data.latest) {
+      } else if (data.latest) {
         showToast("Установлена последняя версия.", "success");
-      } else if (notifyUpToDate && data.enabled) {
+      } else {
         // Пустой latest — это «не выяснили» (нет сети/релизов), а не «актуально»:
         // бэкенд глушит ошибки запроса к GitHub и отдаёт "". Врать про
         // актуальность нельзя — пользователь пропустит важное обновление.
         showToast("Не удалось проверить обновления.", "info");
       }
     } catch (_error) {
-      // тихо — проверка обновлений не критична
+      showToast("Не удалось проверить обновления.", "error");
     }
   }
 
@@ -4024,7 +4023,8 @@
   }
 
   initClock();
-  checkForUpdates();
+  // Автопроверки при старте нет: обновления проверяются только по кнопке в
+  // настройках — одна проверка на нажатие, без походов к GitHub за спиной.
   applyWashResultVisibility();
 
   periodPresetButtons.forEach((button) => {

@@ -143,7 +143,6 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "ftp_auto_refresh_enabled": True,
     "ftp_auto_refresh_minutes": 5,
     "default_folder_path": "",
-    "check_updates": False,
     "autostart": False,
     "archive_retention_enabled": False,
     "archive_retention_days": 365,
@@ -1901,7 +1900,6 @@ def normalize_app_settings(raw: Any) -> dict[str, Any]:
         "ftp_auto_refresh_minutes": minutes,
         "default_folder_path": default_folder_path,
         "result_labels": result_labels,
-        "check_updates": _coerce_bool(data.get("check_updates"), DEFAULT_APP_SETTINGS["check_updates"]),
         "autostart": _coerce_bool(data.get("autostart"), DEFAULT_APP_SETTINGS["autostart"]),
         "archive_retention_enabled": _coerce_bool(
             data.get("archive_retention_enabled"), DEFAULT_APP_SETTINGS["archive_retention_enabled"]
@@ -3610,6 +3608,7 @@ def page_context(request: Request, snapshot: AppStateSnapshot) -> dict[str, Any]
         "asset_versions": asset_versions,
         "job_status": workspace_payload["job_status"],
         "app_state": {
+            "appVersion": APP_VERSION,
             "hasWorkspace": analysis is not None,
             "hasAnalysis": analysis is not None,
             "displayRoot": workspace_payload["display_root"],
@@ -4280,10 +4279,6 @@ def download_update_worker(job_id: str, asset: dict[str, Any], version: str) -> 
 
 @app.post("/api/update/download")
 def update_download() -> JSONResponse:
-    settings = load_app_settings()
-    if not settings["check_updates"]:
-        raise HTTPException(status_code=400, detail="Проверка обновлений выключена в настройках.")
-
     with state_lock:
         active = state.update_job
         if active is not None and active.status == "running":
@@ -4329,10 +4324,9 @@ def update_job_status() -> JSONResponse:
 
 @app.get("/api/update-check")
 def update_check() -> JSONResponse:
-    settings = load_app_settings()
-    if not settings["check_updates"]:
-        return JSONResponse({"enabled": False, "update_available": False})
-
+    """Разовая сверка версии с последним релизом — вызывается кнопкой в
+    настройках. Автоматически при старте не дёргается: за спиной у пользователя
+    в сеть не ходим."""
     payload = _fetch_latest_release()
     latest = _release_tag(payload)
     available = bool(latest) and _is_newer_version(latest, APP_VERSION)
@@ -4341,8 +4335,8 @@ def update_check() -> JSONResponse:
     installable = available and os.name == "nt" and _pick_installer_asset(payload) is not None
     return JSONResponse(
         {
-            "enabled": True,
             "current": APP_VERSION,
+            # Пустой latest — «не выяснили» (нет сети/релизов), а не «актуально».
             "latest": latest,
             "update_available": available,
             "url": UPDATE_RELEASES_URL if available else "",

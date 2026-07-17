@@ -14,7 +14,6 @@ def test_defaults_when_missing(tmp_path, monkeypatch):
         "ftp_auto_refresh_minutes": 5,
         "default_folder_path": "",
         "result_labels": {c: "" for c in app.RESULT_LABEL_CATEGORIES},
-        "check_updates": False,
         "autostart": False,
         "archive_retention_enabled": False,
         "archive_retention_days": 365,
@@ -35,7 +34,6 @@ def test_save_load_roundtrip(tmp_path, monkeypatch):
         "ftp_auto_refresh_minutes": 12,
         "default_folder_path": "",
         "result_labels": {c: "" for c in app.RESULT_LABEL_CATEGORIES},
-        "check_updates": False,
         "autostart": False,
         "archive_retention_enabled": False,
         "archive_retention_days": 365,
@@ -184,7 +182,7 @@ def test_concurrent_settings_updates_do_not_lose_changes(tmp_path, monkeypatch):
         {"ftp_auto_refresh_minutes": 7},
         {"default_folder_path": "/data/x"},
         {"archive_retention_days": 10},
-        {"check_updates": True},
+        {"autostart": True},
     ]
     threads = [
         threading.Thread(target=app.update_app_settings_route, args=({"settings": update},))
@@ -201,7 +199,7 @@ def test_concurrent_settings_updates_do_not_lose_changes(tmp_path, monkeypatch):
     assert result["ftp_auto_refresh_minutes"] == 7
     assert result["default_folder_path"] == "/data/x"
     assert result["archive_retention_days"] == 10
-    assert result["check_updates"] is True
+    assert result["autostart"] is True
 
 
 # ---- подписи результата мойки -----------------------------------------------

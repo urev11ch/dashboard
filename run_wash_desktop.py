@@ -179,6 +179,28 @@ def sync_autostart_from_settings() -> None:
         logging.exception("Не удалось синхронизировать автозапуск при старте")
 
 
+def _clean_pyinstaller_env() -> dict[str, str]:
+    """Окружение без меток бутлоадера PyInstaller — для запуска установщика.
+
+    В onefile-сборке бутлоадер распаковывает приложение в `%TEMP%\\_MEIxxxxxx` и
+    помечает своё окружение: `_PYI_APPLICATION_HOME_DIR` (путь распаковки) и
+    `_PYI_PARENT_PROCESS_LEVEL`. По ним дочерний процесс понимает, что он
+    «подпроцесс основного приложения», и берёт Python из каталога родителя, а
+    не распаковывается заново (см. pyi_main.c, разбор _PYI_PARENT_PROCESS_LEVEL).
+
+    Метки наследуются по всей цепочке: приложение → установщик → перезапущенное
+    установщиком приложение. Но родитель к тому моменту вышел и свой `_MEIxxxxxx`
+    удалил, поэтому новый экземпляр падал с «Failed to load Python DLL
+    ...\\_MEIxxxxxx\\python312.dll». Установщику и его потомкам нужно чистое
+    окружение — они самостоятельные процессы, а не наши подпроцессы.
+    """
+    env = os.environ.copy()
+    for name in [key for key in env if key.startswith("_PYI_")]:
+        env.pop(name, None)
+    env.pop("_MEIPASS2", None)  # имя до PyInstaller 6 — на случай отката версии
+    return env
+
+
 def configure_logging() -> Path:
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
@@ -915,6 +937,7 @@ class DesktopBridge:
                     "/NOCANCEL",
                     "/RELAUNCH=1",
                 ],
+                env=_clean_pyinstaller_env(),
                 close_fds=True,
             )
             logging.info("Установщик запущен, закрываю окно через 1.5 с.")
