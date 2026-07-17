@@ -1993,6 +1993,42 @@ body.desktop-shell .object-editor-panel {
   line-height: 1.5;
 }
 
+/* Панель обновления в разделе «Обновления». Отбита от тумблеров линией, чтобы
+   читалась как отдельный блок, а не как ещё одна настройка. */
+.update-panel {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 10px;
+}
+
+.update-panel-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.update-panel-error {
+  color: var(--warn);
+}
+
+/* Геометрия — как у прогресса анализа (.workspace-job-progress). */
+.update-progress {
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(23, 87, 255, 0.08);
+  border: 1px solid rgba(23, 87, 255, 0.12);
+}
+
+.update-progress-bar {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent) 0%, #4f83ff 100%);
+  transition: width 180ms ease;
+}
+
 /* Плоские строки настроек внутри секции-карточки (без двойных рамок). */
 .settings-option {
   display: flex;

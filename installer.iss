@@ -60,6 +60,12 @@ Filename: "{tmp}\MicrosoftEdgeWebview2Setup.exe"; Parameters: "/silent /install"
 ; этого флага приложение стартовало бы под администратором — его данные, ключ
 ; DPAPI (пароль FTP) и автозапуск HKCU достались бы админу, а не оператору.
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent runasoriginaluser
+; Автообновление из приложения: оно запускает установщик с /SILENT /RELAUNCH=1 и
+; закрывается. Строка выше при /SILENT пропускается (skipifsilent), поэтому
+; поднимаем приложение обратно здесь — иначе после обновления окно бы не
+; вернулось и выглядело бы как вылет. runasoriginaluser по той же причине, что
+; и выше: под админом приложение писало бы данные и DPAPI-ключ не тому юзеру.
+Filename: "{app}\{#AppExe}"; Flags: nowait runasoriginaluser; Check: WantsRelaunch
 
 [UninstallRun]
 ; Автозапуск приложение пишет в HKCU\...\Run текущего пользователя; при удалении
@@ -74,6 +80,13 @@ Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags
 Filename: "{app}\{#AppExe}"; Parameters: "--remove-autostart"; Flags: waituntilterminated runhidden skipifdoesntexist; RunOnceId: "RemoveAutostart"
 
 [Code]
+// /RELAUNCH=1 передаёт только автообновление из приложения (см. [Run]).
+// При обычной ручной установке параметра нет — поведение мастера не меняется.
+function WantsRelaunch(): Boolean;
+begin
+  Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
+end;
+
 function WebView2Installed(): Boolean;
 var
   Value: String;

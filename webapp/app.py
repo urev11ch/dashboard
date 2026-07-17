@@ -165,6 +165,15 @@ CONCENTRATION_TOLERANCE_MIN = 0.0
 CONCENTRATION_TOLERANCE_MAX = 100.0
 GITHUB_REPO = "urev11ch/dashboard"
 UPDATE_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
+# Автообновление: качаем только это вложение и только с этого префикса — URL
+# приходит из ответа GitHub, но проверяем его отдельно (защита от подмены
+# ссылки на чужой хост, если ответ окажется не тем, чего мы ждём).
+UPDATE_ASSET_NAME = "OptiCIP-Dashboard-Setup.exe"
+UPDATE_ASSET_URL_PREFIX = f"https://github.com/{GITHUB_REPO}/releases/download/"
+# Больше установщика (~22 МБ) быть не должно; ограничение отсекает бесконечный
+# ответ, который иначе забил бы диск.
+UPDATE_MAX_BYTES = 256 * 1024 * 1024
+UPDATE_DOWNLOAD_TIMEOUT_SECONDS = 300.0
 # Как часто фоновый цикл просыпается, чтобы сверить, не пора ли обновлять FTP.
 FTP_AUTO_REFRESH_POLL_SECONDS = 20.0
 # Настраиваемые подписи результата мойки. Ядро (wash_report) считает результат
@@ -449,6 +458,24 @@ class WorkspaceJob:
 
 
 @dataclass
+class UpdateJob:
+    """Скачивание установщика обновления. `path` заполняется только после
+    успешной сверки sha256 — мост берёт оттуда файл на запуск, поэтому непустой
+    path означает «проверено и можно исполнять»."""
+
+    id: str
+    version: str = ""
+    status: str = "running"  # running | ready | error
+    phase: str = "download"  # download | verify | ready
+    downloaded: int = 0
+    total: int = 0
+    path: str = ""
+    error: str | None = None
+    started_at: float = field(default_factory=time.time)
+    finished_at: float | None = None
+
+
+@dataclass
 class AppState:
     selected_root: Path | None = None
     pending_root: Path | None = None
@@ -460,6 +487,7 @@ class AppState:
     error: str | None = None
     scan_summary: ScanSummary = field(default_factory=ScanSummary)
     workspace_job: WorkspaceJob | None = None
+    update_job: UpdateJob | None = None
     last_sync_ts: float | None = None
     last_cleanup_ts: float | None = None
 
@@ -4084,9 +4112,9 @@ def _is_newer_version(latest: str, current: str) -> bool:
         return False
 
 
-def _fetch_latest_release_tag() -> str:
-    """Тег последнего релиза на GitHub (без префикса v) или '' при недоступности/
-    отсутствии релизов."""
+def _fetch_latest_release() -> dict[str, Any]:
+    """Payload последнего релиза на GitHub или {} при недоступности/отсутствии
+    релизов. Запрос анонимный — репозиторий публичный; приватный отдал бы 404."""
     request = urllib.request.Request(
         f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
         headers={
@@ -4098,9 +4126,194 @@ def _fetch_latest_release_tag() -> str:
         with urllib.request.urlopen(request, timeout=5) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except Exception:
-        return ""
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _release_tag(payload: dict[str, Any]) -> str:
     tag = str(payload.get("tag_name") or "").strip()
     return tag[1:] if tag[:1].lower() == "v" else tag
+
+
+def _fetch_latest_release_tag() -> str:
+    """Тег последнего релиза на GitHub (без префикса v) или '' при недоступности/
+    отсутствии релизов."""
+    return _release_tag(_fetch_latest_release())
+
+
+def _pick_installer_asset(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Вложение-установщик из payload релиза: URL, размер и sha256 от GitHub.
+
+    Ссылку берём ТОЛЬКО отсюда и никогда от клиента — иначе приложение
+    скачивало бы и запускало произвольный URL с правами администратора.
+    Без digest вложение не годится: проверить нечем, а запускать непроверенный
+    .exe нельзя.
+    """
+    for asset in payload.get("assets") or []:
+        if not isinstance(asset, dict) or asset.get("name") != UPDATE_ASSET_NAME:
+            continue
+        url = str(asset.get("browser_download_url") or "")
+        digest = str(asset.get("digest") or "")
+        size = asset.get("size")
+        if not url.startswith(UPDATE_ASSET_URL_PREFIX):
+            logging.warning("Вложение релиза с неожиданным URL — пропускаю: %s", url)
+            continue
+        if not digest.startswith("sha256:") or len(digest) != len("sha256:") + 64:
+            logging.warning("У вложения релиза нет корректного sha256 — обновление недоступно.")
+            continue
+        if not isinstance(size, int) or size <= 0:
+            continue
+        return {"url": url, "size": size, "sha256": digest.split(":", 1)[1].lower()}
+    return None
+
+
+def _update_dir() -> Path:
+    """Приватный каталог под скачанный установщик (0700, как кэш): файл
+    исполняется с правами администратора, поэтому лежать в общедоступном
+    временном каталоге он не должен — иначе его можно подменить между
+    проверкой sha256 и запуском."""
+    target = resolve_cache_root("wash_journal_update")
+    target.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        os.chmod(target, 0o700)
+    return target
+
+
+def _serialize_update_job(job: UpdateJob | None) -> dict[str, Any]:
+    if job is None:
+        return {"active": False, "status": "idle"}
+    return {
+        "active": job.status == "running",
+        "status": job.status,
+        "phase": job.phase,
+        "version": job.version,
+        "downloaded": job.downloaded,
+        "total": job.total,
+        "ready": job.status == "ready",
+        "error": job.error,
+    }
+
+
+def _update_job_progress(job_id: str, **fields: Any) -> bool:
+    """Обновляет поля задачи, если она всё ещё актуальна. False — задачу
+    вытеснила новая, поток должен свернуться."""
+    with state_lock:
+        job = state.update_job
+        if job is None or job.id != job_id:
+            return False
+        for key, value in fields.items():
+            setattr(job, key, value)
+        return True
+
+
+def download_update_worker(job_id: str, asset: dict[str, Any], version: str) -> None:
+    target_dir = _update_dir()
+    # Имя с версией: разные обновления не затирают друг друга, а старое не
+    # выдаётся за новое, если версия сменилась между запусками.
+    target = target_dir / f"OptiCIP-Dashboard-Setup-{version}.exe"
+    tmp_target = target.with_suffix(".part")
+
+    # Установщики по ~22 МБ копились бы с каждым обновлением: перед новой
+    # загрузкой сносим всё лишнее. Каталог наш и содержит только эти файлы.
+    for stale in target_dir.iterdir():
+        if stale != target:
+            try:
+                stale.unlink()
+            except OSError:
+                logging.warning("Не удалось удалить старый файл обновления: %s", stale)
+    digest = hashlib.sha256()
+    downloaded = 0
+    try:
+        request = urllib.request.Request(
+            asset["url"], headers={"User-Agent": "OptiCIP-Dashboard"}
+        )
+        with urllib.request.urlopen(
+            request, timeout=UPDATE_DOWNLOAD_TIMEOUT_SECONDS
+        ) as response, open(tmp_target, "wb") as handle:
+            while True:
+                chunk = response.read(256 * 1024)
+                if not chunk:
+                    break
+                downloaded += len(chunk)
+                if downloaded > UPDATE_MAX_BYTES:
+                    raise ValueError("Ответ больше допустимого размера обновления.")
+                digest.update(chunk)
+                handle.write(chunk)
+                if not _update_job_progress(job_id, downloaded=downloaded):
+                    tmp_target.unlink(missing_ok=True)
+                    return
+
+        if not _update_job_progress(job_id, phase="verify"):
+            tmp_target.unlink(missing_ok=True)
+            return
+
+        actual = digest.hexdigest()
+        if not hmac.compare_digest(actual, asset["sha256"]):
+            raise ValueError("Контрольная сумма не совпала — файл повреждён или подменён.")
+        if downloaded != asset["size"]:
+            raise ValueError("Размер файла не совпал с заявленным в релизе.")
+
+        # Переименование — последний шаг: файл под финальным именем существует
+        # только целиком проверенным.
+        tmp_target.replace(target)
+        if os.name != "nt":
+            os.chmod(target, 0o700)
+        if not _update_job_progress(
+            job_id, status="ready", phase="ready", path=str(target), finished_at=time.time()
+        ):
+            target.unlink(missing_ok=True)
+    except Exception as error:  # noqa: BLE001 — пользователю нужен текст, а не трейс
+        logging.exception("Не удалось скачать обновление")
+        tmp_target.unlink(missing_ok=True)
+        _update_job_progress(
+            job_id,
+            status="error",
+            phase="error",
+            error=str(error) or "Не удалось скачать обновление.",
+            finished_at=time.time(),
+        )
+
+
+@app.post("/api/update/download")
+def update_download() -> JSONResponse:
+    settings = load_app_settings()
+    if not settings["check_updates"]:
+        raise HTTPException(status_code=400, detail="Проверка обновлений выключена в настройках.")
+
+    with state_lock:
+        active = state.update_job
+        if active is not None and active.status == "running":
+            return JSONResponse({"ok": True, "job": _serialize_update_job(active)})
+
+    payload = _fetch_latest_release()
+    latest = _release_tag(payload)
+    if not latest:
+        raise HTTPException(status_code=502, detail="Не удалось получить сведения о релизе.")
+    if not _is_newer_version(latest, APP_VERSION):
+        raise HTTPException(status_code=400, detail="Установлена последняя версия.")
+
+    asset = _pick_installer_asset(payload)
+    if asset is None:
+        raise HTTPException(
+            status_code=502, detail="В релизе нет установщика с контрольной суммой."
+        )
+
+    job = UpdateJob(id=uuid.uuid4().hex, version=latest, total=asset["size"])
+    with state_lock:
+        state.update_job = job
+    threading.Thread(
+        target=download_update_worker,
+        args=(job.id, asset, latest),
+        name="update-download",
+        daemon=True,
+    ).start()
+    return JSONResponse({"ok": True, "job": _serialize_update_job(job)})
+
+
+@app.get("/api/update/job")
+def update_job_status() -> JSONResponse:
+    with state_lock:
+        return JSONResponse(_serialize_update_job(state.update_job))
 
 
 @app.get("/api/update-check")
@@ -4109,8 +4322,12 @@ def update_check() -> JSONResponse:
     if not settings["check_updates"]:
         return JSONResponse({"enabled": False, "update_available": False})
 
-    latest = _fetch_latest_release_tag()
+    payload = _fetch_latest_release()
+    latest = _release_tag(payload)
     available = bool(latest) and _is_newer_version(latest, APP_VERSION)
+    # Установить «в один клик» можно только собранную Windows-версию: ставит
+    # .exe-установщик, а закрыть окно и перезапуститься умеет лишь десктоп-мост.
+    installable = available and os.name == "nt" and _pick_installer_asset(payload) is not None
     return JSONResponse(
         {
             "enabled": True,
@@ -4118,6 +4335,7 @@ def update_check() -> JSONResponse:
             "latest": latest,
             "update_available": available,
             "url": UPDATE_RELEASES_URL if available else "",
+            "installable": installable,
         }
     )
 

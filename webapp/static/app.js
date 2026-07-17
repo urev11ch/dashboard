@@ -639,6 +639,10 @@
     // Смещение таймзоны сервера (минуты к UTC). Приходит в /api/workspace-data;
     // если поля нет — считаем дни в зоне браузера (прежнее поведение).
     serverTzOffsetMin: null,
+    // Обновление: последний ответ /api/update-check и состояние скачивания.
+    updateInfo: null,
+    updateJob: null,
+    updateTimer: null,
   };
   const washListMetrics = {
     rowHeight: WASH_LIST_ROW_HEIGHT_FALLBACK,
@@ -2413,6 +2417,9 @@
                 <span class="settings-option-text"><strong>Автозапуск с Windows</strong></span>
                 <input type="checkbox" data-setting-autostart ${settings.autostart ? "checked" : ""}>
               </label>
+              <!-- Панель обновления: заполняется renderUpdatePanel() по данным
+                   /api/update-check. Пока обновления нет — остаётся пустой. -->
+              <div class="update-panel" data-update-panel hidden></div>
             </section>
             <section class="settings-page" data-settings-page="archives" hidden>
               <h3 class="settings-page-title">Архивы</h3>
@@ -2632,11 +2639,31 @@
           await saveAppSettings({ check_updates: enabled });
           if (enabled) {
             checkForUpdates(true);
+          } else {
+            // Выключили проверку — панель обновления должна уйти вместе с ней.
+            state.updateInfo = null;
+            renderUpdatePanel();
           }
           showToast("Настройки сохранены", "success");
         } catch (_error) {
           showToast("Не удалось сохранить настройки.", "error");
         }
+      });
+    }
+
+    // Панель обновления живёт внутри настроек: отрисовываем по тому, что уже
+    // known из проверки при старте, и вешаем делегированный клик — разметка
+    // панели перерисовывается целиком на каждом шаге.
+    renderUpdatePanel();
+    const updatePanel = settingsRoot.querySelector("[data-update-panel]");
+    if (updatePanel) {
+      updatePanel.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-update-install]");
+        if (!button) {
+          return;
+        }
+        button.disabled = true;
+        runHandler(startUpdateInstall());
       });
     }
 
@@ -2934,8 +2961,15 @@
         return;
       }
       const data = await response.json();
+      state.updateInfo = data;
+      renderUpdatePanel();
       if (data.update_available) {
-        showToast(`Доступно обновление ${data.latest}. Смотрите GitHub Releases.`, "info", 8000);
+        // Куда вести — зависит от того, умеем ли ставить сами: в десктопе это
+        // кнопка в настройках, в браузере остаётся страница релизов.
+        const where = canInstallUpdate()
+          ? "Установить можно в настройках."
+          : "Смотрите GitHub Releases.";
+        showToast(`Доступно обновление ${data.latest}. ${where}`, "info", 8000);
       } else if (notifyUpToDate && data.enabled && data.latest) {
         showToast("Установлена последняя версия.", "success");
       } else if (notifyUpToDate && data.enabled) {
@@ -2946,6 +2980,126 @@
       }
     } catch (_error) {
       // тихо — проверка обновлений не критична
+    }
+  }
+
+  // ---- Установка обновления в один клик ----------------------------------
+  // Доступна только в десктоп-сборке под Windows: ставит .exe-установщик, а
+  // закрыть окно и перезапуститься умеет лишь мост pywebview. В браузере
+  // (и на не-Windows) панель показывает обычную ссылку на Releases.
+  function canInstallUpdate() {
+    const info = state.updateInfo;
+    return Boolean(
+      info &&
+        info.installable &&
+        typeof window.pywebview?.api?.install_update === "function",
+    );
+  }
+
+  function renderUpdatePanel() {
+    const panel = document.querySelector("[data-update-panel]");
+    if (!panel) {
+      return;
+    }
+    const info = state.updateInfo;
+    if (!info || !info.update_available) {
+      panel.hidden = true;
+      panel.innerHTML = "";
+      return;
+    }
+
+    panel.hidden = false;
+    const job = state.updateJob;
+    const version = escapeHtml(String(info.latest || ""));
+
+    if (job && job.status === "running") {
+      const pct = job.total ? Math.round((job.downloaded / job.total) * 100) : 0;
+      const label =
+        job.phase === "verify"
+          ? "Проверка контрольной суммы…"
+          : `Скачивание ${formatBytes(job.downloaded)} из ${formatBytes(job.total)}`;
+      panel.innerHTML = `
+        <div class="update-panel-title">Обновление ${version}</div>
+        <div class="update-progress"><div class="update-progress-bar" style="width: ${pct}%"></div></div>
+        <p class="settings-note">${escapeHtml(label)}</p>
+      `;
+      return;
+    }
+
+    if (job && job.status === "error") {
+      panel.innerHTML = `
+        <div class="update-panel-title">Обновление ${version}</div>
+        <p class="settings-note update-panel-error">${escapeHtml(job.error || "Не удалось скачать обновление.")}</p>
+        <div class="settings-chart-actions">
+          <button type="button" class="ghost" data-update-install>Повторить</button>
+        </div>
+      `;
+      return;
+    }
+
+    if (canInstallUpdate()) {
+      panel.innerHTML = `
+        <div class="update-panel-title">Доступно обновление ${version}</div>
+        <p class="settings-note">Приложение скачает установщик, проверит его и закроется — Windows запросит подтверждение. После установки окно откроется снова.</p>
+        <div class="settings-chart-actions">
+          <button type="button" data-update-install>Установить обновление</button>
+        </div>
+      `;
+      return;
+    }
+
+    panel.innerHTML = `
+      <div class="update-panel-title">Доступно обновление ${version}</div>
+      <p class="settings-note">Скачайте установщик со страницы релизов: <a href="${escapeHtml(info.url || "")}" target="_blank" rel="noopener noreferrer">GitHub Releases</a>.</p>
+    `;
+  }
+
+  async function pollUpdateJob() {
+    const response = await fetchWithTimeout("/api/update/job", { headers: { Accept: "application/json" } });
+    if (!response.ok) {
+      throw new Error("update-job-failed");
+    }
+    state.updateJob = await response.json();
+    renderUpdatePanel();
+    return state.updateJob;
+  }
+
+  async function startUpdateInstall() {
+    try {
+      const response = await fetchWithTimeout("/api/update/download", { method: "POST" });
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}));
+        throw new Error(detail.detail || "Не удалось начать скачивание.");
+      }
+      state.updateJob = (await response.json()).job;
+      renderUpdatePanel();
+
+      // Опрос до завершения. Таймер снимаем на beforeunload (см. ниже) —
+      // иначе он тикал бы уже после закрытия окна.
+      while (true) {
+        await new Promise((resolve) => {
+          state.updateTimer = window.setTimeout(resolve, 500);
+        });
+        const job = await pollUpdateJob();
+        if (!job || job.status !== "running") {
+          break;
+        }
+      }
+
+      const job = state.updateJob;
+      if (!job || job.status !== "ready") {
+        showToast(job?.error || "Не удалось скачать обновление.", "error", 8000);
+        return;
+      }
+
+      const result = await window.pywebview.api.install_update();
+      if (!result?.ok) {
+        showToast(result?.error || "Не удалось запустить установщик.", "error", 8000);
+        return;
+      }
+      showToast("Запускаю установку — приложение закроется.", "info", 8000);
+    } catch (error) {
+      showToast(String(error.message || error), "error", 8000);
     }
   }
 
@@ -3747,6 +3901,14 @@
   // виртуализации — кэш отрисованного окна сбрасываем, чтобы высоты перемерились.
   // Дебаунс: во время перетаскивания рамки resize сыплется десятками в секунду,
   // а нам достаточно перемерить строки один раз, когда размер устоялся.
+  // Опрос скачивания обновления переживал бы закрытие окна: снимаем таймер.
+  window.addEventListener("beforeunload", () => {
+    if (state.updateTimer) {
+      window.clearTimeout(state.updateTimer);
+      state.updateTimer = null;
+    }
+  });
+
   let resizeDebounceTimer = 0;
   window.addEventListener("resize", () => {
     window.clearTimeout(resizeDebounceTimer);

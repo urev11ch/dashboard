@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -856,6 +857,51 @@ class DesktopBridge:
         except Exception:
             logging.exception("Не удалось закрыть окно")
             return {"ok": False}
+        return {"ok": True}
+
+    def install_update(self, *_args) -> dict[str, bool | str]:
+        """Запускает скачанный установщик и закрывает приложение.
+
+        Аргументов НЕТ намеренно: путь берём из состояния сервера (он в этом же
+        процессе), а не от JS. Приняв путь снаружи, мы дали бы любому скрипту в
+        окне исполнить произвольный .exe с правами администратора.
+
+        Установщик ждёт освобождения мьютекса (AppMutex в installer.iss),
+        поэтому сначала стартуем его, а следом закрываем окно — иначе установка
+        упрётся в занятый .exe.
+        """
+        if os.name != "nt":
+            return {"ok": False, "error": "Установка обновления доступна только в Windows."}
+
+        from webapp.app import state, state_lock
+
+        with state_lock:
+            job = state.update_job
+            # status == "ready" выставляется только после сверки sha256.
+            if job is None or job.status != "ready" or not job.path:
+                return {"ok": False, "error": "Обновление не скачано."}
+            installer = Path(job.path)
+
+        if not installer.is_file():
+            return {"ok": False, "error": "Файл обновления не найден."}
+
+        try:
+            subprocess.Popen(  # noqa: S603 — путь наш, из проверенного состояния
+                [
+                    str(installer),
+                    "/SILENT",
+                    "/NOCANCEL",
+                    "/RELAUNCH=1",
+                ],
+                close_fds=True,
+            )
+        except Exception as error:  # noqa: BLE001
+            logging.exception("Не удалось запустить установщик обновления")
+            return {"ok": False, "error": f"Не удалось запустить установщик: {error}"}
+
+        # Окно закрываем отложенно: дать установщику подняться и показать UAC,
+        # иначе пользователь увидит, как приложение исчезло, а согласия ещё нет.
+        threading.Timer(1.5, self.close_window).start()
         return {"ok": True}
 
     def choose_folder(self, payload: dict | None = None) -> dict[str, str | bool]:
