@@ -259,22 +259,26 @@ code {
   padding: 32px;
 }
 
+/* Ширина под содержимое, а не «во весь экран»: внутри список панелей и форма,
+   и на 920px строки растягивались, разрывая название и адрес по краям. */
 .welcome-card {
-  width: min(920px, 100%);
+  width: min(560px, 100%);
   background: var(--panel);
   backdrop-filter: blur(14px);
   border: 1px solid rgba(40, 58, 96, 0.1);
   border-radius: var(--radius-panel);
-  padding: 40px;
+  padding: 28px;
   box-shadow: var(--shadow);
 }
 
+/* Служебный заголовок, а не рекламный герой: clamp(34px…56px) с интерлиньяжем
+   0.96 и сжатием −0.05em спорил со всем остальным интерфейсом, который построен
+   на мелких радиусах и компактной типографике. */
 .welcome-card h1 {
-  margin-top: 14px;
-  max-width: 680px;
-  font-size: clamp(34px, 5vw, 56px);
-  line-height: 0.96;
-  letter-spacing: -0.05em;
+  margin-top: 4px;
+  font-size: 22px;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
 }
 
 .welcome-copy {
@@ -285,25 +289,42 @@ code {
   line-height: 1.7;
 }
 
+/* Сегментный переключатель вместо двух отдельных кнопок по 220×46: выбор из двух
+   взаимоисключающих режимов читается как один контрол, а не как два действия. */
 .welcome-source-switcher {
-  margin-top: 28px;
+  margin-top: 20px;
   display: inline-flex;
-  gap: 12px;
-  flex-wrap: wrap;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--panel-soft);
 }
 
-.welcome-source-tab {
-  min-width: 220px;
+/* Специфичность 0,2,0 — перебивает button.ghost (0,1,1) у неактивной вкладки. */
+.welcome-source-switcher .welcome-source-tab {
+  min-width: 0;
+  height: 30px;
+  padding: 0 16px;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+  letter-spacing: 0.06em;
 }
 
-.welcome-source-tab.is-active {
+.welcome-source-switcher .welcome-source-tab:hover {
+  color: var(--text);
+}
+
+.welcome-source-switcher .welcome-source-tab.is-active {
   background: var(--accent);
-  color: #fff;
   border-color: var(--accent);
+  color: #fff;
 }
 
 .welcome-source-stack {
-  margin-top: 22px;
+  margin-top: 18px;
 }
 
 .folder-form {
@@ -335,22 +356,15 @@ code {
   gap: 18px;
 }
 
+/* Без собственного фона и рамки: панель уже лежит внутри welcome-card, и своя
+   подложка давала коробку в коробке (а для FTP — ещё и третью, welcome-ftp-panel).
+   Разделяет режимы сегментный переключатель выше, обводка для этого не нужна. */
 .welcome-source-panel {
-  padding: 24px;
-  border-radius: var(--radius-panel);
-  background: var(--panel-soft);
-  border: 1px solid var(--line);
+  padding: 0;
 }
 
 .welcome-source-panel[hidden] {
   display: none;
-}
-
-.welcome-source-panel--primary {
-  background:
-    linear-gradient(135deg, rgba(23, 87, 255, 0.06), rgba(255, 255, 255, 0.92)),
-    var(--panel-soft);
-  border-color: rgba(23, 87, 255, 0.18);
 }
 
 .welcome-source-title {
@@ -377,14 +391,11 @@ code {
   gap: 16px;
 }
 
+/* Третий вложенный контейнер убран (см. welcome-source-panel): остаётся только
+   ритм между полями. */
 .welcome-ftp-panel {
   display: grid;
-  gap: 16px;
-  padding: 18px;
-  border: 1px solid rgba(23, 87, 255, 0.12);
-  border-radius: calc(var(--radius-panel) + 2px);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(245, 248, 255, 0.94));
+  gap: 14px;
 }
 
 .folder-form--ftp .welcome-form-grid {
@@ -3773,7 +3784,7 @@ body.modal-export-mode .chart-print-document {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 16px;
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
@@ -3786,10 +3797,11 @@ body.modal-export-mode .chart-print-document {
 .ftp-source-info {
   display: flex;
   flex-direction: column;
+  gap: 2px;
   min-width: 0;
 }
 .ftp-source-label {
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text);
 }
 .ftp-source-meta {
@@ -3802,11 +3814,33 @@ body.modal-export-mode .chart-print-document {
 }
 .ftp-source-actions {
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
   flex: 0 0 auto;
 }
 .ftp-source-actions form {
   margin: 0;
+}
+/* Кнопки строки — 32px вместо базовых 46: строка списка, а не главное действие
+   страницы. Иначе две кнопки по 46 задавали высоту строки и список выглядел
+   тяжелее, чем форма под ним. */
+.ftp-source-actions button {
+  height: 32px;
+  padding: 0 12px;
+}
+/* «Удалить» стоит вплотную к «Подключиться», а промах необратим — снимаем с него
+   вес: серый текст без рамки, цвет предупреждения появляется только при
+   наведении. Это оформление, поведение (confirm при отправке) не меняется. */
+.ftp-source-actions button.ghost {
+  padding: 0 8px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+.ftp-source-actions button.ghost:hover {
+  border-color: transparent;
+  background: var(--warn-bg);
+  color: var(--warn);
 }
 .welcome-ftp-add {
   margin-top: 14px;
