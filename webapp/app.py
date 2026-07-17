@@ -4145,9 +4145,27 @@ def cleanup_archives_now() -> JSONResponse:
     return JSONResponse({"ok": True, "days": days, **result})
 
 
+# Ведущий X[.Y[.Z[.W]]] с необязательным префиксом v. Суффиксы (-rc.2, «(hotfix)»)
+# в сравнение версий не идут — см. _parse_version.
+_VERSION_RE = re.compile(r"\s*v?(\d+(?:\.\d+){0,3})", re.IGNORECASE)
+# Строгая форма для тега, который подставляется в ИМЯ ФАЙЛА на диске: только цифры
+# и точки, без пробелов, слэшей и суффиксов.
+_SAFE_VERSION_RE = re.compile(r"\d+(?:\.\d+){0,3}")
+
+
 def _parse_version(value: str) -> tuple[int, ...]:
-    parts = re.findall(r"\d+", str(value or ""))
-    return tuple(int(p) for p in parts) or (0,)
+    """Числовой кортеж версии для сравнения.
+
+    Раньше здесь был re.findall(r"\\d+"), который выгребал ВСЕ числа строки:
+    «1.1.8-rc.2» превращалось в (1,1,8,2) и оказывалось новее релиза «1.1.8» —
+    то есть pre-release обгонял релиз. Сегодня это недостижимо (releases/latest
+    пропускает pre-release, а CI сверяет тег с __version__), но цена ошибки —
+    рассылка rc всем клиентам, поэтому разбираем только ведущий X.Y.Z.
+    """
+    match = _VERSION_RE.match(str(value or ""))
+    if not match:
+        return (0,)
+    return tuple(int(part) for part in match.group(1).split("."))
 
 
 def _is_newer_version(latest: str, current: str) -> bool:
@@ -4252,23 +4270,32 @@ def _update_job_progress(job_id: str, **fields: Any) -> bool:
 
 
 def download_update_worker(job_id: str, asset: dict[str, Any], version: str) -> None:
-    target_dir = _update_dir()
-    # Имя с версией: разные обновления не затирают друг друга, а старое не
-    # выдаётся за новое, если версия сменилась между запусками.
-    target = target_dir / f"OptiCIP-Dashboard-Setup-{version}.exe"
-    tmp_target = target.with_suffix(".part")
-
-    # Установщики по ~22 МБ копились бы с каждым обновлением: перед новой
-    # загрузкой сносим всё лишнее. Каталог наш и содержит только эти файлы.
-    for stale in target_dir.iterdir():
-        if stale != target:
-            try:
-                stale.unlink()
-            except OSError:
-                logging.warning("Не удалось удалить старый файл обновления: %s", stale)
+    # Пролог (mkdir/chmod каталога и чистка старых файлов) обязан быть ВНУТРИ try:
+    # он делает файловые операции и может кинуть OSError (нет места, права,
+    # каталог занят). Раньше он стоял снаружи — поток умирал молча, задача
+    # оставалась в статусе running навсегда, фронт крутил опрос вечно, а повторную
+    # попытку запрещал guard в /api/update/download до перезапуска приложения.
+    tmp_target: Path | None = None
     digest = hashlib.sha256()
     downloaded = 0
     try:
+        target_dir = _update_dir()
+        # Имя с версией: разные обновления не затирают друг друга, а старое не
+        # выдаётся за новое, если версия сменилась между запусками.
+        target = target_dir / f"OptiCIP-Dashboard-Setup-{version}.exe"
+        # Времянка уникальна по job_id: вытесненная задача не должна удалить .part
+        # той, что её сменила (обе видят один и тот же каталог и версию).
+        tmp_target = target.with_suffix(f".{job_id}.part")
+
+        # Установщики по ~22 МБ копились бы с каждым обновлением: перед новой
+        # загрузкой сносим всё лишнее. Каталог наш и содержит только эти файлы.
+        for stale in target_dir.iterdir():
+            if stale != target and stale != tmp_target:
+                try:
+                    stale.unlink()
+                except OSError:
+                    logging.warning("Не удалось удалить старый файл обновления: %s", stale)
+
         request = urllib.request.Request(
             asset["url"], headers={"User-Agent": "OptiCIP-Dashboard"}
         )
@@ -4313,7 +4340,8 @@ def download_update_worker(job_id: str, asset: dict[str, Any], version: str) -> 
             target.unlink(missing_ok=True)
     except Exception as error:  # noqa: BLE001 — пользователю нужен текст, а не трейс
         logging.exception("Не удалось скачать обновление")
-        tmp_target.unlink(missing_ok=True)
+        if tmp_target is not None:
+            tmp_target.unlink(missing_ok=True)
         _update_job_progress(
             job_id,
             status="error",
@@ -4325,27 +4353,67 @@ def download_update_worker(job_id: str, asset: dict[str, Any], version: str) -> 
 
 @app.post("/api/update/download")
 def update_download() -> JSONResponse:
+    # Слот задачи резервируем ПОД ТЕМ ЖЕ локом, что и проверку «уже качается?».
+    # Раньше между ними отпускался лок на _fetch_latest_release() (секунды сети),
+    # и два POST (двойной клик) проходили проверку оба: стартовали два воркера на
+    # один и тот же .part, каждый удалял времянку другого, и пользователь получал
+    # «Не удалось скачать обновление» на ровном месте.
     with state_lock:
         active = state.update_job
         if active is not None and active.status == "running":
             return JSONResponse({"ok": True, "job": _serialize_update_job(active)})
-
-    payload = _fetch_latest_release()
-    latest = _release_tag(payload)
-    if not latest:
-        raise HTTPException(status_code=502, detail="Не удалось получить сведения о релизе.")
-    if not _is_newer_version(latest, APP_VERSION):
-        raise HTTPException(status_code=400, detail="Установлена последняя версия.")
-
-    asset = _pick_installer_asset(payload)
-    if asset is None:
-        raise HTTPException(
-            status_code=502, detail="В релизе нет установщика с контрольной суммой."
-        )
-
-    job = UpdateJob(id=uuid.uuid4().hex, version=latest, total=asset["size"])
-    with state_lock:
+        # Готовый к установке результат — единственное, что имеет смысл вернуть
+        # вместо перекачки; годность проверяем ниже, когда узнаем свежий тег.
+        previous = active if active is not None and active.status == "ready" else None
+        job = UpdateJob(id=uuid.uuid4().hex)
         state.update_job = job
+
+    def release_slot() -> None:
+        """Снять резерв, если его никто не вытеснил. Без этого любой выход по
+        ошибке оставил бы задачу в running навсегда: проверка выше запретила бы
+        повтор до перезапуска приложения."""
+        with state_lock:
+            if state.update_job is job:
+                state.update_job = previous
+
+    try:
+        payload = _fetch_latest_release()
+        latest = _release_tag(payload)
+        if not latest:
+            raise HTTPException(status_code=502, detail="Не удалось получить сведения о релизе.")
+        if not _is_newer_version(latest, APP_VERSION):
+            raise HTTPException(status_code=400, detail="Установлена последняя версия.")
+        # Тег попадёт в имя файла на диске, поэтому проверяем его форму так же
+        # строго, как URL вложения: «1.2 (hotfix)» или тег со слэшем иначе уронит
+        # open() под невнятным FileNotFoundError вместо честной ошибки.
+        if not _SAFE_VERSION_RE.fullmatch(latest):
+            raise HTTPException(
+                status_code=502, detail=f"Непригодный номер версии в релизе: {latest}"
+            )
+        asset = _pick_installer_asset(payload)
+        if asset is None:
+            raise HTTPException(
+                status_code=502, detail="В релизе нет установщика с контрольной суммой."
+            )
+    except Exception:
+        release_slot()
+        raise
+
+    # Тот же релиз уже скачан и проверен (например, после промаха по UAC) —
+    # 22 МБ по сети ради имеющегося файла ни к чему.
+    if previous is not None and previous.version == latest and previous.path:
+        if Path(previous.path).is_file():
+            with state_lock:
+                if state.update_job is job:
+                    state.update_job = previous
+            return JSONResponse({"ok": True, "job": _serialize_update_job(previous)})
+
+    with state_lock:
+        if state.update_job is not job:
+            # Задачу вытеснила другая — не мешаем ей.
+            return JSONResponse({"ok": True, "job": _serialize_update_job(state.update_job)})
+        job.version = latest
+        job.total = asset["size"]
     logging.info(
         "Начинаю скачивание обновления %s → %s (%s Б) с %s",
         APP_VERSION,

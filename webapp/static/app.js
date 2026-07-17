@@ -625,6 +625,8 @@
   const WASH_LIST_OVERSCAN = 8;
   const SEARCH_INPUT_DEBOUNCE_MS = 180;
   const DEFAULT_PERIOD_PRESET = "7d";
+  // Потолок опроса /api/update/job: 500 мс × 2400 ≈ 20 минут.
+  const UPDATE_POLL_MAX_TICKS = 2400;
   const state = {
     washRows: [],
     washRowIndexesByObjectKey: new Map(),
@@ -643,6 +645,9 @@
     updateInfo: null,
     updateJob: null,
     updateTimer: null,
+    // Защёлка «скачивание/установка уже идёт»: disabled у кнопки живёт лишь до
+    // ближайшей перерисовки панели, а она перерисовывается на каждом опросе.
+    updateBusy: false,
   };
   const washListMetrics = {
     rowHeight: WASH_LIST_ROW_HEIGHT_FALLBACK,
@@ -2641,7 +2646,7 @@
         button.disabled = true;
         button.textContent = "Проверяю…";
         try {
-          await checkForUpdates(true);
+          await checkForUpdates();
         } finally {
           button.disabled = false;
           button.textContent = "Проверить";
@@ -3064,6 +3069,14 @@
   }
 
   async function startUpdateInstall() {
+    // Повторный вход запрещён: бэкенд отбивает второй POST только пока job в
+    // "running", а после "ready" — качает установщик заново и поднимает второй
+    // воркер. Кнопка от этого не защищает: renderUpdatePanel на каждом опросе
+    // вставляет свежую, уже включённую.
+    if (state.updateBusy) {
+      return;
+    }
+    state.updateBusy = true;
     try {
       const response = await fetchWithTimeout("/api/update/download", { method: "POST" });
       if (!response.ok) {
@@ -3075,6 +3088,7 @@
 
       // Опрос до завершения. Таймер снимаем на beforeunload (см. ниже) —
       // иначе он тикал бы уже после закрытия окна.
+      let ticks = 0;
       while (true) {
         await new Promise((resolve) => {
           state.updateTimer = window.setTimeout(resolve, 500);
@@ -3083,22 +3097,38 @@
         if (!job || job.status !== "running") {
           break;
         }
+        ticks += 1;
+        // Потолок ≈20 минут (500 мс × 2400). Установщик — десятки мегабайт, на
+        // тонком канале скачивание идёт долго, но залипший в "running" бэкенд
+        // иначе держал бы 2 запроса в секунду вечно, даже при закрытых
+        // настройках: цикл живёт в промисе, а не в панели.
+        if (ticks >= UPDATE_POLL_MAX_TICKS) {
+          throw new Error("Скачивание не завершилось за отведённое время.");
+        }
       }
 
       const job = state.updateJob;
       if (!job || job.status !== "ready") {
-        showToast(job?.error || "Не удалось скачать обновление.", "error", 8000);
-        return;
+        throw new Error(job?.error || "Не удалось скачать обновление.");
       }
 
       const result = await window.pywebview.api.install_update();
       if (!result?.ok) {
-        showToast(result?.error || "Не удалось запустить установщик.", "error", 8000);
-        return;
+        // Отказ от UAC приходит сюда: приложение осталось живым, обновление не
+        // установлено. Панель обязана показать причину и дать повтор.
+        throw new Error(result?.error || "Не удалось запустить установщик.");
       }
       showToast("Запускаю установку — приложение закроется.", "info", 8000);
     } catch (error) {
-      showToast(String(error.message || error), "error", 8000);
+      // Любой сбой (таймаут fetch, обрыв, не-200, отказ от UAC) обязан
+      // перевести панель в "error": ветка "running" рисует прогресс-бар БЕЗ
+      // кнопок, и панель залипала бы в «Скачивание…» до перезагрузки окна.
+      const message = String(error.message || error);
+      state.updateJob = { status: "error", error: message };
+      renderUpdatePanel();
+      showToast(message, "error", 8000);
+    } finally {
+      state.updateBusy = false;
     }
   }
 

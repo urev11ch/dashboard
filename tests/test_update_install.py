@@ -158,3 +158,111 @@ def test_download_removes_stale_installers(tmp_path, monkeypatch):
     assert app.state.update_job.status == "ready"
     assert not stale.exists()
     assert [p.name for p in tmp_path.iterdir()] == ["OptiCIP-Dashboard-Setup-9.9.9.exe"]
+
+
+def test_worker_prologue_failure_does_not_hang_job(tmp_path, monkeypatch):
+    """Сбой ДО скачивания обязан дать status=error, а не вечный running.
+
+    Пролог воркера (mkdir каталога, чистка старых файлов) делает файловые
+    операции и раньше стоял вне try: OSError убивал поток молча, задача навсегда
+    оставалась в running, фронт крутил опрос вечно, а повторную попытку запрещал
+    guard в /api/update/download — до перезапуска приложения.
+    """
+    def boom() -> None:
+        raise OSError("нет места на устройстве")
+
+    monkeypatch.setattr(app, "_update_dir", boom)
+
+    job = app.UpdateJob(id="job-prologue", version="9.9.9")
+    with app.state_lock:
+        app.state.update_job = job
+
+    app.download_update_worker(
+        "job-prologue",
+        {"url": "https://example.com/setup.exe", "size": 1, "sha256": "a" * 64},
+        "9.9.9",
+    )
+    assert app.state.update_job.status == "error"
+    assert app.state.update_job.error
+
+
+@pytest.mark.parametrize(
+    "tag, valid",
+    [
+        ("1.1.8", True),
+        ("1.1.8.4", True),
+        ("1.2 (hotfix)", False),
+        ("1.1.9/../evil", False),
+        ("1.1.8-rc.2", False),
+    ],
+)
+def test_only_plain_version_reaches_filename(tag, valid):
+    # Тег подставляется в имя файла на диске, поэтому его форма проверяется так же
+    # строго, как URL вложения.
+    assert bool(app._SAFE_VERSION_RE.fullmatch(tag)) is valid
+
+
+def test_prerelease_does_not_outrank_release():
+    # re.findall(r"\d+") выгребал все числа: «1.1.8-rc.2» → (1,1,8,2) считалось
+    # новее релиза «1.1.8», то есть rc обгонял релиз.
+    assert app._is_newer_version("1.1.8-rc.2", "1.1.8") is False
+    # Префикс v в теге при этом обязан по-прежнему пониматься.
+    assert app._is_newer_version("v2.0", "1.9.9") is True
+
+
+def test_running_job_is_not_restarted(monkeypatch):
+    # Второй POST при живом скачивании обязан присоединиться к той же задаче и
+    # даже не ходить в сеть — иначе стартовал бы второй воркер на тот же файл.
+    calls = []
+    monkeypatch.setattr(app, "_fetch_latest_release", lambda: calls.append(1) or {})
+    job = app.UpdateJob(id="busy", version="9.9.9")
+    with app.state_lock:
+        app.state.update_job = job
+    try:
+        app.update_download()
+        assert calls == [], "при живой задаче сети касаться незачем"
+        assert app.state.update_job is job
+    finally:
+        with app.state_lock:
+            app.state.update_job = None
+
+
+def test_failed_start_releases_reserved_slot(monkeypatch):
+    """Ошибка старта обязана снимать резерв задачи.
+
+    Слот резервируется под локом ДО сетевого запроса (иначе двойной клик даёт два
+    воркера на один .part). Но если запрос не удался, резерв надо снять: иначе
+    задача навсегда осталась бы в running и guard запретил бы повтор до
+    перезапуска приложения — то самое залипание, от которого и чинили.
+    """
+    monkeypatch.setattr(app, "_fetch_latest_release", dict)  # {} → релиз не получен
+    with app.state_lock:
+        app.state.update_job = None
+
+    with pytest.raises(app.HTTPException):
+        app.update_download()
+    assert app.state.update_job is None, "резерв не снят — задача залипла в running"
+
+
+def test_ready_installer_is_reused_without_redownload(tmp_path, monkeypatch):
+    # После промаха по UAC «Повторить» не должен заново тянуть 22 МБ: файл того же
+    # релиза уже скачан и проверен.
+    installer = tmp_path / "OptiCIP-Dashboard-Setup-9.9.9.exe"
+    installer.write_bytes(b"proven")
+    ready = app.UpdateJob(id="ready-1", version="9.9.9", status="ready", path=str(installer))
+    with app.state_lock:
+        app.state.update_job = ready
+
+    monkeypatch.setattr(app, "_fetch_latest_release", lambda: _release([_asset()]))
+    monkeypatch.setattr(app, "_is_newer_version", lambda latest, current: True)
+
+    def fail_if_started(*args, **kwargs):
+        raise AssertionError("перекачка не нужна: установщик уже проверен")
+
+    monkeypatch.setattr(app.threading, "Thread", fail_if_started)
+    try:
+        app.update_download()
+        assert app.state.update_job is ready
+    finally:
+        with app.state_lock:
+            app.state.update_job = None

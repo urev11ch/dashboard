@@ -141,6 +141,25 @@ def acquire_single_instance_lock() -> bool:
 AUTOSTART_REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 AUTOSTART_VALUE_NAME = "OptiCIP Dashboard"
 
+# Сколько ждём подтверждения, что установщик поднялся, прежде чем закрывать
+# окно. Inno Setup при отказе от UAC выходит сразу (код 1223), поэтому запас в
+# несколько секунд ловит и отказ, и падение на старте. Оператор может думать над
+# UAC дольше — тогда мы закроемся, а установщик дождётся освобождения AppMutex.
+INSTALLER_CONFIRM_WAIT = 8.0
+INSTALLER_POLL_INTERVAL = 0.25
+# Коды выхода Windows, по которым видно причину отказа.
+ERROR_CANCELLED = 1223  # пользователь нажал «Нет» в UAC
+ERROR_ELEVATION_REQUIRED = 740  # запуск требует повышения прав
+
+
+def _installer_exit_error(code: int) -> str:
+    """Человеческая причина по коду выхода установщика."""
+    if code == ERROR_CANCELLED:
+        return "Установка отменена: не выдано подтверждение Windows (UAC)."
+    if code == ERROR_ELEVATION_REQUIRED:
+        return "Для установки нужны права администратора."
+    return f"Установщик завершился с ошибкой (код {code})."
+
 
 def _autostart_command() -> str:
     """Команда запуска приложения для автозапуска. В собранной версии — путь к
@@ -930,7 +949,7 @@ class DesktopBridge:
                 return {"ok": False, "error": "Файл обновления не найден."}
 
             logging.info("Запускаю установщик обновления %s: %s", version, installer)
-            subprocess.Popen(  # noqa: S603 — путь наш, из проверенного состояния
+            proc = subprocess.Popen(  # noqa: S603 — путь наш, из проверенного состояния
                 [
                     str(installer),
                     "/SILENT",
@@ -940,13 +959,33 @@ class DesktopBridge:
                 env=_clean_pyinstaller_env(),
                 close_fds=True,
             )
-            logging.info("Установщик запущен, закрываю окно через 1.5 с.")
+
+            # Ждём подтверждения, что установщик действительно поднялся. Раньше
+            # окно закрывалось по таймеру безусловно: оператор жал «Нет» в UAC —
+            # и приложение всё равно исчезало, ничего не установив и не подняв
+            # себя обратно через /RELAUNCH. Промах по UAC — рядовое событие.
+            deadline = time.monotonic() + INSTALLER_CONFIRM_WAIT
+            while time.monotonic() < deadline:
+                code = proc.poll()
+                if code is None:
+                    time.sleep(INSTALLER_POLL_INTERVAL)
+                    continue
+                if code == 0:
+                    # Тихая установка не может закончиться за секунды и при этом
+                    # успешно: скорее всего установщик передал работу другому
+                    # процессу. Закрываться не на чем — пусть оператор повторит.
+                    logging.warning("Установщик вышел с кодом 0, не начав установку.")
+                    return {"ok": False, "error": "Установщик завершился, не начав установку."}
+                error_text = _installer_exit_error(code)
+                logging.warning("Установщик завершился с кодом %s: %s", code, error_text)
+                return {"ok": False, "error": error_text}
         except Exception as error:  # noqa: BLE001
             logging.exception("Не удалось запустить установщик обновления")
             return {"ok": False, "error": f"Не удалось запустить установщик: {error}"}
 
-        # Окно закрываем отложенно: дать установщику подняться и показать UAC,
-        # иначе пользователь увидит, как приложение исчезло, а согласия ещё нет.
+        # Установщик пережил окно ожидания — значит, работает. Закрываем окно
+        # отложенно, чтобы результат успел дойти до JS и показать тост.
+        logging.info("Установщик работает, закрываю окно через 1.5 с.")
         threading.Timer(1.5, self.close_window).start()
         return {"ok": True}
 
@@ -1270,13 +1309,45 @@ def force_exit(code: int) -> None:
     os._exit(code)
 
 
+def run_selftest() -> int:
+    """Самопроверка собранного .exe: грузит тяжёлые зависимости и выходит кодом.
+
+    Нужна CI (шаг «Smoke test executable»): собранный .exe иначе уезжает в релиз,
+    ни разу не будучи запущенным, — и ровно этот класс дефектов уже доехал до
+    заводских ПК («Failed to load Python DLL», 64116b5).
+
+    Ключ --remove-autostart для этого не годится: он возвращает код ДО
+    `import webview`, поэтому проверяет только бутлоадер onefile, загрузку Python
+    DLL и топ-левел импорты. Сломанный `collect_all(webview)` или мост
+    pythonnet/clr при этом прошёл бы CI и упал бы уже у оператора при открытии
+    окна. Здесь мы дёргаем те же функции, что и обычный старт (см. main), но без
+    окна: на раннере нет сессии рабочего стола, а нам нужен сам факт, что
+    библиотеки поднимаются из бандла.
+    """
+    try:
+        import webview  # noqa: F401 — проверяем именно факт импорта из бандла
+
+        preflight_windows_runtime()  # pythonnet: load("netfx") + clr.AddReference
+        load_web_app()  # FastAPI-приложение со всеми его зависимостями
+    except Exception:
+        logging.exception("Самопроверка не пройдена")
+        return 1
+    logging.info("Самопроверка пройдена: webview, pythonnet и веб-приложение загружаются")
+    return 0
+
+
 def handle_maintenance_args(argv: list[str]) -> int | None:
     """Служебные ключи командной строки. Возвращает код возврата, если ключ
     обработан, иначе None (обычный запуск).
 
     --remove-autostart вызывает деинсталлятор (см. installer.iss, [UninstallRun]
     с runasoriginaluser): сам деинсталлятор работает с админским токеном и чистил
-    бы HKCU администратора, а не пользователя, у которого прописан автозапуск."""
+    бы HKCU администратора, а не пользователя, у которого прописан автозапуск.
+
+    --selftest запускает CI после сборки, см. run_selftest."""
+    if "--selftest" in argv:
+        return run_selftest()
+
     if "--remove-autostart" not in argv:
         return None
 
