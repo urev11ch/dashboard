@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{{ page_title }}</title>
-  <link rel="icon" type="image/svg+xml" href="{{ request.url_for('static', path='washjournal-icon.svg') }}">
+  <link rel="icon" type="image/svg+xml" href="{{ request.url_for('static', path='washjournal-icon.svg') }}?v={{ asset_versions.icon_svg }}">
   <link rel="stylesheet" href="{{ request.url_for('static', path='style.css') }}?v={{ asset_versions.style_css }}">
 </head>
 <body>
   <div class="app-titlebar" data-app-titlebar hidden>
     <div class="app-titlebar-drag pywebview-drag-region" data-titlebar-drag>
-      <img class="app-titlebar-icon" src="{{ request.url_for('static', path='washjournal-icon.svg') }}" alt="" aria-hidden="true">
+      <img class="app-titlebar-icon" src="{{ request.url_for('static', path='washjournal-icon.svg') }}?v={{ asset_versions.icon_svg }}" alt="" aria-hidden="true">
       <span class="app-titlebar-title">OptiCIP Dashboard</span>
     </div>
     <div class="app-titlebar-controls">

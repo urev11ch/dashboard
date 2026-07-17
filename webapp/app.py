@@ -3559,6 +3559,9 @@ def page_context(request: Request, snapshot: AppStateSnapshot) -> dict[str, Any]
         "style_css": asset_version("style.css"),
         "wash_chart_js": asset_version("wash-chart.js"),
         "app_js": asset_version("app.js"),
+        # Иконка тоже версионируется: favicon и титлбар кэшируются браузером и
+        # WebView2 намертво, и после смены иконки показывалась бы прежняя.
+        "icon_svg": asset_version("washjournal-icon.svg"),
     }
     return {
         "request": request,
