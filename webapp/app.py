@@ -14,6 +14,7 @@ import posixpath
 import re
 import secrets
 import shutil
+import socket
 import sqlite3
 import sys
 import tarfile
@@ -223,6 +224,16 @@ DEFAULT_FTP_FORM_VALUES = {
     "password": "",
     "path": "/datalog",
 }
+
+# --- Обнаружение панелей в локальной сети (кнопка «Найти панель») ---------
+# Скан только по кнопке, только по приватной локальной подсети, только порт 21.
+FTP_DISCOVERY_PROBE_TIMEOUT = 0.4  # с на TCP-пробу порта 21
+FTP_DISCOVERY_BANNER_TIMEOUT = 1.5  # с на чтение приветствия FTP (220)
+FTP_DISCOVERY_CONCURRENCY = 128  # одновременных проб
+FTP_DISCOVERY_MAX_HOSTS = 1024  # предохранитель на размер подсети (>/22 не сканируем)
+# Признаки Weintek в приветствии FTP — эвристика, регистронезависимо. Панель
+# опознаётся только для сортировки/пометки; в список попадают все FTP-хосты.
+FTP_WEINTEK_HINTS = ("weintek", "cmt", "easybuilder", "ftpdmini", "hmi")
 
 PORTABLE_ENV_VAR = "OPTICIP_PORTABLE"
 APP_DATA_SUBDIRS = ("datalog", "temp")
@@ -4056,6 +4067,114 @@ def update_app_settings_route(payload: dict[str, Any] = Body(...)) -> JSONRespon
         ) from exc
 
     return JSONResponse({"ok": True, "settings": settings})
+
+
+def _local_ipv4_networks() -> tuple[str, list[ipaddress.IPv4Network]]:
+    """Свой основной IPv4 и приватные подсети, по которым имеет смысл искать
+    панель. Адрес выбираем UDP-«подключением» к внешнему адресу — пакет не
+    отправляется, ОС лишь выбирает исходящий интерфейс. Публичные и loopback-
+    адреса не сканируем (чтобы не «шуметь» вне доверенной локальной сети)."""
+    local_ip = ""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("8.8.8.8", 80))
+        local_ip = probe.getsockname()[0]
+    except OSError:
+        local_ip = ""
+    finally:
+        probe.close()
+
+    networks: list[ipaddress.IPv4Network] = []
+    if local_ip:
+        try:
+            addr = ipaddress.ip_address(local_ip)
+        except ValueError:
+            addr = None
+        if isinstance(addr, ipaddress.IPv4Address) and addr.is_private and not addr.is_loopback:
+            # /24 вокруг основного адреса — типовая заводская подсеть.
+            networks.append(ipaddress.ip_network(f"{local_ip}/24", strict=False))
+    return local_ip, networks
+
+
+async def _probe_ftp_host(host: str, semaphore: asyncio.Semaphore) -> dict[str, Any] | None:
+    """Пробует TCP-подключение к host:21; при успехе читает приветствие FTP.
+    Возвращает описание хоста либо None, если порт закрыт/недоступен."""
+    async with semaphore:
+        writer: asyncio.StreamWriter | None = None
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, FTP_DEFAULT_PORT),
+                timeout=FTP_DISCOVERY_PROBE_TIMEOUT,
+            )
+        except (OSError, asyncio.TimeoutError):
+            return None
+        banner = ""
+        try:
+            line = await asyncio.wait_for(
+                reader.readline(), timeout=FTP_DISCOVERY_BANNER_TIMEOUT
+            )
+            banner = line.decode("latin-1", "replace").strip()
+        except (OSError, asyncio.TimeoutError):
+            banner = ""
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
+
+    lowered = banner.lower()
+    return {
+        "host": host,
+        "port": FTP_DEFAULT_PORT,
+        "banner": banner,
+        "likely_weintek": any(hint in lowered for hint in FTP_WEINTEK_HINTS),
+    }
+
+
+async def discover_ftp_panels() -> dict[str, Any]:
+    """Сканирует локальную приватную подсеть по порту 21 и возвращает найденные
+    FTP-хосты (Weintek-подобные — первыми). Действие ручное и локальное."""
+    own_ip, networks = await asyncio.to_thread(_local_ipv4_networks)
+    hosts: list[str] = []
+    for network in networks:
+        if network.num_addresses - 2 > FTP_DISCOVERY_MAX_HOSTS:
+            # Слишком широкая подсеть — не рассылаем тысячи проб.
+            continue
+        for ip in network.hosts():
+            host = str(ip)
+            if host != own_ip:
+                hosts.append(host)
+    if not hosts:
+        return {"scanned": 0, "network": "", "panels": []}
+
+    semaphore = asyncio.Semaphore(FTP_DISCOVERY_CONCURRENCY)
+    probed = await asyncio.gather(*(_probe_ftp_host(host, semaphore) for host in hosts))
+    found = [item for item in probed if item is not None]
+    found.sort(
+        key=lambda item: (
+            not item["likely_weintek"],
+            tuple(int(part) for part in item["host"].split(".")),
+        )
+    )
+    return {
+        "scanned": len(hosts),
+        "network": str(networks[0]) if networks else "",
+        "panels": found,
+    }
+
+
+@app.post("/api/ftp/discover")
+async def api_ftp_discover() -> JSONResponse:
+    """Ищет панели (FTP-хосты) в локальной подсети. Только по нажатию кнопки —
+    guard middleware уже ограничивает эндпоинт локальными запросами."""
+    try:
+        result = await discover_ftp_panels()
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Не удалось выполнить поиск: {exc}"
+        ) from exc
+    return JSONResponse(result)
 
 
 @app.post("/api/chart-cache/clear")

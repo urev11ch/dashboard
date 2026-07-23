@@ -86,6 +86,11 @@
                   <input type="text" name="path" value="{{ ftp_form_defaults.path }}" placeholder="/datalog" autocomplete="off" spellcheck="false">
                 </label>
               </div>
+              <div class="ftp-discover" data-ftp-discover-root>
+                <button type="button" class="ghost" data-ftp-discover>Найти панель в сети</button>
+                <span class="ftp-discover-status" data-ftp-discover-status role="status" aria-live="polite"></span>
+                <ul class="ftp-discover-results" data-ftp-discover-results hidden></ul>
+              </div>
               <label for="ftpLabel">Название панели (необязательно)</label>
               <input id="ftpLabel" type="text" name="label" placeholder="Например: Цех 1" autocomplete="off" spellcheck="false">
               <label for="ftpPassword">Пароль</label>

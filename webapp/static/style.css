@@ -3780,6 +3780,47 @@ body.modal-export-mode .chart-print-document {
   display: grid;
   gap: 8px;
 }
+/* Обнаружение панели в сети (кнопка «Найти панель» + список найденных). */
+.ftp-discover {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 12px 0;
+}
+.ftp-discover-status {
+  font-size: 12px;
+  color: var(--muted);
+}
+.ftp-discover-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  display: grid;
+  gap: 6px;
+}
+.ftp-discover-item {
+  width: 100%;
+  text-align: left;
+  height: auto;
+  min-height: 34px;
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--panel-soft);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ftp-discover-item:hover {
+  border-color: rgba(23, 87, 255, 0.4);
+  background: var(--panel);
+}
 .ftp-source-item {
   display: flex;
   align-items: center;

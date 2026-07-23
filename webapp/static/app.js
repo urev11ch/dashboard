@@ -184,6 +184,100 @@
     });
   }
 
+  // Кнопка «Найти панель в сети»: скан локальной подсети по FTP (POST
+  // /api/ftp/discover), список найденных хостов, клик подставляет адрес в форму.
+  function initFtpDiscovery() {
+    const button = document.querySelector("[data-ftp-discover]");
+    if (!button) {
+      return;
+    }
+    const root = button.closest("[data-ftp-discover-root]");
+    const statusEl = root?.querySelector("[data-ftp-discover-status]");
+    const resultsEl = root?.querySelector("[data-ftp-discover-results]");
+    const form = button.closest("form");
+    if (!root || !resultsEl || !form) {
+      return;
+    }
+    const hostInput = form.querySelector('[name="host"]');
+    const portInput = form.querySelector('[name="port"]');
+
+    const setStatus = (text) => {
+      if (statusEl) {
+        statusEl.textContent = text || "";
+      }
+    };
+
+    const renderResults = (panels) => {
+      resultsEl.innerHTML = "";
+      if (!panels.length) {
+        resultsEl.hidden = true;
+        return;
+      }
+      panels.forEach((panel) => {
+        const item = document.createElement("li");
+        const choose = document.createElement("button");
+        choose.type = "button";
+        choose.className = "ftp-discover-item";
+        const mark = panel.likely_weintek ? "★ " : "";
+        const banner = panel.banner ? ` — ${panel.banner}` : "";
+        // textContent, не innerHTML: приветствие FTP — недоверенные данные хоста.
+        choose.textContent = `${mark}${panel.host}:${panel.port}${banner}`;
+        choose.title = panel.banner || "";
+        choose.addEventListener("click", () => {
+          if (hostInput) {
+            hostInput.value = panel.host;
+            hostInput.focus();
+          }
+          if (portInput) {
+            portInput.value = String(panel.port);
+          }
+          resultsEl.hidden = true;
+          setStatus(`Выбрана панель ${panel.host}`);
+        });
+        item.append(choose);
+        resultsEl.append(item);
+      });
+      resultsEl.hidden = false;
+    };
+
+    button.addEventListener("click", async () => {
+      if (button.disabled) {
+        return;
+      }
+      button.disabled = true;
+      resultsEl.hidden = true;
+      resultsEl.innerHTML = "";
+      setStatus("Сканирую локальную сеть…");
+      try {
+        const response = await fetchWithTimeout("/api/ftp/discover", {
+          method: "POST",
+          timeout: 30000,
+        });
+        if (!response.ok) {
+          throw new Error("ftp-discover-failed");
+        }
+        const data = await response.json();
+        const panels = Array.isArray(data.panels) ? data.panels : [];
+        if (!panels.length) {
+          setStatus(
+            data.scanned
+              ? `Проверено адресов: ${data.scanned}. Панели с FTP не найдены.`
+              : "Не удалось определить локальную сеть."
+          );
+          renderResults([]);
+          return;
+        }
+        setStatus(`Найдено: ${panels.length} (проверено ${data.scanned}). Выберите панель:`);
+        renderResults(panels);
+      } catch (_error) {
+        setStatus("");
+        showToast("Не удалось выполнить поиск панели.", "error");
+      } finally {
+        button.disabled = false;
+      }
+    });
+  }
+
   // Синхронизирует класс window-maximized с РЕАЛЬНЫМ состоянием окна (на случай
   // разворачивания средствами ОС — Aero Snap, Win+↑, перетаскивание к верху).
   async function refreshWindowMaximizedState() {
@@ -258,6 +352,7 @@
   initWelcomeSourceTabs();
   initFolderPickerButtons();
   initFolderDefaultButtons();
+  initFtpDiscovery();
   initDesktopTitlebar();
 
   const workspaceJobRoot = document.querySelector("[data-workspace-job]");
