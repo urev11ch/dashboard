@@ -2100,7 +2100,15 @@
     document.body.classList.add("modal-print-mode");
     await waitForNextFrame();
     await waitForNextFrame();
-    window.print();
+    try {
+      window.print();
+    } catch (error) {
+      // WebView без поддержки печати: снимаем печатный режим сразу, иначе body
+      // залипнет в печатной вёрстке (afterprint не сработает — диалог не открылся).
+      clearPrintMode();
+      clearDetachedPrintDocument();
+      throw error;
+    }
     window.setTimeout(() => {
       clearPrintMode();
       clearDetachedPrintDocument();
@@ -2108,11 +2116,25 @@
   }
 
   async function saveWashRowPdf(key, button) {
+    // Блокируем кнопку ДО getDetail (реальный сетевой запрос): иначе двойной клик
+    // до его резолва запускал бы два saveGraphPdf на общий printRoot, перетирая
+    // печатный документ друг друга. saveGraphPdf блокирует кнопку только у себя —
+    // уже после загрузки детали.
+    if (button?.disabled) {
+      return;
+    }
+    if (button) {
+      button.disabled = true;
+    }
     try {
       const detail = await getDetail(key);
       await saveGraphPdf(detail, button);
     } catch (_error) {
       showToast("Не удалось сохранить PDF. Попробуйте ещё раз.", "error");
+    } finally {
+      if (button) {
+        button.disabled = false;
+      }
     }
   }
 
@@ -2497,11 +2519,16 @@
 
     const defaultFolderInput = settingsRoot.querySelector("[data-setting-default-folder]");
     if (defaultFolderInput) {
-      defaultFolderInput.addEventListener("change", async (event) => {
+      defaultFolderInput.addEventListener("change", async () => {
+        // Через захваченную defaultFolderInput, а не event.currentTarget: он
+        // обнуляется по завершении диспетчеризации, и после await обращение к
+        // нему бросало бы TypeError → ложный тост «Не удалось сохранить».
         try {
-          const saved = await saveAppSettings({ default_folder_path: String(event.currentTarget.value || "").trim() });
+          const saved = await saveAppSettings({
+            default_folder_path: String(defaultFolderInput.value || "").trim(),
+          });
           if (saved && typeof saved.default_folder_path === "string") {
-            event.currentTarget.value = saved.default_folder_path;
+            defaultFolderInput.value = saved.default_folder_path;
           }
           showToast("Настройки сохранены", "success");
         } catch (_error) {
@@ -3710,7 +3737,9 @@
       const printButton = modalRoot.querySelector("[data-print-wash]");
       if (printButton) {
         printButton.addEventListener("click", () => {
-          void printReportDocument(detail, "print");
+          // runHandler, а не void: printReportDocument может отклониться (WebView
+          // без печати) — иначе улетело бы в unhandled rejection.
+          runHandler(printReportDocument(detail, "print"));
         });
       }
       modalRoot.querySelectorAll("[data-open-wash-key]").forEach((element) => {

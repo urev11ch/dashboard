@@ -3327,7 +3327,11 @@ async def ftp_auto_refresh_loop() -> None:
         try:
             await asyncio.sleep(FTP_AUTO_REFRESH_POLL_SECONDS)
 
-            settings = load_app_settings()
+            # load_app_settings читает и парсит файл с диска, а trigger_ftp_auto_refresh
+            # берёт state_lock (threading.Lock) и делает syscall'ы — оба уводим в
+            # поток, иначе ожидание лока встаёт на event loop и подвешивает все
+            # запросы и SSE (та же защита, что в workspace_job_status_stream).
+            settings = await asyncio.to_thread(load_app_settings)
             if not settings["ftp_auto_refresh_enabled"]:
                 # При выключенном автообновлении откладываем следующий запуск на
                 # полный интервал после повторного включения.
@@ -3340,7 +3344,7 @@ async def ftp_auto_refresh_loop() -> None:
                 continue
 
             last_run = now
-            if trigger_ftp_auto_refresh():
+            if await asyncio.to_thread(trigger_ftp_auto_refresh):
                 logging.info("Фоновое автообновление FTP запущено.")
         except asyncio.CancelledError:
             raise
@@ -3679,16 +3683,21 @@ def index(request: Request) -> HTMLResponse:
 @app.post("/workspace/open")
 def open_workspace(path: str = Form(...)) -> RedirectResponse:
     candidate = Path(path).expanduser()
-    with state_lock:
-        if not candidate.exists() or not candidate.is_dir():
+    # exists/is_dir/resolve — stat/realpath syscalls, а save_last_folder_path пишет
+    # файл на диск. Держать их под глобальным state_lock (на нём ждут SSE и все
+    # запросы) незачем: проверку и запись делаем вне лока, под ним — только смена
+    # состояния и запуск джоба.
+    if not candidate.exists() or not candidate.is_dir():
+        with state_lock:
             state.error = f"Папка не найдена: {candidate}"
             if state.analysis is None:
                 state.pending_root = None
                 state.pending_display_root = ""
-            return RedirectResponse(url="/", status_code=303)
+        return RedirectResponse(url="/", status_code=303)
 
-        resolved = candidate.resolve()
-        save_last_folder_path(str(resolved))
+    resolved = candidate.resolve()
+    save_last_folder_path(str(resolved))
+    with state_lock:
         start_workspace_job(resolved, display_target=str(resolved))
     return RedirectResponse(url="/", status_code=303)
 

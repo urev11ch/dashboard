@@ -17,7 +17,7 @@ from pathlib import Path
 
 import uvicorn
 
-from runtime_paths import resolve_log_root
+from runtime_paths import ensure_private_directory, resolve_log_root
 
 
 HOST = "127.0.0.1"
@@ -84,8 +84,15 @@ def resolve_webview_storage_path() -> Path:
     # Профиль WebView2 рядом с каталогом логов: на Windows их родитель — runtime
     # root, на других платформах — writable state-каталог приложения.
     path = resolve_log_root().parent / "webview-data"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    if sys.platform == "win32":
+        # На Windows приватность профиля наследуется от %LOCALAPPDATA% (как у кэша
+        # в resolve_cache_root) — ACL руками не трогаем.
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    # На многопользовательской POSIX профиль WebView (cookies/localStorage/кэш)
+    # должен быть закрыт от других локальных пользователей — тот же 0700 с
+    # проверкой владельца, что и у кэша приложения.
+    return ensure_private_directory(path)
 
 
 # Хэндл мьютекса (Windows) или открытый лок-файл (иначе) держим живым всё время

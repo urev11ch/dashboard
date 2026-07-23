@@ -351,7 +351,12 @@ def build_cycle_sample_range_index(
         stream_key = sample_stream_by_channel.get(cycle.channel, "")
         timestamps = timestamps_by_stream.get(stream_key, [])
         start_index = bisect_left(timestamps, cycle.start_ts)
-        end_index = bisect_right(timestamps, cycle.end_ts)
+        # bisect_left, а не bisect_right: cycle.end_ts = метка СЛЕДУЮЩЕГО сэмплa
+        # (build_segments задаёт конец операции так, чтобы не было щелей на
+        # графике). bisect_right включил бы эту первую точку следующей операции в
+        # срез; при совпадении объекта+программы она просачивалась бы в набор.
+        # Свои сэмплы всегда строго раньше end_ts, поэтому bisect_left их не режет.
+        end_index = bisect_left(timestamps, cycle.end_ts)
         indexed[make_cycle_key(cycle)] = (start_index, end_index)
     return indexed
 
@@ -393,12 +398,16 @@ def stream_samples(analysis: AnalysisResult, stream_key: str) -> list[Sample]:
 
 def analysis_samples_for_cycle(analysis: AnalysisResult, cycle: Cycle) -> list[Sample]:
     cycle_key = make_cycle_key(cycle)
-    stream_key = analysis.sample_stream_by_channel.get(cycle.channel, "")
-    samples = stream_samples(analysis, stream_key)
     start_index, end_index = analysis.sample_ranges_by_cycle_key.get(cycle_key, (0, 0))
+    # Пустой диапазон отсекаем ДО обращения к потоку: иначе на цикле, которому
+    # оценивать нечего, зря распаковывался бы многомегабайтный pickle, а при
+    # временно недоступном side-файле SampleStreamUnavailable выдал бы «нет
+    # данных» вместо «оценивать нечего».
     if start_index >= end_index:
         return []
 
+    stream_key = analysis.sample_stream_by_channel.get(cycle.channel, "")
+    samples = stream_samples(analysis, stream_key)
     return [
         sample
         for sample in samples[start_index:end_index]
@@ -1179,8 +1188,12 @@ def analyze_single_db_file(
         db_path=resolved_db_path,
         channel=resolved_channel,
         samples=prune_samples_to_cycles(samples, cycles, margin_seconds=max_gap_seconds),
-        segments=segments,
-        cycles=cycles,
+        # segments/cycles нужны здесь только для прунинга сэмплов выше. В чанк их
+        # не кладём: build_analysis_result пересобирает их по объединённому потоку
+        # канала (склейка через границу суток), а хранение раздувало бы пофайловый
+        # pickle-кэш мёртвыми данными.
+        segments=[],
+        cycles=[],
         objects=objects,
     )
 

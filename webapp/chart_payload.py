@@ -135,8 +135,11 @@ def build_cycle_chart_payload(
         points = []
         for sample in cycle_samples:
             value = getattr(sample, config["id"])
-            if value is None:
+            if value is None or not math.isfinite(value):
                 # NULL в архиве (обрыв связи) — точку на кривую не кладём.
+                # Нефинитное (NaN/Inf от неисправного канала) — тоже: JSONResponse
+                # рендерит с allow_nan=False и на таком значении отдал бы 500
+                # вместо штатной ветки has_data=False.
                 continue
             # Значения не правим: концентрация клипается один раз, на разборе
             # строки архива (иначе статистика и кривая расходятся).

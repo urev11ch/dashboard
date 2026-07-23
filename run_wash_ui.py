@@ -15,9 +15,17 @@ LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 ALLOW_REMOTE_ENV_VAR = "OPTICIP_ALLOW_REMOTE"
 
 
+def _strip_ipv6_brackets(host: str) -> str:
+    # Оператор может записать IPv6-литерал в скобках ([::1]), но getaddrinfo и
+    # uvicorn ждут его БЕЗ скобок (::1) — иначе getaddrinfo бросает gaierror на
+    # адресе, который сам код объявляет допустимым. Снимаем скобки один раз.
+    if host.startswith("[") and host.endswith("]"):
+        return host[1:-1]
+    return host
+
+
 def _is_loopback(host: str) -> bool:
-    # strip("[]") — адрес IPv6 может быть записан как [::1].
-    return host.strip("[]").lower() in LOOPBACK_HOSTS
+    return _strip_ipv6_brackets(host).lower() in LOOPBACK_HOSTS
 
 
 def remote_access_allowed() -> bool:
@@ -33,6 +41,9 @@ def remote_access_allowed() -> bool:
 
 def resolve_host() -> str:
     host = (os.environ.get("HOST") or "127.0.0.1").strip() or "127.0.0.1"
+    # Нормализуем [::1] → ::1 сразу: дальше host уходит в getaddrinfo и uvicorn,
+    # которые скобочную форму не принимают.
+    host = _strip_ipv6_brackets(host)
     if _is_loopback(host):
         return host
 
@@ -60,6 +71,11 @@ def main() -> None:
         port = int(os.environ.get("PORT") or 8765)
     except ValueError:
         print("Переменная окружения PORT должна быть числом.", file=sys.stderr)
+        raise SystemExit(2)
+    # Диапазон проверяем сами: getaddrinfo молча берёт порт по модулю 65536, из-за
+    # чего проба bind-ила бы ДРУГОЙ порт, а uvicorn.run падал бы сырым OverflowError.
+    if not 0 <= port <= 65535:
+        print("Переменная окружения PORT должна быть в диапазоне 0–65535.", file=sys.stderr)
         raise SystemExit(2)
 
     # Проверяем порт заранее: вместо непонятного traceback/выхода uvicorn —

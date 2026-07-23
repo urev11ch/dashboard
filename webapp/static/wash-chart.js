@@ -916,9 +916,15 @@
         );
       });
 
+      // Серии без точек (пустой канал — нет датчика/обрыв) на графике не рисуются
+      // и панель под них отбрасывает describePanels. Легенду и контролы строим по
+      // тому же признаку, иначе в легенде висит несуществующая кривая, а в
+      // «Настройке кривых» — цвет/тип для линии, которой на графике нет.
+      const visibleSeries = styledPayload.series.filter((series) => series.points?.length);
+
       const legend = document.createElement("div");
       legend.className = "wash-chart-legend";
-      legend.innerHTML = styledPayload.series
+      legend.innerHTML = visibleSeries
         .map((series) => {
           const dashAttribute = series.dasharray ? `stroke-dasharray="${series.dasharray}"` : "";
           return `
@@ -942,7 +948,7 @@
             : ""
         }
         <div class="wash-chart-controls-grid">
-          ${styledPayload.series
+          ${visibleSeries
             .map((series) => {
               const safeLabel = escapeHtml(series.label);
               const safeId = escapeHtml(series.id);
@@ -1106,9 +1112,14 @@
 
       const panelIndexToLayout = new Map(panelLayouts.map((layout) => [layout.panel.panelIndex, layout]));
 
-      // Порог «свежести» точки для тултипа: ~3 медианных периода логирования
-      // серии. Через больший зазор (панель молчала) ближайшая точка — не
-      // «текущее значение», а устаревшее: её в тултипе не показываем.
+      // Порог «свежести» точки для тултипа: через большой зазор (панель молчала)
+      // ближайшая точка — не «текущее значение», а устаревшее, и её не показываем.
+      // База порога — P90 дельт, а НЕ медиана: у прореженного ряда дельты
+      // бимодальны (крошечные между бакетами и до ширины бакета внутри него),
+      // медиана смещена к малым значениям и порог получался уже реальных зазоров
+      // между сохранёнными точками → значение в тултипе мигало на плотных
+      // участках. Верхний перцентиль отражает нормальный шаг сохранённых точек,
+      // а настоящий провал (несколько молчащих бакетов) всё равно его превышает.
       const seriesGapThreshold = styledPayload.series.map((series) => {
         const seriesPoints = series.points || [];
         if (seriesPoints.length < 2) {
@@ -1125,10 +1136,8 @@
           return Infinity;
         }
         deltas.sort((left, right) => left - right);
-        const middle = Math.floor(deltas.length / 2);
-        const median =
-          deltas.length % 2 === 0 ? (deltas[middle - 1] + deltas[middle]) / 2 : deltas[middle];
-        return median * 3;
+        const percentileIndex = Math.min(deltas.length - 1, Math.floor(deltas.length * 0.9));
+        return deltas[percentileIndex] * 3;
       });
 
       const updateHover = (event) => {
