@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { ensureAnalysis } from "./helpers.js";
+import { ensureAnalysis, openWashList } from "./helpers.js";
 
 // Проверка обновлений — разовое действие по кнопке в настройках (автопроверки
 // при старте нет). Ответ /api/update-check подменяем: настоящий поход на GitHub
@@ -14,8 +14,7 @@ function mockUpdateCheck(page, payload) {
 }
 
 async function openUpdatesSettings(page) {
-  await page.goto("/");
-  await expect(page.locator("#washList [data-key]").first()).toBeVisible({ timeout: 15000 });
+  await openWashList(page);
   await page.click("#openSettings");
   await page.click('[data-settings-nav="updates"]');
 }

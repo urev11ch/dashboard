@@ -1,14 +1,13 @@
 import { test, expect } from "@playwright/test";
-import { ensureAnalysis } from "./helpers.js";
+import { ensureAnalysis, openWashList } from "./helpers.js";
 
 test.beforeEach(async ({ page }) => {
   await ensureAnalysis(page);
 });
 
 test("открытие мойки показывает график", async ({ page }) => {
-  await page.goto("/");
+  await openWashList(page);
   const firstRow = page.locator("#washList [data-key]").first();
-  await expect(firstRow).toBeVisible({ timeout: 15000 });
   await firstRow.click();
 
   // Модалка мойки с SVG-графиком (WashChart.mount отрисовал серии).
@@ -18,8 +17,7 @@ test("открытие мойки показывает график", async ({ p
 });
 
 test("смена сортировки перерисовывает список", async ({ page }) => {
-  await page.goto("/");
-  await expect(page.locator("#washList [data-key]").first()).toBeVisible({ timeout: 15000 });
+  await openWashList(page);
 
   const firstBefore = await page.locator("#washList [data-key]").first().getAttribute("data-key");
 
@@ -37,8 +35,7 @@ test("смена сортировки перерисовывает список"
 });
 
 test("сбой обновления разблокирует кнопку и показывает ошибку", async ({ page }) => {
-  await page.goto("/");
-  await expect(page.locator("#washList [data-key]").first()).toBeVisible({ timeout: 15000 });
+  await openWashList(page);
 
   // Имитируем зависший/упавший бэкенд на обновлении: fetchWithTimeout должен
   // отклонить промис, catch — показать ошибку экрана, finally — снять disabled.

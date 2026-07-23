@@ -1,4 +1,5 @@
 import path from "node:path";
+import { expect } from "@playwright/test";
 
 // Гарантирует, что сервер проанализировал папку-фикстуру с тестовыми .db и в
 // списке есть мойки. Фикстура лежит в репозитории (datalog/ в .gitignore и в CI
@@ -21,4 +22,18 @@ export async function ensureAnalysis(page) {
     if (job.active === false) break;
     await page.waitForTimeout(300);
   }
+}
+
+// Открывает журнал моек с включённым периодом «Весь период».
+//
+// По умолчанию журнал показывает мойки за последние 7 дней
+// (DEFAULT_PERIOD_PRESET = "7d"), а .db-фикстуры имеют ФИКСИРОВАННУЮ дату и со
+// временем выпадают из этого окна — из-за чего список становился пустым и тесты
+// падали «через неделю после фиксации фикстур» (данные с бэкенда есть, но
+// клиентский фильтр их прячет). Переключение на «Все» делает тесты
+// независимыми от текущей даты.
+export async function openWashList(page) {
+  await page.goto("/");
+  await page.locator('[data-period-preset="all"]').click();
+  await expect(page.locator("#washList [data-key]").first()).toBeVisible({ timeout: 15000 });
 }
