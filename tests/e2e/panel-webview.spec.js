@@ -47,7 +47,7 @@ test("попап поиска: имя, «Пароль», «Добавить па
   await expect(modal.locator('input[name="label"]')).toHaveValue("Weintek cMT-3C6F");
   await expect(modal.getByText("Пароль", { exact: true })).toBeVisible();
   await expect(modal.getByRole("button", { name: "Добавить панель" })).toBeVisible();
-  await expect(modal.getByRole("button", { name: "Веб-просмотр" })).toHaveCount(0);
+  await expect(modal.getByRole("button", { name: "WebView" })).toHaveCount(0);
   await expect(modal.getByText(":21")).toHaveCount(0);
 });
 
@@ -99,8 +99,19 @@ test.describe("сохранённая панель", () => {
     await page.goto("/");
     await page.click("[data-panel-connect]");
     const modal = page.locator(".ftp-connect-modal");
-    await expect(modal.getByRole("button", { name: "Веб-просмотр" })).toBeVisible();
+    await expect(modal.getByRole("button", { name: "WebView" })).toBeVisible();
     await expect(modal.getByRole("button", { name: "Графики" })).toBeVisible();
+  });
+
+  test("«Изменить» переименовывает панель в списке", async ({ page }) => {
+    await page.goto("/");
+    await page.click("[data-panel-rename]");
+    const modal = page.locator(".ftp-connect-modal");
+    await expect(modal).toBeVisible();
+    await modal.locator('input[name="label"]').fill("Цех 5");
+    await modal.getByRole("button", { name: "Сохранить" }).click();
+    await page.waitForLoadState("networkidle");
+    await expect(page.locator(".ftp-source-label")).toHaveText("Цех 5");
   });
 
   test("«Веб-просмотр» открывает окно/вкладку с /app/dashboard (не iframe)", async ({
@@ -118,7 +129,7 @@ test.describe("сохранённая панель", () => {
 
     await page.goto("/");
     await page.click("[data-panel-connect]");
-    await page.getByRole("button", { name: "Веб-просмотр" }).click();
+    await page.getByRole("button", { name: "WebView" }).click();
 
     await expect
       .poll(() => page.evaluate(() => window.__opened), { timeout: 15000 })

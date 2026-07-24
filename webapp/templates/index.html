@@ -53,6 +53,9 @@
                     data-host="{{ src.host }}"
                     data-scheme="{{ src.web_scheme }}"
                     data-label="{{ src.label }}">Подключиться</button>
+                  <button type="button" class="ghost" data-panel-rename
+                    data-source-id="{{ src.id }}"
+                    data-label="{{ src.label }}">Изменить</button>
                   <form method="post" action="/workspace/ftp-source/delete" onsubmit="return confirm('Удалить сохранённую панель?');">
                     <input type="hidden" name="source_id" value="{{ src.id }}">
                     <button type="submit" class="ghost">Удалить</button>
@@ -143,7 +146,10 @@
 
       <footer class="welcome-footer">
         <span class="welcome-version">Версия {{ app_version }}</span>
-        <button type="button" class="ghost" data-welcome-settings>Настройки</button>
+        <div class="welcome-update">
+          <span class="welcome-update-status" data-update-status role="status" aria-live="polite"></span>
+          <button type="button" class="ghost" data-update-btn>Проверить обновления</button>
+        </div>
       </footer>
     </section>
   </main>
@@ -168,12 +174,12 @@
           {% endif %}
         </div>
         <div class="screen-header-buttons">
-          <button type="button" class="ghost" data-wash-webview hidden>Веб-просмотр</button>
+          <button type="button" class="ghost" data-wash-webview hidden>WebView</button>
           <form method="post" action="/workspace/refresh" id="workspaceRefreshForm">
             <button type="submit">Обновить данные</button>
           </form>
           <form method="post" action="/workspace/reset">
-            <button type="submit" class="ghost">Сменить источник</button>
+            <button type="submit" class="ghost">Главное меню</button>
           </form>
           <button type="button" class="ghost" id="openObjectEditor">Редактор объектов</button>
           <button type="button" class="ghost screen-settings-button" id="openSettings" aria-label="Настройки" title="Настройки">

@@ -3913,23 +3913,11 @@ body.modal-export-mode .chart-print-document {
   gap: 8px;
   margin-top: 4px;
 }
-/* Кнопка «Веб-просмотр» в попапе панели — основное действие сверху. */
+/* Кнопка действия (WebView/Графики) в попапе панели — во всю ширину. */
 .ftp-connect-web {
   width: 100%;
 }
-/* Тумблер в диалоге настроек welcome (автообновление). */
-.welcome-settings-toggle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--text);
-}
-.welcome-settings-toggle input {
-  width: auto;
-  flex: none;
-}
-/* Разделитель «Архивы моек» между веб-просмотром и формой пароля. */
+/* Разделитель между действиями в попапе. */
 .ftp-connect-divider {
   margin-top: 4px;
   font-size: 12px;

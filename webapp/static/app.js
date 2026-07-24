@@ -376,107 +376,68 @@
     });
   }
 
-  // Кнопка «Настройки» на экране выбора источника открывает самодостаточный
-  // диалог (проверка/установка обновлений). САМОДОСТАТОЧНОСТЬ обязательна: экран
-  // выбора источника — до гейта `if (!hasWorkspace) return`, где state/toastRoot/
-  // checkForUpdates ещё в TDZ. Диалог использует только fetch + свои элементы.
-  function openWelcomeSettingsDialog() {
-    const dialog = document.createElement("dialog");
-    dialog.className = "ftp-connect-modal";
-    const box = document.createElement("div");
-    box.className = "ftp-connect-form";
-
-    const title = document.createElement("div");
-    title.className = "ftp-connect-title";
-    title.textContent = "Настройки";
-
-    // --- Автообновление FTP (глобальная настройка, как в настройках архивов) ---
-    const autoHeading = document.createElement("div");
-    autoHeading.className = "ftp-connect-divider";
-    autoHeading.textContent = "Автообновление FTP";
-
-    const autoRow = document.createElement("label");
-    autoRow.className = "welcome-settings-toggle";
-    const autoCheck = document.createElement("input");
-    autoCheck.type = "checkbox";
-    const autoText = document.createElement("span");
-    autoText.textContent = "Обновлять данные автоматически";
-    autoRow.append(autoCheck, autoText);
-
-    const intervalRow = document.createElement("label");
-    intervalRow.className = "ftp-connect-field";
-    intervalRow.append(document.createTextNode("Интервал, мин"));
-    const intervalInput = document.createElement("input");
-    intervalInput.type = "number";
-    intervalInput.min = "1";
-    intervalInput.max = "1440";
-    intervalInput.step = "1";
-    intervalInput.value = "5";
-    intervalRow.append(intervalInput);
-
-    const saveAuto = () => {
-      fetch("/api/settings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ftp_auto_refresh_enabled: autoCheck.checked,
-          ftp_auto_refresh_minutes: Number(intervalInput.value) || 5,
-        }),
-      }).catch(() => {});
-    };
-    autoCheck.addEventListener("change", saveAuto);
-    intervalInput.addEventListener("change", saveAuto);
-    // Текущие значения — с бэкенда (глобальные настройки приложения).
-    fetch("/api/settings", { headers: { Accept: "application/json" } })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((s) => {
-        if (s) {
-          autoCheck.checked = s.ftp_auto_refresh_enabled !== false;
-          if (s.ftp_auto_refresh_minutes) {
-            intervalInput.value = String(s.ftp_auto_refresh_minutes);
-          }
-        }
-      })
-      .catch(() => {});
-
-    const heading = document.createElement("div");
-    heading.className = "ftp-connect-divider";
-    heading.textContent = "Обновления";
-
-    const statusEl = document.createElement("div");
-    statusEl.className = "welcome-update-status";
-    statusEl.setAttribute("role", "status");
-    statusEl.setAttribute("aria-live", "polite");
+  // Умная кнопка обновления на экране выбора источника. САМОДОСТАТОЧНА: экран
+  // рендерится ДО гейта `if (!hasWorkspace) return`, где state/toastRoot/
+  // checkForUpdates ещё в TDZ — только fetch + свои элементы. Режим «check» —
+  // проверка; если есть устанавливаемое обновление, та же кнопка становится
+  // «Установить обновление» (режим «install»).
+  function initWelcomeUpdateButton() {
+    const button = document.querySelector("[data-update-btn]");
+    if (!button) {
+      return;
+    }
+    const statusEl = document.querySelector("[data-update-status]");
     const setStatus = (text) => {
-      statusEl.textContent = text || "";
+      if (statusEl) {
+        statusEl.textContent = text || "";
+      }
     };
-
-    const installBtn = document.createElement("button");
-    installBtn.type = "button";
-    installBtn.className = "ftp-connect-web";
-    installBtn.textContent = "Установить обновление";
-    installBtn.hidden = true;
-
-    const checkBtn = document.createElement("button");
-    checkBtn.type = "button";
-    checkBtn.className = "ftp-connect-web";
-    checkBtn.textContent = "Проверить обновления";
+    const CHECK_LABEL = "Проверить обновления";
+    const INSTALL_LABEL = "Установить обновление";
+    let mode = "check";
+    let busy = false;
 
     // Установить «в один клик» можно только собранную Windows-версию через мост
-    // pywebview (ставит .exe, закрывает окно). Иначе — только ссылка на Releases.
+    // pywebview. Иначе (браузер/не-Windows) — только ссылка на GitHub Releases.
     const canInstall = (data) =>
       !!data &&
       data.update_available &&
       data.installable &&
       typeof window.pywebview?.api?.install_update === "function";
 
-    let installBusy = false;
-    installBtn.addEventListener("click", async () => {
-      if (installBusy) {
-        return;
+    async function runCheck() {
+      button.textContent = "Проверяю…";
+      setStatus("");
+      try {
+        const response = await fetch("/api/update-check", {
+          headers: { Accept: "application/json" },
+        });
+        if (!response.ok) {
+          throw new Error("update-check-failed");
+        }
+        const data = await response.json();
+        if (data.update_available && canInstall(data)) {
+          mode = "install"; // та же кнопка превращается в «Установить обновление»
+          setStatus(`Доступно обновление ${data.latest}.`);
+          button.textContent = INSTALL_LABEL;
+          return;
+        }
+        if (data.update_available) {
+          setStatus(`Доступно обновление ${data.latest}. Смотрите GitHub Releases.`);
+        } else if (data.latest) {
+          setStatus("Установлена последняя версия.");
+        } else {
+          // Пустой latest — «не выяснили» (нет сети/релизов), не «актуально».
+          setStatus("Не удалось проверить обновления.");
+        }
+        button.textContent = CHECK_LABEL;
+      } catch (_error) {
+        setStatus("Не удалось проверить обновления.");
+        button.textContent = CHECK_LABEL;
       }
-      installBusy = true;
-      installBtn.disabled = true;
+    }
+
+    async function runInstall() {
       setStatus("Скачиваю обновление…");
       try {
         const started = await fetch("/api/update/download", { method: "POST" });
@@ -514,89 +475,30 @@
           throw new Error(result?.error || "Не удалось запустить установщик.");
         }
         setStatus("Запускаю установку — приложение закроется…");
+        // Успех: приложение закроется — кнопку в исходное не возвращаем.
       } catch (error) {
         setStatus(String(error.message || error));
-        installBtn.disabled = false;
-      } finally {
-        installBusy = false;
+        button.textContent = INSTALL_LABEL; // остаёмся в режиме установки (повтор)
       }
-    });
+    }
 
-    checkBtn.addEventListener("click", async () => {
-      if (checkBtn.disabled) {
+    button.addEventListener("click", async () => {
+      if (busy) {
         return;
       }
-      checkBtn.disabled = true;
-      const original = checkBtn.textContent;
-      checkBtn.textContent = "Проверяю…";
-      setStatus("");
-      installBtn.hidden = true;
+      busy = true;
+      button.disabled = true;
       try {
-        const response = await fetch("/api/update-check", {
-          headers: { Accept: "application/json" },
-        });
-        if (!response.ok) {
-          throw new Error("update-check-failed");
-        }
-        const data = await response.json();
-        if (data.update_available) {
-          const installable = canInstall(data);
-          setStatus(
-            installable
-              ? `Доступно обновление ${data.latest}.`
-              : `Доступно обновление ${data.latest}. Смотрите GitHub Releases.`,
-          );
-          installBtn.hidden = !installable;
-        } else if (data.latest) {
-          setStatus("Установлена последняя версия.");
+        if (mode === "install") {
+          await runInstall();
         } else {
-          // Пустой latest — «не выяснили» (нет сети/релизов), не «актуально».
-          setStatus("Не удалось проверить обновления.");
+          await runCheck();
         }
-      } catch (_error) {
-        setStatus("Не удалось проверить обновления.");
       } finally {
-        checkBtn.disabled = false;
-        checkBtn.textContent = original;
+        busy = false;
+        button.disabled = false;
       }
     });
-
-    const actions = document.createElement("div");
-    actions.className = "ftp-connect-actions";
-    const close = document.createElement("button");
-    close.type = "button";
-    close.className = "ghost";
-    close.textContent = "Закрыть";
-    close.addEventListener("click", () => dialog.close());
-    actions.append(close);
-
-    box.append(
-      title,
-      autoHeading,
-      autoRow,
-      intervalRow,
-      heading,
-      statusEl,
-      installBtn,
-      checkBtn,
-      actions,
-    );
-    dialog.append(box);
-    dialog.addEventListener("click", (event) => {
-      if (event.target === dialog) {
-        dialog.close();
-      }
-    });
-    dialog.addEventListener("close", () => dialog.remove());
-    document.body.append(dialog);
-    dialog.showModal();
-  }
-
-  function initWelcomeSettings() {
-    const button = document.querySelector("[data-welcome-settings]");
-    if (button) {
-      button.addEventListener("click", openWelcomeSettingsDialog);
-    }
   }
 
   // Запоминает контекст панели для экрана графиков (быстрый переход графики→веб).
@@ -643,7 +545,7 @@
     const webBtn = document.createElement("button");
     webBtn.type = "button";
     webBtn.className = "ftp-connect-web";
-    webBtn.textContent = "Веб-просмотр";
+    webBtn.textContent = "WebView";
     webBtn.addEventListener("click", () => {
       dialog.close();
       openPanelWebView(host, scheme, label);
@@ -697,6 +599,71 @@
           button.dataset.scheme || "http",
           button.dataset.label || button.dataset.host || "",
         );
+      });
+    });
+  }
+
+  // Диалог переименования сохранённой панели: поле имени → сабмит на
+  // /workspace/ftp-source/rename (форма, серверный редирект на /).
+  function openRenameDialog(sourceId, label) {
+    const dialog = document.createElement("dialog");
+    dialog.className = "ftp-connect-modal";
+    const form = document.createElement("form");
+    form.method = "post";
+    form.action = "/workspace/ftp-source/rename";
+    form.className = "ftp-connect-form";
+
+    const sid = document.createElement("input");
+    sid.type = "hidden";
+    sid.name = "source_id";
+    sid.value = sourceId;
+
+    const title = document.createElement("div");
+    title.className = "ftp-connect-title";
+    title.textContent = "Название панели";
+
+    const nameLabel = document.createElement("label");
+    nameLabel.className = "ftp-connect-field";
+    nameLabel.append(document.createTextNode("Название"));
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.name = "label";
+    nameInput.value = label || "";
+    nameInput.autocomplete = "off";
+    nameInput.required = true;
+    nameLabel.append(nameInput);
+
+    const actions = document.createElement("div");
+    actions.className = "ftp-connect-actions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "ghost";
+    cancel.textContent = "Отмена";
+    cancel.addEventListener("click", () => dialog.close());
+    const save = document.createElement("button");
+    save.type = "submit";
+    save.textContent = "Сохранить";
+    actions.append(cancel, save);
+
+    form.append(sid, title, nameLabel, actions);
+    dialog.append(form);
+    dialog.addEventListener("click", (event) => {
+      if (event.target === dialog) {
+        dialog.close();
+      }
+    });
+    dialog.addEventListener("close", () => dialog.remove());
+    document.body.append(dialog);
+    dialog.showModal();
+    nameInput.focus();
+    nameInput.select();
+  }
+
+  // Кнопка «Изменить» у сохранённой панели → диалог переименования.
+  function initSavedPanelRename() {
+    document.querySelectorAll("[data-panel-rename]").forEach((button) => {
+      button.addEventListener("click", () => {
+        openRenameDialog(button.dataset.sourceId || "", button.dataset.label || "");
       });
     });
   }
@@ -799,8 +766,9 @@
   initFolderDefaultButtons();
   initFtpDiscovery();
   initSavedPanelConnect();
+  initSavedPanelRename();
   initWashWebViewButton();
-  initWelcomeSettings();
+  initWelcomeUpdateButton();
   initDesktopTitlebar();
 
   const workspaceJobRoot = document.querySelector("[data-workspace-job]");

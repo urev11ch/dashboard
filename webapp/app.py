@@ -909,6 +909,23 @@ def remove_ftp_profile_dir(conn_id: str) -> None:
         shutil.rmtree(trash_dir, ignore_errors=True)
 
 
+def rename_ftp_connection(conn_id: str, label: str) -> bool:
+    """Меняет отображаемое имя сохранённой панели. Пустое имя — сбрасываем на
+    автолейбл (host:port/path). True, если запись найдена и обновлена."""
+    label = (label or "").strip()
+    with ftp_sources_lock:
+        registry = load_ftp_sources_registry()
+        updated = False
+        for conn in registry["connections"]:
+            if conn.get("id") == conn_id:
+                conn["label"] = label or conn.get("host") or "Панель"
+                updated = True
+                break
+        if updated:
+            save_ftp_sources_registry(registry)
+    return updated
+
+
 def delete_ftp_connection(conn_id: str) -> None:
     with ftp_sources_lock:
         registry = load_ftp_sources_registry()
@@ -3818,6 +3835,17 @@ def add_ftp_source(
             state.error = str(exc)
         return RedirectResponse(url="/", status_code=303)
     upsert_ftp_connection(config, label=label)
+    return RedirectResponse(url="/", status_code=303)
+
+
+@app.post("/workspace/ftp-source/rename")
+def rename_ftp_source(
+    source_id: str = Form(...), label: str = Form("")
+) -> RedirectResponse:
+    """Переименовывает сохранённую панель (правка названия в списке)."""
+    saved_id = source_id.strip()
+    if saved_id:
+        rename_ftp_connection(saved_id, label)
     return RedirectResponse(url="/", status_code=303)
 
 
