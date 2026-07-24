@@ -4197,14 +4197,14 @@ async def _fetch_easyweb_title(host: str, port: int, use_tls: bool) -> str | Non
     return match.group(1).strip() if match else ""
 
 
-async def _probe_http_easyweb(host: str) -> str | None:
+async def _probe_http_easyweb(host: str) -> tuple[str, str] | None:
     """Ищет веб-интерфейс EasyWeb на host по HTTP :80, затем HTTPS :443 (панели с
-    «[TLS]» отдают веб только по https). Возвращает `<title>` первой ответившей
-    EasyWeb-морды, либо None, если это не панель."""
+    «[TLS]» отдают веб только по https). Возвращает (`<title>`, схема
+    "http"/"https") первой ответившей EasyWeb-морды, либо None — не панель."""
     for port, use_tls in HTTP_EASYWEB_PORTS:
         title = await _fetch_easyweb_title(host, port, use_tls)
         if title is not None:
-            return title
+            return title, ("https" if use_tls else "http")
     return None
 
 
@@ -4227,6 +4227,15 @@ def _is_weintek_mac(mac: str) -> bool:
     """True, если MAC начинается с OUI Weintek (00:0C:26)."""
     normalized = (mac or "").replace("-", ":").lower()
     return any(normalized.startswith(prefix) for prefix in WEINTEK_MAC_PREFIXES)
+
+
+def _weintek_name_from_mac(mac: str) -> str:
+    """Имя панели по умолчанию = `cMT-` + два последних октета MAC (заглавными).
+    Напр. 00:0c:26:11:3c:6f → «cMT-3C6F». Пусто, если MAC не из 6 октетов."""
+    octets = (mac or "").replace("-", ":").split(":")
+    if len(octets) != 6 or not all(len(o) == 2 for o in octets):
+        return ""
+    return "cMT-" + (octets[4] + octets[5]).upper()
 
 
 def _read_arp_table() -> dict[str, str]:
@@ -4300,10 +4309,12 @@ async def _probe_ftp_host(host: str, semaphore: asyncio.Semaphore) -> dict[str, 
                 pass
 
         # Опознание по веб-морде — основной признак (пароль не нужен).
-        easyweb_title = await _probe_http_easyweb(host)
-        easyweb = easyweb_title is not None
+        easyweb_result = await _probe_http_easyweb(host)
+        easyweb = easyweb_result is not None
         name = ""
+        web_scheme = ""  # http/https EasyWeb — для веб-просмотра /app/dashboard
         if easyweb:
+            easyweb_title, web_scheme = easyweb_result
             # Имя: обратный DNS (cMT-XXXX) приоритетнее дженерик-title «cMT».
             name = (await _reverse_dns_name(host)) or (easyweb_title or "")
 
@@ -4314,6 +4325,7 @@ async def _probe_ftp_host(host: str, semaphore: asyncio.Semaphore) -> dict[str, 
         "port": FTP_DEFAULT_PORT,
         "banner": banner,
         "name": name,
+        "web_scheme": web_scheme,
         "confirmed_weintek": easyweb,  # подтверждено веб-интерфейсом EasyWeb
         "likely_weintek": easyweb or banner_hint,
     }
@@ -4351,8 +4363,11 @@ async def discover_ftp_panels() -> dict[str, Any]:
         if item["mac_weintek"]:
             item["confirmed_weintek"] = True
             item["likely_weintek"] = True
-            if not item.get("name"):  # имя не добыли через EasyWeb — берём из DNS
-                item["name"] = await _reverse_dns_name(item["host"])
+            # Имя = cMT-<последние 2 октета MAC> (надёжно). Кастомное имя из
+            # EasyWeb/DNS сохраняем, дженерик-«cMT»/пустое заменяем на MAC-имя.
+            current = item.get("name") or ""
+            if not current or current.lower() == "cmt":
+                item["name"] = _weintek_name_from_mac(mac) or current
         seen.add(item["host"])
 
     # Панели, опознанные по MAC, но не ответившие на :21 (FTP выкл/медленный):
@@ -4364,13 +4379,15 @@ async def discover_ftp_panels() -> dict[str, Any]:
         if ip in host_set and ip not in seen and ip != own_ip and _is_weintek_mac(mac)
     ]
     for ip in mac_only:
+        mac = arp.get(ip, "")
         responded.append(
             {
                 "host": ip,
                 "port": FTP_DEFAULT_PORT,
                 "banner": "",
-                "name": await _reverse_dns_name(ip),
-                "mac": arp.get(ip, ""),
+                "name": _weintek_name_from_mac(mac) or await _reverse_dns_name(ip),
+                "web_scheme": "",  # web не зондировали (на :21 не ответил)
+                "mac": mac,
                 "mac_weintek": True,
                 "confirmed_weintek": True,
                 "likely_weintek": True,

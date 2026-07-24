@@ -3898,6 +3898,50 @@ body.modal-export-mode .chart-print-document {
   gap: 8px;
   margin-top: 4px;
 }
+/* Кнопка «Веб-просмотр» в попапе панели — основное действие сверху. */
+.ftp-connect-web {
+  width: 100%;
+}
+/* Разделитель «Архивы моек» между веб-просмотром и формой пароля. */
+.ftp-connect-divider {
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+/* Полноэкранный оверлей веб-просмотра панели (iframe EasyWeb). */
+.panel-webview {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+}
+.panel-webview-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-soft);
+}
+.panel-webview-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.panel-webview-frame {
+  flex: 1;
+  width: 100%;
+  border: 0;
+}
 .ftp-source-item {
   display: flex;
   align-items: center;

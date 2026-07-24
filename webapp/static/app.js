@@ -204,12 +204,15 @@
       }
     };
 
-    // Всплывающее окно подключения к выбранной панели: имя (из EasyWeb/DNS,
-    // редактируемое) + пароль. По «Подключиться» постит на /workspace/open-ftp
-    // (тот же серверный путь, что «Добавить и подключить»); имя пользователя
-    // сервер форсит на uploadhis, папка — /datalog.
+    // Имя панели по умолчанию: «Weintek <имя>» (имя из EasyWeb/DNS, иначе host).
+    const panelDisplayName = (panel) =>
+      panel.name ? `Weintek ${panel.name}` : `Weintek ${panel.host}`;
+
+    // Всплывающее окно выбранной панели: два действия — веб-просмотр (без пароля)
+    // и архивы моек (пароль → /workspace/open-ftp; учётку сервер форсит в
+    // uploadhis, папка /datalog).
     const openConnectDialog = (panel) => {
-      const panelName = panel.name || `Панель ${panel.host}`;
+      const displayName = panelDisplayName(panel);
       const dialog = document.createElement("dialog");
       dialog.className = "ftp-connect-modal";
 
@@ -232,11 +235,22 @@
 
       const title = document.createElement("div");
       title.className = "ftp-connect-title";
-      // textContent (не innerHTML): имя/host — недоверенные данные из сети.
-      title.textContent = "Подключение к панели";
-      const sub = document.createElement("div");
-      sub.className = "ftp-connect-sub";
-      sub.textContent = `${panelName} · ${panel.host}:${panel.port}`;
+      // textContent (не innerHTML): имя — недоверенные данные из сети.
+      title.textContent = displayName;
+
+      // Веб-просмотр — сразу, без пароля (EasyWeb авторизуется сам).
+      const webBtn = document.createElement("button");
+      webBtn.type = "button";
+      webBtn.className = "ftp-connect-web";
+      webBtn.textContent = "Веб-просмотр";
+      webBtn.addEventListener("click", () => {
+        dialog.close();
+        openPanelWebView(panel.host, panel.web_scheme, displayName);
+      });
+
+      const divider = document.createElement("div");
+      divider.className = "ftp-connect-divider";
+      divider.textContent = "Архивы моек";
 
       const nameLabel = document.createElement("label");
       nameLabel.className = "ftp-connect-field";
@@ -244,13 +258,13 @@
       const nameInput = document.createElement("input");
       nameInput.type = "text";
       nameInput.name = "label";
-      nameInput.value = panelName; // имя из EasyWeb/DNS, можно поправить
+      nameInput.value = displayName; // «Weintek cMT-3C6F», можно поправить
       nameInput.autocomplete = "off";
       nameLabel.append(nameInput);
 
       const passLabel = document.createElement("label");
       passLabel.className = "ftp-connect-field";
-      passLabel.append(document.createTextNode("Пароль (по умолчанию 111111)"));
+      passLabel.append(document.createTextNode("Пароль"));
       const passInput = document.createElement("input");
       passInput.type = "password";
       passInput.name = "password";
@@ -268,10 +282,10 @@
       cancel.addEventListener("click", () => dialog.close());
       const connect = document.createElement("button");
       connect.type = "submit";
-      connect.textContent = "Подключиться";
+      connect.textContent = "Открыть архивы";
       actions.append(cancel, connect);
 
-      form.append(title, sub, nameLabel, passLabel, actions);
+      form.append(title, webBtn, divider, nameLabel, passLabel, actions);
       dialog.append(form);
       // Клик по подложке (вне формы) закрывает окно.
       dialog.addEventListener("click", (event) => {
@@ -297,10 +311,10 @@
         const choose = document.createElement("button");
         choose.type = "button";
         choose.className = "ftp-discover-item";
-        // Показываем имя панели (из EasyWeb/DNS), иначе host.
-        // textContent (не innerHTML): имя/host — недоверенные данные из сети.
-        const shown = panel.name || panel.host;
-        choose.textContent = `Панель Weintek · ${shown} (${panel.host}:${panel.port})`;
+        // Формат: «Weintek cMT-3C6F (IP)». textContent — данные из сети.
+        choose.textContent = panel.name
+          ? `Weintek ${panel.name} (${panel.host})`
+          : `Weintek (${panel.host})`;
         choose.addEventListener("click", () => openConnectDialog(panel));
         item.append(choose);
         resultsEl.append(item);
@@ -342,10 +356,7 @@
           renderResults([]);
           return;
         }
-        setStatus(
-          `Панелей Weintek: ${panels.length} (проверено ${data.scanned}). ` +
-            `Выберите панель и введите пароль:`
-        );
+        setStatus("");  // список говорит сам за себя — без строки-счётчика
         renderResults(panels);
       } catch (_error) {
         // Инлайновый статус, не showToast: экран выбора источника — до гейта,
@@ -402,6 +413,74 @@
         button.disabled = false;
         button.textContent = original;
       }
+    });
+  }
+
+  // Открывает URL во внешнем браузере: десктоп — через мост (webbrowser), веб —
+  // новая вкладка. Запасной путь для веб-просмотра, если iframe не отрисовался.
+  function openExternalUrl(url) {
+    const api = window.pywebview && window.pywebview.api;
+    if (api && typeof api.open_external === "function") {
+      api.open_external({ url });
+    } else {
+      window.open(url, "_blank", "noopener");
+    }
+  }
+
+  // Веб-просмотр панели: полноэкранный оверлей с iframe EasyWeb (/app/dashboard).
+  // Самодостаточен (без toastRoot/state) — работает и на экране выбора источника.
+  // Схема http/https берётся из обнаружения (панели с TLS отдают веб по https).
+  function openPanelWebView(host, scheme, displayName) {
+    const url = `${scheme || "http"}://${host}/app/dashboard`;
+    const overlay = document.createElement("div");
+    overlay.className = "panel-webview";
+
+    const bar = document.createElement("div");
+    bar.className = "panel-webview-bar";
+    const back = document.createElement("button");
+    back.type = "button";
+    back.className = "ghost";
+    back.textContent = "← Назад";
+    back.addEventListener("click", () => overlay.remove());
+    const title = document.createElement("span");
+    title.className = "panel-webview-title";
+    title.textContent = displayName || host; // textContent — данные из сети
+    const ext = document.createElement("button");
+    ext.type = "button";
+    ext.className = "ghost";
+    ext.textContent = "Открыть в браузере";
+    ext.addEventListener("click", () => openExternalUrl(url));
+    bar.append(back, title, ext);
+
+    const frame = document.createElement("iframe");
+    frame.className = "panel-webview-frame";
+    frame.src = url;
+    frame.referrerPolicy = "no-referrer";
+
+    overlay.append(bar, frame);
+    document.addEventListener(
+      "keydown",
+      function onEsc(event) {
+        if (event.key === "Escape") {
+          overlay.remove();
+          document.removeEventListener("keydown", onEsc);
+        }
+      },
+    );
+    document.body.append(overlay);
+  }
+
+  // Веб-просмотр для сохранённых панелей (кнопка в списке). Схема неизвестна —
+  // по умолчанию http; если не откроется, поможет «Открыть в браузере».
+  function initSavedPanelWebView() {
+    document.querySelectorAll("[data-panel-webview]").forEach((button) => {
+      button.addEventListener("click", () => {
+        openPanelWebView(
+          button.dataset.host || "",
+          button.dataset.scheme || "http",
+          button.dataset.label || button.dataset.host || "",
+        );
+      });
     });
   }
 
@@ -480,6 +559,7 @@
   initFolderPickerButtons();
   initFolderDefaultButtons();
   initFtpDiscovery();
+  initSavedPanelWebView();
   initWelcomeUpdateCheck();
   initDesktopTitlebar();
 

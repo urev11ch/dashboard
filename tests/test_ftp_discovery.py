@@ -239,8 +239,8 @@ def test_probe_http_easyweb_falls_back_to_https(monkeypatch):
     monkeypatch.setattr(app, "_fetch_easyweb_title", fake_fetch)
     monkeypatch.setattr(app, "HTTP_EASYWEB_PORTS", ((80, False), (443, True)))
 
-    title = asyncio.run(app._probe_http_easyweb("10.0.0.9"))
-    assert title == "cMT"
+    result = asyncio.run(app._probe_http_easyweb("10.0.0.9"))
+    assert result == ("cMT", "https")  # title + схема
     assert calls == [(80, False), (443, True)]  # порядок: сначала :80, затем :443
 
 
@@ -318,13 +318,9 @@ def test_discover_identifies_panel_by_weintek_mac(monkeypatch):
     async def fake_probe(host, _sem):
         return canned.get(host)
 
-    async def fake_dns(_host):
-        return "cMT-3C6F"
-
     monkeypatch.setattr(app, "_probe_ftp_host", fake_probe)
-    monkeypatch.setattr(app, "_reverse_dns_name", fake_dns)
     monkeypatch.setattr(
-        app, "_read_arp_table", lambda: {"192.168.1.77": "00:0c:26:aa:bb:cc"}
+        app, "_read_arp_table", lambda: {"192.168.1.77": "00:0c:26:11:3c:6f"}
     )
 
     result = asyncio.run(app.discover_ftp_panels())
@@ -332,7 +328,7 @@ def test_discover_identifies_panel_by_weintek_mac(monkeypatch):
     assert [p["host"] for p in panels] == ["192.168.1.77"]
     assert panels[0]["confirmed_weintek"] is True
     assert panels[0]["mac_weintek"] is True
-    assert panels[0]["name"] == "cMT-3C6F"  # имя добрали по DNS
+    assert panels[0]["name"] == "cMT-3C6F"  # имя из последних октетов MAC (3C:6F)
 
 
 def test_discover_adds_mac_panel_without_ftp_response(monkeypatch):
@@ -347,22 +343,18 @@ def test_discover_adds_mac_panel_without_ftp_response(monkeypatch):
     async def fake_probe(_host, _sem):
         return None  # никто не ответил на :21
 
-    async def fake_dns(_host):
-        return "cMT-3C6F"
-
     monkeypatch.setattr(app, "_probe_ftp_host", fake_probe)
-    monkeypatch.setattr(app, "_reverse_dns_name", fake_dns)
     monkeypatch.setattr(
         app,
         "_read_arp_table",
-        lambda: {"192.168.1.88": "00-0C-26-11-22-33", "192.168.1.9": "aa:bb:cc:dd:ee:ff"},
+        lambda: {"192.168.1.88": "00-0C-26-11-3C-6F", "192.168.1.9": "aa:bb:cc:dd:ee:ff"},
     )
 
     result = asyncio.run(app.discover_ftp_panels())
     hosts = [p["host"] for p in result["panels"]]
     assert hosts == ["192.168.1.88"]  # только Weintek-MAC; чужой MAC не добавлен
     assert result["ftp_hosts"] == 0
-    assert result["panels"][0]["name"] == "cMT-3C6F"
+    assert result["panels"][0]["name"] == "cMT-3C6F"  # из MAC …:3C:6F
 
 
 def test_is_weintek_mac_matches_oui():
@@ -370,6 +362,13 @@ def test_is_weintek_mac_matches_oui():
     assert app._is_weintek_mac("00-0C-26-AA-BB-CC") is True  # дефисы, верхний регистр
     assert app._is_weintek_mac("aa:bb:cc:dd:ee:ff") is False
     assert app._is_weintek_mac("") is False
+
+
+def test_weintek_name_from_mac():
+    assert app._weintek_name_from_mac("00:0c:26:11:3c:6f") == "cMT-3C6F"
+    assert app._weintek_name_from_mac("00-0C-26-AA-BB-CC") == "cMT-BBCC"  # дефисы
+    assert app._weintek_name_from_mac("00:0c:26") == ""  # неполный MAC
+    assert app._weintek_name_from_mac("") == ""
 
 
 def test_read_arp_table_parses_output(monkeypatch):

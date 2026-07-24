@@ -11,6 +11,7 @@ import time
 import traceback
 import urllib.error
 import urllib.request
+import webbrowser
 from contextlib import closing, nullcontext
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -994,6 +995,19 @@ class DesktopBridge:
         # отложенно, чтобы результат успел дойти до JS и показать тост.
         logging.info("Установщик работает, закрываю окно через 1.5 с.")
         threading.Timer(1.5, self.close_window).start()
+        return {"ok": True}
+
+    def open_external(self, payload: dict | None = None) -> dict[str, bool]:
+        """Открывает URL в системном браузере (запасной путь веб-просмотра панели,
+        если встроенный iframe не отрисовался). Только http/https."""
+        url = str((payload or {}).get("url") or "").strip()
+        if not (url.startswith("http://") or url.startswith("https://")):
+            return {"ok": False}
+        try:
+            webbrowser.open(url)
+        except Exception:  # noqa: BLE001 — открытие браузера не должно ронять мост
+            logging.exception("Не удалось открыть URL во внешнем браузере")
+            return {"ok": False}
         return {"ok": True}
 
     def choose_folder(self, payload: dict | None = None) -> dict[str, str | bool]:

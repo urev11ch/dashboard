@@ -32,7 +32,7 @@
       <h1>Источник данных</h1>
 
       <div class="welcome-source-switcher" role="tablist" aria-label="Источник данных">
-        <button type="button" class="welcome-source-tab is-active" data-source-tab="ftp" aria-pressed="true">FTP сервер</button>
+        <button type="button" class="welcome-source-tab is-active" data-source-tab="ftp" aria-pressed="true">Панель</button>
         <button type="button" class="welcome-source-tab ghost" data-source-tab="folder" aria-pressed="false">Папка и архивы</button>
       </div>
 
@@ -54,9 +54,10 @@
                   <span class="ftp-source-meta">{{ src.host }}:{{ src.port }}{{ src.path }}</span>
                 </div>
                 <div class="ftp-source-actions">
+                  <button type="button" class="ghost" data-panel-webview data-host="{{ src.host }}" data-label="{{ src.label }}">Веб-просмотр</button>
                   <form method="post" action="/workspace/open-ftp">
                     <input type="hidden" name="source_id" value="{{ src.id }}">
-                    <button type="submit">Подключиться</button>
+                    <button type="submit">Архивы моек</button>
                   </form>
                   <form method="post" action="/workspace/ftp-source/delete" onsubmit="return confirm('Удалить сохранённую панель?');">
                     <input type="hidden" name="source_id" value="{{ src.id }}">
