@@ -30,12 +30,6 @@
     <section class="welcome-card">
       <div class="eyebrow">OptiCIP Dashboard</div>
 
-      {% if has_analysis %}
-      <form method="get" action="/" class="welcome-back-to-graphs">
-        <button type="submit" class="ghost">← К графикам</button>
-      </form>
-      {% endif %}
-
       <div class="welcome-source-switcher" role="tablist" aria-label="Источник данных">
         <button type="button" class="welcome-source-tab is-active" data-source-tab="ftp" aria-pressed="true">Панель</button>
         <button type="button" class="welcome-source-tab ghost" data-source-tab="folder" aria-pressed="false">Папка и архивы</button>
@@ -48,7 +42,7 @@
             <div class="eyebrow">Сохранённые панели</div>
             <ul class="ftp-source-list">
               {% for src in ftp_sources %}
-              <li class="ftp-source-item{% if src.active %} is-active{% endif %}">
+              <li class="ftp-source-item{% if src.id == connected_id %} is-connected{% endif %}">
                 <div class="ftp-source-info">
                   <span class="ftp-source-label">{{ src.label }}</span>
                   <span class="ftp-source-meta">{{ src.host }}</span>
@@ -59,18 +53,21 @@
                     data-host="{{ src.host }}"
                     data-scheme="{{ src.web_scheme }}"
                     data-label="{{ src.label }}">WebView</button>
-                  <form method="get" action="/">
+                  <form method="post" action="/workspace/open-ftp" data-panel-graphs
+                    data-host="{{ src.host }}"
+                    data-scheme="{{ src.web_scheme }}"
+                    data-label="{{ src.label }}">
+                    <input type="hidden" name="source_id" value="{{ src.id }}">
                     <button type="submit">Графики</button>
                   </form>
                   <form method="post" action="/workspace/reset">
                     <button type="submit" class="ghost">Отключить</button>
                   </form>
                   {% else %}
-                  <button type="button" data-panel-connect
-                    data-source-id="{{ src.id }}"
-                    data-host="{{ src.host }}"
-                    data-scheme="{{ src.web_scheme }}"
-                    data-label="{{ src.label }}">Подключиться</button>
+                  <form method="post" action="/workspace/ftp-source/connect">
+                    <input type="hidden" name="source_id" value="{{ src.id }}">
+                    <button type="submit">Подключиться</button>
+                  </form>
                   <button type="button" class="ghost" data-panel-rename
                     data-source-id="{{ src.id }}"
                     data-label="{{ src.label }}">Изменить</button>

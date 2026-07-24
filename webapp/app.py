@@ -525,6 +525,9 @@ class AppState:
     update_job: UpdateJob | None = None
     last_sync_ts: float | None = None
     last_cleanup_ts: float | None = None
+    # Панель, выбранная кнопкой «Подключиться» (зелёная строка + WebView/Графики/
+    # Отключить в меню). Сессионное состояние, одна панель одновременно.
+    connected_ftp_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -539,6 +542,7 @@ class AppStateSnapshot:
     error: str | None
     scan_summary: ScanSummary
     workspace_job_payload: dict[str, Any]
+    connected_ftp_id: str
 
 
 state = AppState()
@@ -592,6 +596,7 @@ def capture_state_snapshot() -> AppStateSnapshot:
         error=state.error,
         scan_summary=copy_scan_summary(state.scan_summary),
         workspace_job_payload=serialize_job(state.workspace_job),
+        connected_ftp_id=state.connected_ftp_id,
     )
 
 
@@ -2198,6 +2203,7 @@ def reset_workspace() -> None:
     state.object_name_overrides = {}
     state.error = None
     state.scan_summary = ScanSummary()
+    state.connected_ftp_id = ""  # «Отключить»: снимаем пометку подключения
     clear_chart_payload_cache()
 
 
@@ -3690,17 +3696,15 @@ def page_context(request: Request, snapshot: AppStateSnapshot) -> dict[str, Any]
     workspace_payload = build_workspace_payload(snapshot)
     workspace_input_value = resolve_workspace_input_value(selected_root, pending_root)
 
-    # «Главное меню» без разрыва соединения: ?view=menu показывает экран выбора
-    # источника даже при загруженной рабочей области. Подключённая панель (её id =
-    # имя папки рабочей области) в этом меню показывается с кнопками WebView /
-    # Графики / Отключить. Одновременно активна одна панель (одна рабочая область).
+    # Подключённая панель («Подключиться» → зелёная строка + WebView/Графики/
+    # Отключить). Состояние сессионное (state.connected_ftp_id), не привязано к
+    # загрузке графиков; одновременно одна панель. ?view=menu показывает меню даже
+    # при загруженной области («Главное меню» без разрыва соединения).
     ftp_sources = list_ftp_sources_public()
     force_menu = request.query_params.get("view") == "menu"
-    connected_id = ""
-    if analysis is not None and selected_root is not None:
-        root_name = selected_root.name
-        if any(src["id"] == root_name for src in ftp_sources):
-            connected_id = root_name
+    connected_id = snapshot.connected_ftp_id
+    if connected_id and not any(src["id"] == connected_id for src in ftp_sources):
+        connected_id = ""  # панель удалили — сбрасываем пометку
     # На экране меню (даже при загруженной области) wash-JS не должен стартовать —
     # его DOM отсутствует. Гейт `if (!hasWorkspace) return` смотрит на hasWorkspace.
     wash_visible = analysis is not None and not force_menu
@@ -3855,6 +3859,18 @@ def add_ftp_source(
         return RedirectResponse(url="/", status_code=303)
     upsert_ftp_connection(config, label=label)
     return RedirectResponse(url="/", status_code=303)
+
+
+@app.post("/workspace/ftp-source/connect")
+def connect_ftp_source(source_id: str = Form(...)) -> RedirectResponse:
+    """Помечает панель как подключённую (зелёная строка + WebView/Графики/
+    Отключить в меню). Графики НЕ загружаются здесь — только по кнопке «Графики».
+    Одновременно активна одна панель. Возвращаемся в меню."""
+    saved_id = source_id.strip()
+    if saved_id and find_ftp_connection(saved_id) is not None:
+        with state_lock:
+            state.connected_ftp_id = saved_id
+    return RedirectResponse(url="/?view=menu", status_code=303)
 
 
 @app.post("/workspace/ftp-source/rename")

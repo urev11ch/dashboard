@@ -535,92 +535,18 @@
     }
   }
 
-  // Выбор действия для сохранённой панели: «Веб-просмотр» или «Графики».
-  function openPanelChoice(sourceId, host, scheme, label) {
-    const dialog = document.createElement("dialog");
-    dialog.className = "ftp-connect-modal";
-    const box = document.createElement("div");
-    box.className = "ftp-connect-form";
-
-    const title = document.createElement("div");
-    title.className = "ftp-connect-title";
-    title.textContent = label || host;
-
-    const webBtn = document.createElement("button");
-    webBtn.type = "button";
-    webBtn.className = "ftp-connect-web";
-    webBtn.textContent = "WebView";
-    webBtn.addEventListener("click", () => {
-      dialog.close();
-      openPanelWebView(host, scheme, label); // по умолчанию — системный браузер
-    });
-
-    // Запасной вариант: открыть встроенным окном приложения (только десктоп).
-    let windowBtn = null;
-    if (typeof window.pywebview?.api?.open_panel_window === "function") {
-      windowBtn = document.createElement("button");
-      windowBtn.type = "button";
-      windowBtn.className = "ghost";
-      windowBtn.textContent = "WebView в окне приложения";
-      windowBtn.addEventListener("click", () => {
-        dialog.close();
-        openPanelWebView(host, scheme, label, "window");
-      });
-    }
-
-    // «Графики» — сабмит открывает архивы (рабочую область) панели.
-    const graphsForm = document.createElement("form");
-    graphsForm.method = "post";
-    graphsForm.action = "/workspace/open-ftp";
-    const sid = document.createElement("input");
-    sid.type = "hidden";
-    sid.name = "source_id";
-    sid.value = sourceId;
-    const graphsBtn = document.createElement("button");
-    graphsBtn.type = "submit";
-    graphsBtn.className = "ftp-connect-web";
-    graphsBtn.textContent = "Графики";
-    graphsForm.append(sid, graphsBtn);
-    graphsForm.addEventListener("submit", () =>
-      rememberPanelContext(host, scheme, label),
-    );
-
-    const actions = document.createElement("div");
-    actions.className = "ftp-connect-actions";
-    const cancel = document.createElement("button");
-    cancel.type = "button";
-    cancel.className = "ghost";
-    cancel.textContent = "Отмена";
-    cancel.addEventListener("click", () => dialog.close());
-    actions.append(cancel);
-
-    box.append(title, webBtn);
-    if (windowBtn) {
-      box.append(windowBtn);
-    }
-    box.append(graphsForm, actions);
-    dialog.append(box);
-    dialog.addEventListener("click", (event) => {
-      if (event.target === dialog) {
-        dialog.close();
-      }
-    });
-    dialog.addEventListener("close", () => dialog.remove());
-    document.body.append(dialog);
-    dialog.showModal();
-  }
-
-  // Кнопка «Подключиться» у сохранённой панели → выбор веб-просмотр/графики.
-  function initSavedPanelConnect() {
-    document.querySelectorAll("[data-panel-connect]").forEach((button) => {
-      button.addEventListener("click", () => {
-        openPanelChoice(
-          button.dataset.sourceId || "",
-          button.dataset.host || "",
-          button.dataset.scheme || "http",
-          button.dataset.label || button.dataset.host || "",
-        );
-      });
+  // «Графики» подключённой панели — обычный сабмит формы (открывает рабочую
+  // область). Здесь только запоминаем контекст панели для кнопки WebView на
+  // экране графиков (быстрый переход графики→веб).
+  function initPanelGraphsContext() {
+    document.querySelectorAll("[data-panel-graphs]").forEach((form) => {
+      form.addEventListener("submit", () =>
+        rememberPanelContext(
+          form.dataset.host || "",
+          form.dataset.scheme || "http",
+          form.dataset.label || "",
+        ),
+      );
     });
   }
 
@@ -799,7 +725,7 @@
   initFolderPickerButtons();
   initFolderDefaultButtons();
   initFtpDiscovery();
-  initSavedPanelConnect();
+  initPanelGraphsContext();
   initSavedPanelRename();
   initConnectedPanelWebView();
   initWashWebViewButton();

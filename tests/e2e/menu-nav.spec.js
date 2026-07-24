@@ -3,8 +3,8 @@ import { ensureAnalysis } from "./helpers.js";
 
 // «Главное меню» ведёт на экран выбора источника БЕЗ разрыва соединения
 // (?view=menu). На таком меню при загруженной рабочей области wash-JS не
-// стартует (hasWorkspace=false), а вернуться можно кнопкой «← К графикам».
-test("меню при загруженной области: показ, без ошибок JS, возврат к графикам", async ({
+// стартует (hasWorkspace=false), а вернуться к данным можно навигацией на /.
+test("меню при загруженной области: показ без ошибок JS, возврат на /", async ({
   page,
 }) => {
   const errors = [];
@@ -15,10 +15,9 @@ test("меню при загруженной области: показ, без 
   await page.goto("/?view=menu");
   await expect(page.locator(".welcome-shell")).toBeVisible();
   await expect(page.locator(".wash-screen")).toHaveCount(0);
-  await expect(page.locator(".welcome-back-to-graphs")).toBeVisible();
   expect(errors).toEqual([]);
 
-  await page.locator(".welcome-back-to-graphs button").click();
+  await page.goto("/");
   await expect(page.locator(".wash-screen")).toBeVisible();
 });
 

@@ -86,6 +86,7 @@ test.describe("сохранённая панель", () => {
     });
   });
   test.afterEach(async ({ page }) => {
+    await page.request.post("/workspace/reset"); // снять пометку подключения
     await page.goto("/");
     const del = page.locator(".ftp-source-item form[action*='delete'] button");
     while (await del.count()) {
@@ -95,12 +96,28 @@ test.describe("сохранённая панель", () => {
     }
   });
 
-  test("«Подключиться» → выбор «Веб-просмотр»/«Графики»", async ({ page }) => {
+  test("«Подключиться» → зелёная строка + WebView/Графики/Отключить, без попапа", async ({
+    page,
+  }) => {
     await page.goto("/");
-    await page.click("[data-panel-connect]");
-    const modal = page.locator(".ftp-connect-modal");
-    await expect(modal.getByRole("button", { name: "WebView" })).toBeVisible();
-    await expect(modal.getByRole("button", { name: "Графики" })).toBeVisible();
+    await page.click(".ftp-source-item button:has-text('Подключиться')");
+
+    const item = page.locator(".ftp-source-item");
+    await expect(item).toHaveClass(/is-connected/, { timeout: 15000 });
+    await expect(item.getByRole("button", { name: "WebView" })).toBeVisible();
+    await expect(item.getByRole("button", { name: "Графики" })).toBeVisible();
+    await expect(item.getByRole("button", { name: "Отключить" })).toBeVisible();
+    // Всплывающего окна выбора нет.
+    await expect(page.locator(".ftp-connect-modal")).toHaveCount(0);
+  });
+
+  test("«Отключить» возвращает обычные действия", async ({ page }) => {
+    await page.goto("/");
+    await page.click(".ftp-source-item button:has-text('Подключиться')");
+    await expect(page.locator(".ftp-source-item")).toHaveClass(/is-connected/);
+    await page.click(".ftp-source-item button:has-text('Отключить')");
+    await expect(page.locator(".ftp-source-item")).not.toHaveClass(/is-connected/);
+    await expect(page.getByRole("button", { name: "Подключиться" })).toBeVisible();
   });
 
   test("«Изменить» переименовывает панель в списке", async ({ page }) => {
@@ -114,7 +131,7 @@ test.describe("сохранённая панель", () => {
     await expect(page.locator(".ftp-source-label")).toHaveText("Цех 5");
   });
 
-  test("«Веб-просмотр» открывает окно/вкладку с /app/dashboard (не iframe)", async ({
+  test("WebView подключённой панели открывает окно/вкладку /app/dashboard", async ({
     page,
   }) => {
     // В вебе WebView открывается через window.open (топ-левел), не iframe:
@@ -128,13 +145,12 @@ test.describe("сохранённая панель", () => {
     });
 
     await page.goto("/");
-    await page.click("[data-panel-connect]");
-    await page.getByRole("button", { name: "WebView" }).click();
+    await page.click(".ftp-source-item button:has-text('Подключиться')");
+    await page.locator(".ftp-source-item").getByRole("button", { name: "WebView" }).click();
 
     await expect
       .poll(() => page.evaluate(() => window.__opened), { timeout: 15000 })
       .toContain("http://192.168.1.88/app/dashboard");
-    // Никакого iframe-оверлея больше нет.
     await expect(page.locator(".panel-webview")).toHaveCount(0);
   });
 });
