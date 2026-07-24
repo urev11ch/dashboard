@@ -1,6 +1,15 @@
 (function () {
   const appState = window.__WASH_APP__ || {};
 
+  // Тосты (всплывающие уведомления). Создаём РАНО — до гейта `if (!hasWorkspace)
+  // return`, чтобы showToast работал и на экране выбора источника. Иначе const
+  // toastRoot остаётся в TDZ и любой showToast там падает ReferenceError.
+  const toastRoot = document.createElement("div");
+  toastRoot.className = "toast-stack";
+  toastRoot.setAttribute("role", "status");
+  toastRoot.setAttribute("aria-live", "polite");
+  document.body.append(toastRoot);
+
   // Обёртка над fetch с таймаутом. Без неё зависший бэкенд/FTP (TCP без RST)
   // никогда не резолвит промис: кнопка «Обновляю…»/«Сохраняю PDF…» залипает
   // навсегда (finally не срабатывает). По таймауту — abort и понятная ошибка.
@@ -409,8 +418,9 @@
       button.textContent = "Проверяю…";
       setStatus("");
       try {
-        const response = await fetch("/api/update-check", {
+        const response = await fetchWithTimeout("/api/update-check", {
           headers: { Accept: "application/json" },
+          timeout: 15000,
         });
         if (!response.ok) {
           throw new Error("update-check-failed");
@@ -440,7 +450,10 @@
     async function runInstall() {
       setStatus("Скачиваю обновление…");
       try {
-        const started = await fetch("/api/update/download", { method: "POST" });
+        const started = await fetchWithTimeout("/api/update/download", {
+          method: "POST",
+          timeout: 20000,
+        });
         if (!started.ok) {
           const detail = await started.json().catch(() => ({}));
           throw new Error(detail.detail || "Не удалось начать скачивание.");
@@ -448,8 +461,9 @@
         let ticks = 0;
         while (true) {
           await new Promise((resolve) => setTimeout(resolve, 500));
-          const jobResp = await fetch("/api/update/job", {
+          const jobResp = await fetchWithTimeout("/api/update/job", {
             headers: { Accept: "application/json" },
+            timeout: 15000,
           });
           if (!jobResp.ok) {
             throw new Error("Не удалось получить статус скачивания.");
@@ -548,6 +562,20 @@
         ),
       );
     });
+    // Смена источника на папку или сброс/отключение — контекст панели больше не
+    // актуален, иначе кнопка WebView на экране графиков покажется на папочной
+    // области и поведёт на прошлую панель.
+    document
+      .querySelectorAll('form[action="/workspace/open"], form[action="/workspace/reset"]')
+      .forEach((form) => {
+        form.addEventListener("submit", () => {
+          try {
+            sessionStorage.removeItem("opticip.panel");
+          } catch (_e) {
+            /* sessionStorage недоступен — не критично */
+          }
+        });
+      });
   }
 
   // Диалог переименования сохранённой панели: поле имени → сабмит на
@@ -1223,12 +1251,7 @@
   document.body.append(diagnosticsRoot);
 
   // ---- Тосты (всплывающие уведомления) ----------------------------------
-  const toastRoot = document.createElement("div");
-  toastRoot.className = "toast-stack";
-  toastRoot.setAttribute("role", "status");
-  toastRoot.setAttribute("aria-live", "polite");
-  document.body.append(toastRoot);
-
+  // toastRoot создаётся в начале IIFE (до гейта) — см. выше.
   function showToast(message, type = "info", duration = 4000) {
     const text = String(message || "").trim();
     if (!text) {

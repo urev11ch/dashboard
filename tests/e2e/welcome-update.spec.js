@@ -13,6 +13,18 @@ function mockUpdateCheck(page, payload) {
 }
 
 const button = (page) => page.locator("[data-update-btn]");
+
+test("welcome: «Выбрать папку» без pywebview показывает тост, не падает (toastRoot до гейта)", async ({
+  page,
+}) => {
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await page.goto("/");
+  await page.click('[data-source-tab="folder"]');
+  await page.click("[data-folder-picker]"); // в браузере choose_folder недоступен → тост об ошибке
+  await expect(page.locator(".toast-stack .toast")).toBeVisible({ timeout: 15000 });
+  expect(errors).toEqual([]);
+});
 const status = (page) => page.locator("[data-update-status]");
 
 test("актуальная версия — статус, кнопка не меняется, без ошибок JS", async ({ page }) => {

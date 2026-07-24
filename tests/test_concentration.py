@@ -127,3 +127,50 @@ def test_unavailable_samples_do_not_overwrite_existing_check_reason():
     )
     assert kind == "check"
     assert label == "Требует проверки"
+
+
+def test_concentration_verdicts_cache_reuse(monkeypatch):
+    # O1: вердикты концентрации кэшируются по (revision, концентрационные настройки).
+    # Смена НЕ-концентрационной настройки (метки/тумблер) НЕ должна перечитывать
+    # сэмплы; смена нормы/допуска/ревизии — должна.
+    import types
+
+    calls = {"n": 0}
+
+    def fake_eval(analysis, cycle, settings):
+        calls["n"] += 1
+        return {"kind": "ok"}
+
+    monkeypatch.setattr(app, "evaluate_cycle_concentration", fake_eval)
+    monkeypatch.setattr(app.core, "make_cycle_key", lambda c: c)
+    app._conc_verdicts_cache["key"] = None
+    app._conc_verdicts_cache["verdicts"] = {}
+
+    analysis = types.SimpleNamespace(sorted_cycles=["a", "b"])
+    base = {
+        "concentration_eval_enabled": True,
+        "concentration_norms": {"alkali": 2.0},
+        "concentration_tolerance_percent": 10.0,
+    }
+
+    v1 = app.concentration_verdicts_cached(analysis, 1, base)
+    assert set(v1) == {"a", "b"} and calls["n"] == 2
+
+    # смена метки (не концентрация) — кэш переиспользуется, без пересчёта
+    calls["n"] = 0
+    app.concentration_verdicts_cached(analysis, 1, {**base, "result_labels": {"x": "y"}})
+    assert calls["n"] == 0
+
+    # смена допуска — пересчёт
+    app.concentration_verdicts_cached(analysis, 1, {**base, "concentration_tolerance_percent": 15.0})
+    assert calls["n"] == 2
+
+    # смена ревизии — пересчёт
+    calls["n"] = 0
+    app.concentration_verdicts_cached(analysis, 2, base)
+    assert calls["n"] == 2
+
+    # выключено — пустой словарь, сэмплы не читаются
+    calls["n"] = 0
+    v = app.concentration_verdicts_cached(analysis, 3, {"concentration_eval_enabled": False})
+    assert v == {} and calls["n"] == 0

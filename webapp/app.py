@@ -3450,8 +3450,14 @@ def find_cycle(analysis: core.AnalysisResult, key: str) -> core.Cycle:
     raise HTTPException(status_code=404, detail="Мойка не найдена.")
 
 
-def build_wash_rows(analysis: core.AnalysisResult) -> list[dict[str, Any]]:
-    settings = load_app_settings()
+def build_wash_rows(
+    analysis: core.AnalysisResult,
+    settings: dict[str, Any],
+    conc_verdicts: dict[str, dict[str, Any] | None],
+) -> list[dict[str, Any]]:
+    """Форматирует строки списка моек. Вердикты концентрации приходят готовыми
+    (conc_verdicts), поэтому сэмплы с диска здесь НЕ читаются — сборка дешёвая и
+    не зависит от концентрационных настроек (только от меток/тумблера/анализа)."""
     result_labels = settings["result_labels"]
     rows: list[dict[str, Any]] = []
     for cycle in analysis.sorted_cycles:
@@ -3460,7 +3466,7 @@ def build_wash_rows(analysis: core.AnalysisResult) -> list[dict[str, Any]]:
         default_status = resolve_cycle_default_status(
             analysis, cycle, require_completion_step=settings["require_completion_step"]
         )
-        concentration = evaluate_cycle_concentration(analysis, cycle, settings)
+        concentration = conc_verdicts.get(cycle_key)
         status, result_kind = apply_concentration_verdict(
             default_status, result_labels, concentration
         )
@@ -3504,6 +3510,50 @@ def build_wash_rows(analysis: core.AnalysisResult) -> list[dict[str, Any]]:
 _wash_rows_cache: dict[str, Any] = {"revision": None, "settings_mtime": None, "rows": []}
 _wash_rows_cache_lock = threading.Lock()
 
+# Кэш вердиктов концентрации по циклам. Отдельно от строк, потому что вычисление
+# концентрации ТЯЖЁЛОЕ (читает с диска полные потоки сэмплов всех каналов), но
+# зависит только от анализа и КОНЦЕНТРАЦИОННЫХ настроек (вкл/нормы/допуск) — не от
+# меток результата и тумблера завершения. Так смена метки/тумблера пересобирает
+# строки дёшево, не перечитывая сэмплы. Ключ: (analysis_revision, сигнатура
+# концентрационных настроек).
+_conc_verdicts_cache: dict[str, Any] = {"key": None, "verdicts": {}}
+_conc_verdicts_cache_lock = threading.Lock()
+
+
+def _concentration_settings_signature(settings: dict[str, Any]) -> tuple[Any, ...]:
+    """Сигнатура настроек, влияющих на вердикт концентрации. Выключенная оценка —
+    один общий ключ (вердикты не зависят от норм/допуска)."""
+    if not settings.get("concentration_eval_enabled"):
+        return ("off",)
+    norms = settings.get("concentration_norms") or {}
+    tol = settings.get("concentration_tolerance_percent") or 0.0
+    return ("on", json.dumps(norms, sort_keys=True, ensure_ascii=False), float(tol))
+
+
+def concentration_verdicts_cached(
+    analysis: core.AnalysisResult,
+    analysis_revision: int,
+    settings: dict[str, Any],
+) -> dict[str, dict[str, Any] | None]:
+    """Вердикты концентрации по cycle_key с кэшем. Сэмплы читаются только при
+    промахе (смена анализа или концентрационных настроек)."""
+    key = (analysis_revision, _concentration_settings_signature(settings))
+    with _conc_verdicts_cache_lock:
+        if _conc_verdicts_cache["key"] == key:
+            return _conc_verdicts_cache["verdicts"]
+
+    # Промах — считаем вне лока (тяжёлое чтение сэмплов).
+    verdicts: dict[str, dict[str, Any] | None] = {}
+    if settings.get("concentration_eval_enabled"):
+        for cycle in analysis.sorted_cycles:
+            verdicts[core.make_cycle_key(cycle)] = evaluate_cycle_concentration(
+                analysis, cycle, settings
+            )
+    with _conc_verdicts_cache_lock:
+        _conc_verdicts_cache["key"] = key
+        _conc_verdicts_cache["verdicts"] = verdicts
+    return verdicts
+
 
 def app_settings_mtime_ns() -> int | None:
     try:
@@ -3528,7 +3578,11 @@ def build_wash_rows_cached(
         ):
             return _wash_rows_cache["rows"]
 
-    rows = build_wash_rows(analysis)
+    settings = load_app_settings()
+    # Вердикты концентрации — из своего кэша (сэмплы читаются только при смене
+    # анализа/концентрационных настроек, а не на каждое сохранение настроек).
+    conc_verdicts = concentration_verdicts_cached(analysis, analysis_revision, settings)
+    rows = build_wash_rows(analysis, settings, conc_verdicts)
     with _wash_rows_cache_lock:
         _wash_rows_cache["revision"] = analysis_revision
         _wash_rows_cache["settings_mtime"] = settings_mtime
@@ -3893,6 +3947,11 @@ def delete_ftp_source(source_id: str = Form(...)) -> RedirectResponse:
             clears_active = current_root is not None and current_root.name == saved_id
             if clears_active:
                 reset_workspace()
+            # Снимаем пометку подключения, даже если графики не были загружены —
+            # иначе connected_ftp_id залипает и повторно добавленная панель с тем
+            # же id (host|port|user|path) покажется «подключённой».
+            if state.connected_ftp_id == saved_id:
+                state.connected_ftp_id = ""
         delete_ftp_connection(saved_id)
     return RedirectResponse(url="/", status_code=303)
 
@@ -4303,11 +4362,14 @@ async def _fetch_easyweb_title(host: str, port: int, use_tls: bool) -> str | Non
 
 
 async def _probe_http_easyweb(host: str) -> tuple[str, str] | None:
-    """Ищет веб-интерфейс EasyWeb на host по HTTP :80, затем HTTPS :443 (панели с
-    «[TLS]» отдают веб только по https). Возвращает (`<title>`, схема
-    "http"/"https") первой ответившей EasyWeb-морды, либо None — не панель."""
-    for port, use_tls in HTTP_EASYWEB_PORTS:
-        title = await _fetch_easyweb_title(host, port, use_tls)
+    """Ищет веб-интерфейс EasyWeb на host по HTTP :80 и HTTPS :443 (панели с
+    «[TLS]» отдают веб только по https). Порты пробуем ПАРАЛЛЕЛЬНО, чтобы для
+    TLS-only панели не терять таймаут на закрытом :80. Возвращает (`<title>`,
+    схема) — при обоих ответах предпочитаем :80/http; либо None — не панель."""
+    results = await asyncio.gather(
+        *(_fetch_easyweb_title(host, port, use_tls) for port, use_tls in HTTP_EASYWEB_PORTS)
+    )
+    for (port, use_tls), title in zip(HTTP_EASYWEB_PORTS, results):
         if title is not None:
             return title, ("https" if use_tls else "http")
     return None
@@ -4346,11 +4408,11 @@ def _weintek_name_from_mac(mac: str) -> str:
 def _read_arp_table() -> dict[str, str]:
     """IP→MAC из ARP-таблицы ОС (её наполняют TCP-пробы скана). MAC — в нижнем
     регистре через двоеточие. Пусто, если таблицу не удалось прочитать."""
-    commands = (
-        ["arp", "-a"] if os.name == "nt" else ["ip", "neigh", "show"],
-        ["arp", "-a"],  # фолбэк (net-tools есть и в Linux)
-        ["arp", "-n"],
-    )
+    if os.name == "nt":
+        commands = (["arp", "-a"],)
+    else:
+        # ip neigh — основной; arp -a/-n — фолбэк (net-tools).
+        commands = (["ip", "neigh", "show"], ["arp", "-a"], ["arp", "-n"])
     # На Windows подавляем мелькание консольного окна в GUI-сборке (pywebview).
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     output = ""
@@ -4490,7 +4552,9 @@ async def discover_ftp_panels() -> dict[str, Any]:
                 "host": ip,
                 "port": FTP_DEFAULT_PORT,
                 "banner": "",
-                "name": _weintek_name_from_mac(mac) or await _reverse_dns_name(ip),
+                # Имя из MAC (cMT-XXXX) для 6-октетного Weintek-MAC всегда есть,
+                # reverse-DNS тут не нужен (и не блокирует по хосту в цикле).
+                "name": _weintek_name_from_mac(mac),
                 "web_scheme": "",  # web не зондировали (на :21 не ответил)
                 "mac": mac,
                 "mac_weintek": True,
@@ -4650,7 +4714,14 @@ def _parse_version(value: str) -> tuple[int, ...]:
 
 def _is_newer_version(latest: str, current: str) -> bool:
     try:
-        return _parse_version(latest) > _parse_version(current)
+        a = _parse_version(latest)
+        b = _parse_version(current)
+        # Выравниваем длину нулями: иначе (1,2,0) > (1,2) и «1.2.0» ложно
+        # считается новее равной «1.2», предлагая лишнее обновление.
+        n = max(len(a), len(b))
+        a += (0,) * (n - len(a))
+        b += (0,) * (n - len(b))
+        return a > b
     except Exception:
         return False
 
