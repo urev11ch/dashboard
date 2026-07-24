@@ -3810,11 +3810,26 @@ body.modal-export-mode .chart-print-document {
 }
 /* Обнаружение панели в сети (кнопка «Найти панель» + список найденных). */
 .ftp-discover {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 12px;
+  display: grid;
+  gap: 8px;
   margin: 12px 0;
+}
+/* Ряд действий поиска — кнопка «Найти панель» прижата вправо снизу. */
+.ftp-discover-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+.ftp-search-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ftp-search-icon {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
 }
 .ftp-discover-status {
   font-size: 12px;
@@ -3901,6 +3916,18 @@ body.modal-export-mode .chart-print-document {
 /* Кнопка «Веб-просмотр» в попапе панели — основное действие сверху. */
 .ftp-connect-web {
   width: 100%;
+}
+/* Тумблер в диалоге настроек welcome (автообновление). */
+.welcome-settings-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+}
+.welcome-settings-toggle input {
+  width: auto;
+  flex: none;
 }
 /* Разделитель «Архивы моек» между веб-просмотром и формой пароля. */
 .ftp-connect-divider {

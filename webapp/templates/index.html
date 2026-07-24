@@ -37,12 +37,6 @@
 
       <div class="welcome-source-stack">
         <section class="welcome-source-panel welcome-source-panel--primary" data-source-panel="ftp">
-          <div class="ftp-discover" data-ftp-discover-root>
-            <button type="button" class="ghost" data-ftp-discover>Найти панель в сети</button>
-            <button type="button" class="ghost" data-ftp-manual hidden>Добавить вручную</button>
-            <span class="ftp-discover-status" data-ftp-discover-status role="status" aria-live="polite"></span>
-            <ul class="ftp-discover-results" data-ftp-discover-results hidden></ul>
-          </div>
           {% if ftp_sources %}
           <div class="ftp-saved">
             <div class="eyebrow">Сохранённые панели</div>
@@ -69,6 +63,18 @@
             </ul>
           </div>
           {% endif %}
+
+          <div class="ftp-discover" data-ftp-discover-root>
+            <span class="ftp-discover-status" data-ftp-discover-status role="status" aria-live="polite"></span>
+            <ul class="ftp-discover-results" data-ftp-discover-results hidden></ul>
+            <div class="ftp-discover-actions">
+              <button type="button" class="ghost" data-ftp-manual hidden>Добавить вручную</button>
+              <button type="button" class="ftp-search-btn" data-ftp-discover>
+                <svg class="ftp-search-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z"></path></svg>
+                Найти панель
+              </button>
+            </div>
+          </div>
 
           <details class="welcome-ftp-add" data-ftp-add hidden>
             <summary>Добавить панель вручную</summary>

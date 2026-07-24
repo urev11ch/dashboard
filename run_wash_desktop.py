@@ -690,6 +690,9 @@ class DesktopServer:
 class DesktopBridge:
     def __init__(self) -> None:
         self._window: webview.Window | None = None
+        # Открытые окна WebView панелей по URL — чтобы не плодить дубли: повторный
+        # «Веб-просмотр» разворачивает существующее окно, а не создаёт новое.
+        self._panel_windows: dict[str, "webview.Window"] = {}
         # Окно открывается в уменьшённом (не развёрнутом) режиме — см. center_on_open.
         # Состояние используется кастомной кнопкой «развернуть/восстановить».
         self._maximized = False
@@ -1021,10 +1024,30 @@ class DesktopBridge:
         title = str(payload.get("title") or "WebView")
         if not (url.startswith("http://") or url.startswith("https://")):
             return {"ok": False}
+
+        # Уже открыто окно для этого URL — разворачиваем и не создаём дубль.
+        existing = self._panel_windows.get(url)
+        if existing is not None:
+            try:
+                restore = getattr(existing, "restore", None)
+                if callable(restore):
+                    restore()  # снять свёрнутость и поднять окно
+                show = getattr(existing, "show", None)
+                if callable(show):
+                    show()
+                return {"ok": True}
+            except Exception:  # noqa: BLE001 — окно, вероятно, закрыто
+                self._panel_windows.pop(url, None)
+
         try:
             import webview
 
-            webview.create_window(title, url, width=1200, height=800)
+            window = webview.create_window(title, url, width=1200, height=800)
+            self._panel_windows[url] = window
+            try:
+                window.events.closed += lambda *_a: self._panel_windows.pop(url, None)
+            except Exception:  # noqa: BLE001 — не критично, просто не почистим
+                pass
             return {"ok": True}
         except Exception:  # noqa: BLE001 — падать нельзя; уходим в браузер
             logging.exception("Не удалось открыть окно WebView, открываю в браузере")

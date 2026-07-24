@@ -390,6 +390,55 @@
     title.className = "ftp-connect-title";
     title.textContent = "Настройки";
 
+    // --- Автообновление FTP (глобальная настройка, как в настройках архивов) ---
+    const autoHeading = document.createElement("div");
+    autoHeading.className = "ftp-connect-divider";
+    autoHeading.textContent = "Автообновление FTP";
+
+    const autoRow = document.createElement("label");
+    autoRow.className = "welcome-settings-toggle";
+    const autoCheck = document.createElement("input");
+    autoCheck.type = "checkbox";
+    const autoText = document.createElement("span");
+    autoText.textContent = "Обновлять данные автоматически";
+    autoRow.append(autoCheck, autoText);
+
+    const intervalRow = document.createElement("label");
+    intervalRow.className = "ftp-connect-field";
+    intervalRow.append(document.createTextNode("Интервал, мин"));
+    const intervalInput = document.createElement("input");
+    intervalInput.type = "number";
+    intervalInput.min = "1";
+    intervalInput.max = "1440";
+    intervalInput.step = "1";
+    intervalInput.value = "5";
+    intervalRow.append(intervalInput);
+
+    const saveAuto = () => {
+      fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ftp_auto_refresh_enabled: autoCheck.checked,
+          ftp_auto_refresh_minutes: Number(intervalInput.value) || 5,
+        }),
+      }).catch(() => {});
+    };
+    autoCheck.addEventListener("change", saveAuto);
+    intervalInput.addEventListener("change", saveAuto);
+    // Текущие значения — с бэкенда (глобальные настройки приложения).
+    fetch("/api/settings", { headers: { Accept: "application/json" } })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((s) => {
+        if (s) {
+          autoCheck.checked = s.ftp_auto_refresh_enabled !== false;
+          if (s.ftp_auto_refresh_minutes) {
+            intervalInput.value = String(s.ftp_auto_refresh_minutes);
+          }
+        }
+      })
+      .catch(() => {});
+
     const heading = document.createElement("div");
     heading.className = "ftp-connect-divider";
     heading.textContent = "Обновления";
@@ -521,7 +570,17 @@
     close.addEventListener("click", () => dialog.close());
     actions.append(close);
 
-    box.append(title, heading, statusEl, installBtn, checkBtn, actions);
+    box.append(
+      title,
+      autoHeading,
+      autoRow,
+      intervalRow,
+      heading,
+      statusEl,
+      installBtn,
+      checkBtn,
+      actions,
+    );
     dialog.append(box);
     dialog.addEventListener("click", (event) => {
       if (event.target === dialog) {
@@ -563,7 +622,10 @@
     if (api && typeof api.open_panel_window === "function") {
       api.open_panel_window({ url, title: `WebView — ${displayName || host}` });
     } else {
-      window.open(url, "_blank", "noopener");
+      // Именованная вкладка per-host: повторный клик переиспользует то же окно,
+      // а не плодит новые (аналог дедупа окон в десктопе).
+      const name = `opticip_webview_${host.replace(/[^\w]/g, "_")}`;
+      window.open(url, name);
     }
   }
 
