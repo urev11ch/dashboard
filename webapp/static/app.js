@@ -194,7 +194,10 @@
     const root = button.closest("[data-ftp-discover-root]");
     const statusEl = root?.querySelector("[data-ftp-discover-status]");
     const resultsEl = root?.querySelector("[data-ftp-discover-results]");
-    const form = button.closest("form");
+    // Кнопка вынесена из формы «Добавить панель» — ищем её и блок раскрытия
+    // по data-якорям, а не через closest("form").
+    const form = document.querySelector("[data-ftp-add-form]");
+    const addDetails = document.querySelector("[data-ftp-add]");
     if (!root || !resultsEl || !form) {
       return;
     }
@@ -218,12 +221,20 @@
         const choose = document.createElement("button");
         choose.type = "button";
         choose.className = "ftp-discover-item";
-        const mark = panel.likely_weintek ? "★ " : "";
+        const mark = panel.confirmed_weintek
+          ? "✓ Панель Weintek  "
+          : panel.likely_weintek
+            ? "★ "
+            : "";
         const banner = panel.banner ? ` — ${panel.banner}` : "";
         // textContent, не innerHTML: приветствие FTP — недоверенные данные хоста.
         choose.textContent = `${mark}${panel.host}:${panel.port}${banner}`;
         choose.title = panel.banner || "";
         choose.addEventListener("click", () => {
+          // Раскрываем «Добавить панель», чтобы подставленные поля были видны.
+          if (addDetails && !addDetails.open) {
+            addDetails.open = true;
+          }
           if (hostInput) {
             hostInput.value = panel.host;
             hostInput.focus();

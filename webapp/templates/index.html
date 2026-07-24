@@ -38,6 +38,11 @@
 
       <div class="welcome-source-stack">
         <section class="welcome-source-panel welcome-source-panel--primary" data-source-panel="ftp">
+          <div class="ftp-discover" data-ftp-discover-root>
+            <button type="button" class="ghost" data-ftp-discover>Найти панель в сети</button>
+            <span class="ftp-discover-status" data-ftp-discover-status role="status" aria-live="polite"></span>
+            <ul class="ftp-discover-results" data-ftp-discover-results hidden></ul>
+          </div>
           {% if ftp_sources %}
           <div class="ftp-saved">
             <div class="eyebrow">Сохранённые панели</div>
@@ -64,9 +69,9 @@
           </div>
           {% endif %}
 
-          <details class="welcome-ftp-add"{% if not ftp_sources %} open{% endif %}>
+          <details class="welcome-ftp-add" data-ftp-add{% if not ftp_sources %} open{% endif %}>
             <summary>Добавить панель</summary>
-            <form method="post" action="/workspace/open-ftp" class="folder-form folder-form--ftp">
+            <form method="post" action="/workspace/open-ftp" class="folder-form folder-form--ftp" data-ftp-add-form>
               <div class="welcome-ftp-panel">
               <div class="welcome-form-grid">
                 <label>
@@ -78,23 +83,14 @@
                   <input type="number" name="port" value="{{ ftp_form_defaults.port }}" min="1" max="65535" step="1" autocomplete="off" required>
                 </label>
                 <label>
-                  <span>Пользователь</span>
-                  <input type="text" name="username" value="{{ ftp_form_defaults.username }}" placeholder="anonymous" autocomplete="username" spellcheck="false">
-                </label>
-                <label>
                   <span>Папка на сервере</span>
                   <input type="text" name="path" value="{{ ftp_form_defaults.path }}" placeholder="/datalog" autocomplete="off" spellcheck="false">
                 </label>
               </div>
-              <div class="ftp-discover" data-ftp-discover-root>
-                <button type="button" class="ghost" data-ftp-discover>Найти панель в сети</button>
-                <span class="ftp-discover-status" data-ftp-discover-status role="status" aria-live="polite"></span>
-                <ul class="ftp-discover-results" data-ftp-discover-results hidden></ul>
-              </div>
               <label for="ftpLabel">Название панели (необязательно)</label>
               <input id="ftpLabel" type="text" name="label" placeholder="Например: Цех 1" autocomplete="off" spellcheck="false">
-              <label for="ftpPassword">Пароль</label>
-              <input id="ftpPassword" type="password" name="password" value="{{ ftp_form_defaults.password }}" placeholder="Пароль FTP" autocomplete="current-password">
+              <label for="ftpPassword">Пароль (history upload, по умолчанию 111111)</label>
+              <input id="ftpPassword" type="password" name="password" value="{{ ftp_form_defaults.password }}" placeholder="111111" autocomplete="current-password">
               <input type="hidden" name="passive" value="on">
               <div class="folder-actions">
                 <button type="submit">Добавить и подключить</button>

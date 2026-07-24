@@ -217,11 +217,16 @@ FTP_CONNECTION_ID_RE = re.compile(r"^[0-9a-f]{12}$")
 DELETED_PROFILE_DIR_RE = re.compile(r"\.deleted-[0-9a-f]{32}$")
 # Сколько ждём завершения рабочего потока перед удалением папки профиля.
 PROFILE_DELETE_JOIN_TIMEOUT_SECONDS = 30.0
+# Штатная учётка выгрузки истории у Weintek (EasyBuilder Pro, Chapter 32):
+# всегда `uploadhis`, пароль — [history upload password] панели, заводской 111111.
+# Имя в приложении не редактируется — подключение = IP + PORT + PASS.
+FTP_HISTORY_USERNAME = "uploadhis"
+FTP_HISTORY_DEFAULT_PASSWORD = "111111"
 DEFAULT_FTP_FORM_VALUES = {
     "host": "",
     "port": "21",
-    "username": "uploadhis",
-    "password": "",
+    "username": FTP_HISTORY_USERNAME,
+    "password": FTP_HISTORY_DEFAULT_PASSWORD,
     "path": "/datalog",
 }
 
@@ -231,9 +236,12 @@ FTP_DISCOVERY_PROBE_TIMEOUT = 0.4  # с на TCP-пробу порта 21
 FTP_DISCOVERY_BANNER_TIMEOUT = 1.5  # с на чтение приветствия FTP (220)
 FTP_DISCOVERY_CONCURRENCY = 128  # одновременных проб
 FTP_DISCOVERY_MAX_HOSTS = 1024  # предохранитель на размер подсети (>/22 не сканируем)
-# Признаки Weintek в приветствии FTP — эвристика, регистронезависимо. Панель
-# опознаётся только для сортировки/пометки; в список попадают все FTP-хосты.
+# Признаки Weintek в приветствии FTP — мягкая эвристика по баннеру (панель может
+# отдавать дженерик Pure-FTPd без этих слов). Опознаётся только для сортировки/
+# пометки; в список попадают все FTP-хосты.
 FTP_WEINTEK_HINTS = ("weintek", "cmt", "easybuilder", "ftpdmini", "hmi")
+# Папки данных на панели (Data Sampling / алармы / рецепты).
+FTP_WEINTEK_MARKER_DIRS = ("datalog", "eventlog", "recipe")
 
 PORTABLE_ENV_VAR = "OPTICIP_PORTABLE"
 APP_DATA_SUBDIRS = ("datalog", "temp")
@@ -996,7 +1004,9 @@ def normalize_ftp_connection_settings(raw_payload: Any) -> dict[str, Any]:
     if port <= 0 or port > 65535:
         raise ValueError("Порт FTP должен быть в диапазоне 1..65535.")
 
-    username = str(payload.get("username") or payload.get("user") or "").strip() or "anonymous"
+    # Имя пользователя не редактируется: у Weintek выгрузка истории всегда идёт
+    # под `uploadhis` (см. FTP_HISTORY_USERNAME). Значение из формы/URL игнорируем.
+    username = FTP_HISTORY_USERNAME
     password = str(payload.get("password") or "")
     path = normalize_ftp_path(payload.get("path") or payload.get("directory"))
 
@@ -3718,7 +3728,6 @@ def open_ftp_workspace(
     source_id: str = Form(""),
     host: str = Form(""),
     port: str = Form("21"),
-    username: str = Form(""),
     password: str = Form(""),
     path: str = Form("/datalog"),
     passive: str = Form(""),
@@ -3737,7 +3746,6 @@ def open_ftp_workspace(
                 {
                     "host": host,
                     "port": port,
-                    "username": username,
                     "password": password,
                     "path": path,
                     "passive": passive,
@@ -4096,11 +4104,48 @@ def _local_ipv4_networks() -> tuple[str, list[ipaddress.IPv4Network]]:
     return local_ip, networks
 
 
+async def _ftp_read_reply(reader: asyncio.StreamReader) -> tuple[str, str]:
+    """Читает ответ FTP (возможно многострочный `NNN-...` до строки `NNN ...`).
+    Возвращает (код, текст). Пустой код — соединение закрылось/таймаут."""
+    line = await asyncio.wait_for(reader.readline(), timeout=FTP_DISCOVERY_BANNER_TIMEOUT)
+    if not line:
+        return "", ""
+    text = line.decode("latin-1", "replace")
+    code = text[:3]
+    # Многострочный ответ: первая строка вида "220-...", конец — "220 ...".
+    if len(text) >= 4 and text[3] == "-" and code.isdigit():
+        while True:
+            more = await asyncio.wait_for(
+                reader.readline(), timeout=FTP_DISCOVERY_BANNER_TIMEOUT
+            )
+            if not more:
+                break
+            chunk = more.decode("latin-1", "replace")
+            text += chunk
+            if chunk[:3] == code and len(chunk) >= 4 and chunk[3] == " ":
+                break
+    return code, text.strip()
+
+
+async def _ftp_command(
+    reader: asyncio.StreamReader, writer: asyncio.StreamWriter, command: str
+) -> tuple[str, str]:
+    """Отправляет команду FTP и возвращает (код, текст) ответа."""
+    writer.write((command + "\r\n").encode("latin-1", "replace"))
+    await writer.drain()
+    return await _ftp_read_reply(reader)
+
+
 async def _probe_ftp_host(host: str, semaphore: asyncio.Semaphore) -> dict[str, Any] | None:
-    """Пробует TCP-подключение к host:21; при успехе читает приветствие FTP.
+    """Пробует TCP-подключение к host:21; читает приветствие и пытается войти
+    штатной учёткой Weintek `uploadhis` с заводским паролем 111111. Успешный
+    вход однозначно опознаёт панель (на дефолтном пароле); при смене пароля или
+    обязательном TLS вход не пройдёт — хост останется в списке как обычный FTP.
     Возвращает описание хоста либо None, если порт закрыт/недоступен."""
     async with semaphore:
         writer: asyncio.StreamWriter | None = None
+        banner = ""
+        confirmed = False
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(host, FTP_DEFAULT_PORT),
@@ -4108,15 +4153,29 @@ async def _probe_ftp_host(host: str, semaphore: asyncio.Semaphore) -> dict[str, 
             )
         except (OSError, asyncio.TimeoutError):
             return None
-        banner = ""
         try:
-            line = await asyncio.wait_for(
-                reader.readline(), timeout=FTP_DISCOVERY_BANNER_TIMEOUT
-            )
-            banner = line.decode("latin-1", "replace").strip()
+            banner_code, banner = await _ftp_read_reply(reader)
+            if banner_code.startswith("2"):
+                user_code, _ = await _ftp_command(
+                    reader, writer, f"USER {FTP_HISTORY_USERNAME}"
+                )
+                # 331 — сервер запросил пароль (Pure-FTPd отвечает так на любое имя,
+                # поэтому опознание идёт по факту УСПЕШНОГО входа ниже, а не по 331).
+                if user_code == "331":
+                    pass_code, _ = await _ftp_command(
+                        reader, writer, f"PASS {FTP_HISTORY_DEFAULT_PASSWORD}"
+                    )
+                    confirmed = pass_code == "230"
+                elif user_code == "230":  # вход без пароля (нетипично)
+                    confirmed = True
         except (OSError, asyncio.TimeoutError):
-            banner = ""
+            pass
         finally:
+            try:
+                writer.write(b"QUIT\r\n")
+                await writer.drain()
+            except OSError:
+                pass
             writer.close()
             try:
                 await writer.wait_closed()
@@ -4124,11 +4183,13 @@ async def _probe_ftp_host(host: str, semaphore: asyncio.Semaphore) -> dict[str, 
                 pass
 
     lowered = banner.lower()
+    banner_hint = any(hint in lowered for hint in FTP_WEINTEK_HINTS)
     return {
         "host": host,
         "port": FTP_DEFAULT_PORT,
         "banner": banner,
-        "likely_weintek": any(hint in lowered for hint in FTP_WEINTEK_HINTS),
+        "confirmed_weintek": confirmed,
+        "likely_weintek": confirmed or banner_hint,
     }
 
 
@@ -4153,6 +4214,7 @@ async def discover_ftp_panels() -> dict[str, Any]:
     found = [item for item in probed if item is not None]
     found.sort(
         key=lambda item: (
+            not item.get("confirmed_weintek"),  # подтверждённые входом — первыми
             not item["likely_weintek"],
             tuple(int(part) for part in item["host"].split(".")),
         )

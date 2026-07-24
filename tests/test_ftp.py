@@ -30,9 +30,19 @@ def test_apply_ftp_url_plain_ip_untouched():
 def test_normalize_ftp_defaults():
     cfg = app.normalize_ftp_connection_settings({"host": "127.0.0.1"})
     assert cfg["port"] == 21
-    assert cfg["username"] == "anonymous"
+    # Имя пользователя не редактируется — всегда штатная учётка Weintek.
+    assert cfg["username"] == app.FTP_HISTORY_USERNAME == "uploadhis"
     assert cfg["path"] == "/"
     assert cfg["passive"] is True
+
+
+def test_normalize_ftp_forces_uploadhis_username():
+    # Любое имя из формы/URL игнорируется: подключение всегда под uploadhis.
+    cfg = app.normalize_ftp_connection_settings(
+        {"host": "ftp://someone:pw@10.0.0.7/datalog"}
+    )
+    assert cfg["username"] == "uploadhis"
+    assert cfg["password"] == "pw"  # пароль из URL при этом сохраняется
 
 
 def test_normalize_ftp_rejects_empty_host():

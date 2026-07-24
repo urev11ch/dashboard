@@ -112,6 +112,93 @@ def test_probe_open_port_generic_banner_not_weintek(monkeypatch):
     assert result["likely_weintek"] is False
 
 
+def test_probe_confirms_weintek_on_uploadhis_login(monkeypatch):
+    # Панель на дефолтном пароле: USER uploadhis → 331, PASS 111111 → 230.
+    # Успешный вход однозначно опознаёт панель даже при дженерик-баннере.
+    async def scenario():
+        async def handle(reader, writer):
+            writer.write(b"220 ---------- WELCOME TO PURE-FTPD ----------\r\n")
+            await writer.drain()
+            got_user = False
+            try:
+                while True:
+                    line = await reader.readline()
+                    if not line:
+                        break
+                    cmd = line.decode("latin-1").strip()
+                    if cmd.upper() == "USER UPLOADHIS":
+                        got_user = True
+                        writer.write(b"331 Password required\r\n")
+                    elif cmd.upper() == "PASS 111111" and got_user:
+                        writer.write(b"230 Login successful\r\n")
+                    elif cmd.upper() == "QUIT":
+                        writer.write(b"221 Bye\r\n")
+                        await writer.drain()
+                        break
+                    else:
+                        writer.write(b"530 Denied\r\n")
+                    await writer.drain()
+            finally:
+                writer.close()
+
+        server = await asyncio.start_server(handle, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        monkeypatch.setattr(app, "FTP_DEFAULT_PORT", port)
+        try:
+            result = await app._probe_ftp_host("127.0.0.1", asyncio.Semaphore(4))
+        finally:
+            server.close()
+            await server.wait_closed()
+        return result
+
+    result = asyncio.run(scenario())
+    assert result is not None
+    assert result["confirmed_weintek"] is True  # опознано входом, не баннером
+    assert result["likely_weintek"] is True
+
+
+def test_probe_wrong_password_not_confirmed(monkeypatch):
+    # Пароль сменён с заводского: PASS 111111 → 530. Хост остаётся неопознанным.
+    async def scenario():
+        async def handle(reader, writer):
+            writer.write(b"220 ---------- WELCOME TO PURE-FTPD ----------\r\n")
+            await writer.drain()
+            try:
+                while True:
+                    line = await reader.readline()
+                    if not line:
+                        break
+                    cmd = line.decode("latin-1").strip().upper()
+                    if cmd == "USER UPLOADHIS":
+                        writer.write(b"331 Password required\r\n")
+                    elif cmd.startswith("PASS"):
+                        writer.write(b"530 Login incorrect\r\n")
+                    elif cmd == "QUIT":
+                        writer.write(b"221 Bye\r\n")
+                        await writer.drain()
+                        break
+                    else:
+                        writer.write(b"530 Denied\r\n")
+                    await writer.drain()
+            finally:
+                writer.close()
+
+        server = await asyncio.start_server(handle, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        monkeypatch.setattr(app, "FTP_DEFAULT_PORT", port)
+        try:
+            result = await app._probe_ftp_host("127.0.0.1", asyncio.Semaphore(4))
+        finally:
+            server.close()
+            await server.wait_closed()
+        return result
+
+    result = asyncio.run(scenario())
+    assert result is not None
+    assert result["confirmed_weintek"] is False
+    assert result["likely_weintek"] is False  # баннер без слова Weintek
+
+
 def test_probe_closed_port_returns_none(monkeypatch):
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     probe.bind(("127.0.0.1", 0))
