@@ -50,6 +50,7 @@
                 <div class="ftp-source-actions">
                   {% if src.id == connected_id %}
                   <button type="button" data-panel-webview
+                    title="В окне приложения (Ctrl+клик — в браузере)"
                     data-host="{{ src.host }}"
                     data-scheme="{{ src.web_scheme }}"
                     data-label="{{ src.label }}">WebView</button>
@@ -190,7 +191,7 @@
           {% endif %}
         </div>
         <div class="screen-header-buttons">
-          <button type="button" class="ghost" data-wash-webview hidden>WebView</button>
+          <button type="button" class="ghost" data-wash-webview hidden title="В окне приложения (Ctrl+клик — в браузере)">WebView</button>
           <form method="post" action="/workspace/refresh" id="workspaceRefreshForm">
             <button type="submit">Обновить данные</button>
           </form>

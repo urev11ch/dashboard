@@ -153,4 +153,36 @@ test.describe("сохранённая панель", () => {
       .toContain("http://192.168.1.88/app/dashboard");
     await expect(page.locator(".panel-webview")).toHaveCount(0);
   });
+
+  test("WebView: клик — окно приложения, Ctrl+клик — браузер", async ({ page }) => {
+    // Стаб моста pywebview: фиксируем, какой метод вызван (окно/браузер).
+    await page.addInitScript(() => {
+      window.__calls = [];
+      window.pywebview = {
+        api: {
+          open_panel_window: async (p) => {
+            window.__calls.push(["window", p.url]);
+            return { ok: true };
+          },
+          open_external: async (p) => {
+            window.__calls.push(["browser", p.url]);
+            return { ok: true };
+          },
+        },
+      };
+    });
+
+    await page.goto("/");
+    await page.click(".ftp-source-item button:has-text('Подключиться')");
+    const wv = page.locator(".ftp-source-item").getByRole("button", { name: "WebView" });
+    await wv.click(); // обычный клик → окно приложения
+    await wv.click({ modifiers: ["Control"] }); // Ctrl+клик → браузер
+
+    await expect
+      .poll(() => page.evaluate(() => window.__calls), { timeout: 15000 })
+      .toEqual([
+        ["window", "http://192.168.1.88/app/dashboard"],
+        ["browser", "http://192.168.1.88/app/dashboard"],
+      ]);
+  });
 });

@@ -615,20 +615,26 @@
     });
   }
 
+  // Клик по WebView: обычный — во встроенном окне приложения; Ctrl/Cmd+клик — в
+  // системном браузере. mode "window" → окно, иначе → браузер.
+  const webViewClickMode = (event) =>
+    event.ctrlKey || event.metaKey ? "browser" : "window";
+
   // Кнопка «WebView» у подключённой панели в главном меню (открывает EasyWeb).
   function initConnectedPanelWebView() {
     document.querySelectorAll("[data-panel-webview]").forEach((button) => {
-      button.addEventListener("click", () => {
+      button.addEventListener("click", (event) => {
         openPanelWebView(
           button.dataset.host || "",
           button.dataset.scheme || "http",
           button.dataset.label || button.dataset.host || "",
+          webViewClickMode(event),
         );
       });
     });
   }
 
-  // На экране графиков — кнопка «Веб-просмотр» (быстрый переход графики→веб).
+  // На экране графиков — кнопка «WebView» (быстрый переход графики→веб).
   // Контекст панели берём из sessionStorage (положен при открытии графиков).
   function initWashWebViewButton() {
     const button = document.querySelector("[data-wash-webview]");
@@ -645,8 +651,8 @@
       return; // рабочая область не из панели (папка/архивы) — кнопки нет
     }
     button.hidden = false;
-    button.addEventListener("click", () =>
-      openPanelWebView(ctx.host, ctx.scheme, ctx.label),
+    button.addEventListener("click", (event) =>
+      openPanelWebView(ctx.host, ctx.scheme, ctx.label, webViewClickMode(event)),
     );
   }
 
