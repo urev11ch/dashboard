@@ -4211,18 +4211,22 @@ async def discover_ftp_panels() -> dict[str, Any]:
 
     semaphore = asyncio.Semaphore(FTP_DISCOVERY_CONCURRENCY)
     probed = await asyncio.gather(*(_probe_ftp_host(host, semaphore) for host in hosts))
-    found = [item for item in probed if item is not None]
-    found.sort(
+    responded = [item for item in probed if item is not None]
+    # В список отдаём ТОЛЬКО опознанные панели Weintek (вход uploadhis прошёл или
+    # Weintek в баннере). Прочие FTP-хосты скрываем — но их число возвращаем,
+    # чтобы UI мог пояснить, если панель с нестандартным паролем не опозналась.
+    panels = [item for item in responded if item.get("likely_weintek")]
+    panels.sort(
         key=lambda item: (
             not item.get("confirmed_weintek"),  # подтверждённые входом — первыми
-            not item["likely_weintek"],
             tuple(int(part) for part in item["host"].split(".")),
         )
     )
     return {
         "scanned": len(hosts),
+        "ftp_hosts": len(responded),  # всего откликнулось FTP-хостов (порт 21)
         "network": str(networks[0]) if networks else "",
-        "panels": found,
+        "panels": panels,
     }
 
 

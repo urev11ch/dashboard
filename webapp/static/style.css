@@ -289,6 +289,23 @@ code {
   line-height: 1.7;
 }
 
+/* Футер карточки: версия слева, «Проверить обновления» справа. Отделён тонкой
+   линией, тон приглушённый — служебная строка, не основное действие. */
+.welcome-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.welcome-version {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 /* Сегментный переключатель вместо двух отдельных кнопок по 220×46: выбор из двух
    взаимоисключающих режимов читается как один контрол, а не как два действия. */
 .welcome-source-switcher {
@@ -3820,6 +3837,24 @@ body.modal-export-mode .chart-print-document {
 .ftp-discover-item:hover {
   border-color: rgba(23, 87, 255, 0.4);
   background: var(--panel);
+}
+.ftp-discover-panel {
+  display: grid;
+  gap: 6px;
+}
+.ftp-discover-item.is-open {
+  border-color: rgba(23, 87, 255, 0.4);
+  background: var(--panel);
+}
+/* Инлайновая форма подключения к выбранной панели: пароль + «Подключиться». */
+.ftp-discover-connect {
+  display: flex;
+  gap: 8px;
+  padding: 0 2px 4px;
+}
+.ftp-discover-connect input[type="password"] {
+  flex: 1;
+  min-width: 0;
 }
 .ftp-source-item {
   display: flex;

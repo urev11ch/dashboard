@@ -133,6 +133,11 @@
       {% if error %}
       <div class="notice error">{{ error }}</div>
       {% endif %}
+
+      <footer class="welcome-footer">
+        <span class="welcome-version">Версия {{ app_version }}</span>
+        <button type="button" class="ghost" data-check-updates-welcome>Проверить обновления</button>
+      </footer>
     </section>
   </main>
   {% else %}

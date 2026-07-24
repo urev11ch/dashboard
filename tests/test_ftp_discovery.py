@@ -212,18 +212,27 @@ def test_probe_closed_port_returns_none(monkeypatch):
     assert asyncio.run(scenario()) is None
 
 
-def test_discover_sorts_weintek_first_and_excludes_own(monkeypatch):
+def test_discover_returns_only_weintek_panels_and_excludes_own(monkeypatch):
     monkeypatch.setattr(
         app,
         "_local_ipv4_networks",
         lambda: ("192.168.1.50", [app.ipaddress.ip_network("192.168.1.0/24")]),
     )
     canned = {
+        # Обычный FTP-хост — не панель: в список не попадает, но считается.
         "192.168.1.10": {
-            "host": "192.168.1.10", "port": 21, "banner": "220 generic", "likely_weintek": False,
+            "host": "192.168.1.10", "port": 21, "banner": "220 generic",
+            "likely_weintek": False, "confirmed_weintek": False,
         },
+        # Опознан по баннеру.
         "192.168.1.20": {
-            "host": "192.168.1.20", "port": 21, "banner": "220 Weintek", "likely_weintek": True,
+            "host": "192.168.1.20", "port": 21, "banner": "220 Weintek",
+            "likely_weintek": True, "confirmed_weintek": False,
+        },
+        # Подтверждён входом — должен идти первым.
+        "192.168.1.30": {
+            "host": "192.168.1.30", "port": 21, "banner": "220 pure-ftpd",
+            "likely_weintek": True, "confirmed_weintek": True,
         },
     }
     seen = []
@@ -238,9 +247,11 @@ def test_discover_sorts_weintek_first_and_excludes_own(monkeypatch):
     assert result["network"] == "192.168.1.0/24"
     # /24 = 254 адреса-хоста, минус свой (192.168.1.50) = 253 проверенных.
     assert result["scanned"] == 253
+    assert result["ftp_hosts"] == 3  # откликнулись все три, включая не-панель
     assert "192.168.1.50" not in seen  # свой адрес не сканируем
     hosts = [panel["host"] for panel in result["panels"]]
-    assert hosts == ["192.168.1.20", "192.168.1.10"]  # Weintek-подобный — первым
+    # Только панели Weintek; подтверждённая входом — первой; обычный FTP скрыт.
+    assert hosts == ["192.168.1.30", "192.168.1.20"]
 
 
 def test_discover_no_network_returns_empty(monkeypatch):

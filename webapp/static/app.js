@@ -194,20 +194,49 @@
     const root = button.closest("[data-ftp-discover-root]");
     const statusEl = root?.querySelector("[data-ftp-discover-status]");
     const resultsEl = root?.querySelector("[data-ftp-discover-results]");
-    // Кнопка вынесена из формы «Добавить панель» — ищем её и блок раскрытия
-    // по data-якорям, а не через closest("form").
-    const form = document.querySelector("[data-ftp-add-form]");
-    const addDetails = document.querySelector("[data-ftp-add]");
-    if (!root || !resultsEl || !form) {
+    if (!root || !resultsEl) {
       return;
     }
-    const hostInput = form.querySelector('[name="host"]');
-    const portInput = form.querySelector('[name="port"]');
 
     const setStatus = (text) => {
       if (statusEl) {
         statusEl.textContent = text || "";
       }
+    };
+
+    // Инлайновая форма подключения: пароль + «Подключиться». Постит на
+    // /workspace/open-ftp (тот же серверный путь, что «Добавить и подключить»);
+    // имя пользователя сервер форсит на uploadhis, папка — /datalog.
+    const buildConnectForm = (panel) => {
+      const connect = document.createElement("form");
+      connect.className = "ftp-discover-connect";
+      connect.method = "post";
+      connect.action = "/workspace/open-ftp";
+      connect.hidden = true;
+      for (const [name, value] of [
+        ["host", panel.host],
+        ["port", String(panel.port)],
+        ["path", "/datalog"],
+        ["passive", "on"],
+        ["label", `Панель ${panel.host}`],
+      ]) {
+        const hidden = document.createElement("input");
+        hidden.type = "hidden";
+        hidden.name = name;
+        hidden.value = value;
+        connect.append(hidden);
+      }
+      const pass = document.createElement("input");
+      pass.type = "password";
+      pass.name = "password";
+      pass.required = true;
+      pass.placeholder = "Пароль (по умолчанию 111111)";
+      pass.autocomplete = "current-password";
+      const submit = document.createElement("button");
+      submit.type = "submit";
+      submit.textContent = "Подключиться";
+      connect.append(pass, submit);
+      return { connect, pass };
     };
 
     const renderResults = (panels) => {
@@ -218,34 +247,23 @@
       }
       panels.forEach((panel) => {
         const item = document.createElement("li");
+        item.className = "ftp-discover-panel";
         const choose = document.createElement("button");
         choose.type = "button";
         choose.className = "ftp-discover-item";
-        const mark = panel.confirmed_weintek
-          ? "✓ Панель Weintek  "
-          : panel.likely_weintek
-            ? "★ "
-            : "";
-        const banner = panel.banner ? ` — ${panel.banner}` : "";
-        // textContent, не innerHTML: приветствие FTP — недоверенные данные хоста.
-        choose.textContent = `${mark}${panel.host}:${panel.port}${banner}`;
-        choose.title = panel.banner || "";
+        // Список — только панели Weintek, поэтому метка одна на всех.
+        // textContent (не innerHTML): host — недоверенные данные из сети.
+        choose.textContent = `Панель Weintek · ${panel.host}:${panel.port}`;
+        const { connect, pass } = buildConnectForm(panel);
         choose.addEventListener("click", () => {
-          // Раскрываем «Добавить панель», чтобы подставленные поля были видны.
-          if (addDetails && !addDetails.open) {
-            addDetails.open = true;
+          const opening = connect.hidden;
+          connect.hidden = !opening;
+          choose.classList.toggle("is-open", opening);
+          if (opening) {
+            pass.focus();
           }
-          if (hostInput) {
-            hostInput.value = panel.host;
-            hostInput.focus();
-          }
-          if (portInput) {
-            portInput.value = String(panel.port);
-          }
-          resultsEl.hidden = true;
-          setStatus(`Выбрана панель ${panel.host}`);
         });
-        item.append(choose);
+        item.append(choose, connect);
         resultsEl.append(item);
       });
       resultsEl.hidden = false;
@@ -270,21 +288,54 @@
         const data = await response.json();
         const panels = Array.isArray(data.panels) ? data.panels : [];
         if (!panels.length) {
-          setStatus(
-            data.scanned
-              ? `Проверено адресов: ${data.scanned}. Панели с FTP не найдены.`
-              : "Не удалось определить локальную сеть."
-          );
+          if (!data.scanned) {
+            setStatus("Не удалось определить локальную сеть.");
+          } else if (data.ftp_hosts) {
+            setStatus(
+              `Панели Weintek не опознаны. FTP-хостов в сети: ${data.ftp_hosts} ` +
+                `(проверено ${data.scanned}). Панель с нестандартным паролем по FTP ` +
+                `не определяется — добавьте её вручную через «Добавить панель».`
+            );
+          } else {
+            setStatus(`Проверено адресов: ${data.scanned}. Панели не найдены.`);
+          }
           renderResults([]);
           return;
         }
-        setStatus(`Найдено: ${panels.length} (проверено ${data.scanned}). Выберите панель:`);
+        setStatus(
+          `Панелей Weintek: ${panels.length} (проверено ${data.scanned}). ` +
+            `Выберите панель и введите пароль:`
+        );
         renderResults(panels);
       } catch (_error) {
         setStatus("");
         showToast("Не удалось выполнить поиск панели.", "error");
       } finally {
         button.disabled = false;
+      }
+    });
+  }
+
+  // Кнопка «Проверить обновления» на экране выбора источника. Реюзает
+  // checkForUpdates() (тот же путь, что и в настройках): одна проверка на нажатие,
+  // результат — тостом. Кнопку блокируем на время запроса от повторных кликов.
+  function initWelcomeUpdateCheck() {
+    const button = document.querySelector("[data-check-updates-welcome]");
+    if (!button) {
+      return;
+    }
+    button.addEventListener("click", async () => {
+      if (button.disabled) {
+        return;
+      }
+      button.disabled = true;
+      const original = button.textContent;
+      button.textContent = "Проверяю…";
+      try {
+        await checkForUpdates();
+      } finally {
+        button.disabled = false;
+        button.textContent = original;
       }
     });
   }
@@ -364,6 +415,7 @@
   initFolderPickerButtons();
   initFolderDefaultButtons();
   initFtpDiscovery();
+  initWelcomeUpdateCheck();
   initDesktopTitlebar();
 
   const workspaceJobRoot = document.querySelector("[data-workspace-job]");
