@@ -1384,6 +1384,14 @@ def handle_maintenance_args(argv: list[str]) -> int | None:
 def main(argv: list[str] | None = None) -> int:
     configure_logging()
 
+    # Веб-просмотр панели встраивает EasyWeb через <iframe>. Панели Weintek часто
+    # отдают веб по https с самоподписанным сертификатом — WebView2 иначе блокирует
+    # такой iframe. Разрешаем игнорировать ошибки сертификата (контент только из
+    # локальной сети; сам UI — localhost http). Задать нужно ДО старта WebView2.
+    os.environ.setdefault(
+        "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--ignore-certificate-errors"
+    )
+
     maintenance_code = handle_maintenance_args(list(sys.argv[1:] if argv is None else argv))
     if maintenance_code is not None:
         return maintenance_code

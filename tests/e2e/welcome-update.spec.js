@@ -50,6 +50,43 @@ test("welcome: доступное обновление показывается 
   await expect(status(page)).toContainText("Доступно обновление 1.2.0", { timeout: 15000 });
 });
 
+test("welcome: установка обновления в один клик (десктоп-мост)", async ({ page }) => {
+  // Эмулируем мост pywebview: без него install недоступен (installable=false).
+  await page.addInitScript(() => {
+    window.pywebview = {
+      api: {
+        install_update: async () => {
+          window.__installCalled = true;
+          return { ok: true };
+        },
+      },
+    };
+  });
+  await mockUpdateCheck(page, {
+    current: "1.1.13",
+    latest: "1.1.14",
+    update_available: true,
+    url: "",
+    installable: true,
+  });
+  await page.route("**/api/update/download", (route) =>
+    route.fulfill({ json: { job: { status: "running", downloaded: 0, total: 100 } } }),
+  );
+  await page.route("**/api/update/job", (route) =>
+    route.fulfill({ json: { status: "ready", ready: true, downloaded: 100, total: 100 } }),
+  );
+
+  await page.goto("/");
+  await page.click("[data-check-updates-welcome]");
+
+  const install = page.locator("[data-install-update-welcome]");
+  await expect(install).toBeVisible({ timeout: 15000 });
+  await install.click();
+
+  await expect(status(page)).toHaveText(/Запускаю установку/, { timeout: 15000 });
+  expect(await page.evaluate(() => window.__installCalled)).toBe(true);
+});
+
 test("welcome: сбой проверки не оставляет кнопку залипшей", async ({ page }) => {
   await page.route("**/api/update-check", (route) => route.abort());
 

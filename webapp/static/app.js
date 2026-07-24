@@ -208,9 +208,9 @@
     const panelDisplayName = (panel) =>
       panel.name ? `Weintek ${panel.name}` : `Weintek ${panel.host}`;
 
-    // Всплывающее окно выбранной панели: два действия — веб-просмотр (без пароля)
-    // и архивы моек (пароль → /workspace/open-ftp; учётку сервер форсит в
-    // uploadhis, папка /datalog).
+    // Всплывающее окно выбранной панели: имя + пароль → «Добавить панель».
+    // Панель СОХРАНЯЕТСЯ (POST /workspace/ftp-source/add) и появляется в списке;
+    // подключение (веб-просмотр / графики) — отдельным шагом по «Подключиться».
     const openConnectDialog = (panel) => {
       const displayName = panelDisplayName(panel);
       const dialog = document.createElement("dialog");
@@ -218,13 +218,14 @@
 
       const form = document.createElement("form");
       form.method = "post";
-      form.action = "/workspace/open-ftp";
+      form.action = "/workspace/ftp-source/add";
       form.className = "ftp-connect-form";
       for (const [name, value] of [
         ["host", panel.host],
         ["port", String(panel.port)],
         ["path", "/datalog"],
         ["passive", "on"],
+        ["web_scheme", panel.web_scheme || ""],
       ]) {
         const hidden = document.createElement("input");
         hidden.type = "hidden";
@@ -237,20 +238,6 @@
       title.className = "ftp-connect-title";
       // textContent (не innerHTML): имя — недоверенные данные из сети.
       title.textContent = displayName;
-
-      // Веб-просмотр — сразу, без пароля (EasyWeb авторизуется сам).
-      const webBtn = document.createElement("button");
-      webBtn.type = "button";
-      webBtn.className = "ftp-connect-web";
-      webBtn.textContent = "Веб-просмотр";
-      webBtn.addEventListener("click", () => {
-        dialog.close();
-        openPanelWebView(panel.host, panel.web_scheme, displayName);
-      });
-
-      const divider = document.createElement("div");
-      divider.className = "ftp-connect-divider";
-      divider.textContent = "Архивы моек";
 
       const nameLabel = document.createElement("label");
       nameLabel.className = "ftp-connect-field";
@@ -280,12 +267,12 @@
       cancel.className = "ghost";
       cancel.textContent = "Отмена";
       cancel.addEventListener("click", () => dialog.close());
-      const connect = document.createElement("button");
-      connect.type = "submit";
-      connect.textContent = "Открыть архивы";
-      actions.append(cancel, connect);
+      const add = document.createElement("button");
+      add.type = "submit";
+      add.textContent = "Добавить панель";
+      actions.append(cancel, add);
 
-      form.append(title, webBtn, divider, nameLabel, passLabel, actions);
+      form.append(title, nameLabel, passLabel, actions);
       dialog.append(form);
       // Клик по подложке (вне формы) закрывает окно.
       dialog.addEventListener("click", (event) => {
@@ -378,11 +365,80 @@
       return;
     }
     const statusEl = document.querySelector("[data-check-updates-welcome-status]");
+    const installBtn = document.querySelector("[data-install-update-welcome]");
     const setStatus = (text) => {
       if (statusEl) {
         statusEl.textContent = text || "";
       }
     };
+    // Установить «в один клик» можно только собранную Windows-версию через мост
+    // pywebview (ставит .exe, закрывает окно). В браузере/не-Windows — только
+    // ссылка на Releases. Признак installable приходит с бэкенда.
+    const canInstall = (data) =>
+      !!data &&
+      data.update_available &&
+      data.installable &&
+      typeof window.pywebview?.api?.install_update === "function";
+
+    let installBusy = false;
+    async function runInstall() {
+      if (installBusy) {
+        return;
+      }
+      installBusy = true;
+      if (installBtn) {
+        installBtn.disabled = true;
+      }
+      setStatus("Скачиваю обновление…");
+      try {
+        const started = await fetch("/api/update/download", { method: "POST" });
+        if (!started.ok) {
+          const detail = await started.json().catch(() => ({}));
+          throw new Error(detail.detail || "Не удалось начать скачивание.");
+        }
+        let ticks = 0;
+        while (true) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          const jobResp = await fetch("/api/update/job", {
+            headers: { Accept: "application/json" },
+          });
+          if (!jobResp.ok) {
+            throw new Error("Не удалось получить статус скачивания.");
+          }
+          const job = await jobResp.json();
+          if (!job || job.status !== "running") {
+            if (!job || job.status !== "ready") {
+              throw new Error(job?.error || "Не удалось скачать обновление.");
+            }
+            break;
+          }
+          if (job.total > 0) {
+            const pct = Math.min(100, Math.round((job.downloaded / job.total) * 100));
+            setStatus(`Скачиваю обновление… ${pct}%`);
+          }
+          // Потолок ≈20 минут (500 мс × 2400) — не крутим опрос вечно.
+          if (++ticks >= 2400) {
+            throw new Error("Скачивание не завершилось за отведённое время.");
+          }
+        }
+        const result = await window.pywebview.api.install_update();
+        if (!result?.ok) {
+          throw new Error(result?.error || "Не удалось запустить установщик.");
+        }
+        setStatus("Запускаю установку — приложение закроется…");
+      } catch (error) {
+        setStatus(String(error.message || error));
+        if (installBtn) {
+          installBtn.disabled = false;
+        }
+      } finally {
+        installBusy = false;
+      }
+    }
+    if (installBtn) {
+      installBtn.addEventListener("click", runInstall);
+    }
+
     button.addEventListener("click", async () => {
       if (button.disabled) {
         return;
@@ -391,6 +447,9 @@
       const original = button.textContent;
       button.textContent = "Проверяю…";
       setStatus("");
+      if (installBtn) {
+        installBtn.hidden = true;
+      }
       try {
         const response = await fetch("/api/update-check", {
           headers: { Accept: "application/json" },
@@ -400,7 +459,15 @@
         }
         const data = await response.json();
         if (data.update_available) {
-          setStatus(`Доступно обновление ${data.latest}. Смотрите GitHub Releases.`);
+          const installable = canInstall(data);
+          setStatus(
+            installable
+              ? `Доступно обновление ${data.latest}.`
+              : `Доступно обновление ${data.latest}. Смотрите GitHub Releases.`,
+          );
+          if (installBtn) {
+            installBtn.hidden = !installable;
+          }
         } else if (data.latest) {
           setStatus("Установлена последняя версия.");
         } else {
@@ -427,10 +494,23 @@
     }
   }
 
+  // Запоминает контекст панели для экрана графиков (быстрый переход графики→веб).
+  function rememberPanelContext(host, scheme, label) {
+    try {
+      sessionStorage.setItem(
+        "opticip.panel",
+        JSON.stringify({ host, scheme: scheme || "http", label: label || host }),
+      );
+    } catch (_e) {
+      /* sessionStorage недоступен — не критично */
+    }
+  }
+
   // Веб-просмотр панели: полноэкранный оверлей с iframe EasyWeb (/app/dashboard).
   // Самодостаточен (без toastRoot/state) — работает и на экране выбора источника.
   // Схема http/https берётся из обнаружения (панели с TLS отдают веб по https).
-  function openPanelWebView(host, scheme, displayName) {
+  // graphsSourceId (опц.) добавляет кнопку «Графики» — быстрый переход к архивам.
+  function openPanelWebView(host, scheme, displayName, graphsSourceId) {
     const url = `${scheme || "http"}://${host}/app/dashboard`;
     const overlay = document.createElement("div");
     overlay.className = "panel-webview";
@@ -441,47 +521,172 @@
     back.type = "button";
     back.className = "ghost";
     back.textContent = "← Назад";
-    back.addEventListener("click", () => overlay.remove());
     const title = document.createElement("span");
     title.className = "panel-webview-title";
     title.textContent = displayName || host; // textContent — данные из сети
+    bar.append(back, title);
+
+    if (graphsSourceId) {
+      // Быстрое переключение веб → графики: сабмит открывает архивы панели.
+      const graphsForm = document.createElement("form");
+      graphsForm.method = "post";
+      graphsForm.action = "/workspace/open-ftp";
+      graphsForm.className = "panel-webview-graphs";
+      const sid = document.createElement("input");
+      sid.type = "hidden";
+      sid.name = "source_id";
+      sid.value = graphsSourceId;
+      const graphsBtn = document.createElement("button");
+      graphsBtn.type = "submit";
+      graphsBtn.className = "ghost";
+      graphsBtn.textContent = "Графики";
+      graphsForm.append(sid, graphsBtn);
+      graphsForm.addEventListener("submit", () =>
+        rememberPanelContext(host, scheme, displayName),
+      );
+      bar.append(graphsForm);
+    }
+
     const ext = document.createElement("button");
     ext.type = "button";
     ext.className = "ghost";
     ext.textContent = "Открыть в браузере";
     ext.addEventListener("click", () => openExternalUrl(url));
-    bar.append(back, title, ext);
+    bar.append(ext);
+
+    // Подсказка, если встроить не удалось (https с самоподписанным сертификатом
+    // WebView2 блокирует, либо панель запрещает встраивание).
+    const hint = document.createElement("div");
+    hint.className = "panel-webview-hint";
+    hint.hidden = true;
+    hint.textContent =
+      "Не удалось встроить панель — нажмите «Открыть в браузере».";
 
     const frame = document.createElement("iframe");
     frame.className = "panel-webview-frame";
     frame.src = url;
     frame.referrerPolicy = "no-referrer";
 
-    overlay.append(bar, frame);
-    document.addEventListener(
-      "keydown",
-      function onEsc(event) {
-        if (event.key === "Escape") {
-          overlay.remove();
-          document.removeEventListener("keydown", onEsc);
-        }
-      },
-    );
+    let loaded = false;
+    frame.addEventListener("load", () => {
+      loaded = true;
+      hint.hidden = true;
+    });
+    const hintTimer = setTimeout(() => {
+      if (!loaded) {
+        hint.hidden = false;
+      }
+    }, 4000);
+
+    const cleanup = () => {
+      clearTimeout(hintTimer);
+      document.removeEventListener("keydown", onEsc);
+      overlay.remove();
+    };
+    function onEsc(event) {
+      if (event.key === "Escape") {
+        cleanup();
+      }
+    }
+    back.addEventListener("click", cleanup);
+    document.addEventListener("keydown", onEsc);
+
+    overlay.append(bar, hint, frame);
     document.body.append(overlay);
   }
 
-  // Веб-просмотр для сохранённых панелей (кнопка в списке). Схема неизвестна —
-  // по умолчанию http; если не откроется, поможет «Открыть в браузере».
-  function initSavedPanelWebView() {
-    document.querySelectorAll("[data-panel-webview]").forEach((button) => {
+  // Выбор действия для сохранённой панели: «Веб-просмотр» или «Графики».
+  function openPanelChoice(sourceId, host, scheme, label) {
+    const dialog = document.createElement("dialog");
+    dialog.className = "ftp-connect-modal";
+    const box = document.createElement("div");
+    box.className = "ftp-connect-form";
+
+    const title = document.createElement("div");
+    title.className = "ftp-connect-title";
+    title.textContent = label || host;
+
+    const webBtn = document.createElement("button");
+    webBtn.type = "button";
+    webBtn.className = "ftp-connect-web";
+    webBtn.textContent = "Веб-просмотр";
+    webBtn.addEventListener("click", () => {
+      dialog.close();
+      openPanelWebView(host, scheme, label, sourceId);
+    });
+
+    // «Графики» — сабмит открывает архивы (рабочую область) панели.
+    const graphsForm = document.createElement("form");
+    graphsForm.method = "post";
+    graphsForm.action = "/workspace/open-ftp";
+    const sid = document.createElement("input");
+    sid.type = "hidden";
+    sid.name = "source_id";
+    sid.value = sourceId;
+    const graphsBtn = document.createElement("button");
+    graphsBtn.type = "submit";
+    graphsBtn.className = "ftp-connect-web";
+    graphsBtn.textContent = "Графики";
+    graphsForm.append(sid, graphsBtn);
+    graphsForm.addEventListener("submit", () =>
+      rememberPanelContext(host, scheme, label),
+    );
+
+    const actions = document.createElement("div");
+    actions.className = "ftp-connect-actions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "ghost";
+    cancel.textContent = "Отмена";
+    cancel.addEventListener("click", () => dialog.close());
+    actions.append(cancel);
+
+    box.append(title, webBtn, graphsForm, actions);
+    dialog.append(box);
+    dialog.addEventListener("click", (event) => {
+      if (event.target === dialog) {
+        dialog.close();
+      }
+    });
+    dialog.addEventListener("close", () => dialog.remove());
+    document.body.append(dialog);
+    dialog.showModal();
+  }
+
+  // Кнопка «Подключиться» у сохранённой панели → выбор веб-просмотр/графики.
+  function initSavedPanelConnect() {
+    document.querySelectorAll("[data-panel-connect]").forEach((button) => {
       button.addEventListener("click", () => {
-        openPanelWebView(
+        openPanelChoice(
+          button.dataset.sourceId || "",
           button.dataset.host || "",
           button.dataset.scheme || "http",
           button.dataset.label || button.dataset.host || "",
         );
       });
     });
+  }
+
+  // На экране графиков — кнопка «Веб-просмотр» (быстрый переход графики→веб).
+  // Контекст панели берём из sessionStorage (положен при открытии графиков).
+  function initWashWebViewButton() {
+    const button = document.querySelector("[data-wash-webview]");
+    if (!button) {
+      return;
+    }
+    let ctx = null;
+    try {
+      ctx = JSON.parse(sessionStorage.getItem("opticip.panel") || "null");
+    } catch (_e) {
+      ctx = null;
+    }
+    if (!ctx || !ctx.host) {
+      return; // рабочая область не из панели (папка/архивы) — кнопки нет
+    }
+    button.hidden = false;
+    button.addEventListener("click", () =>
+      openPanelWebView(ctx.host, ctx.scheme, ctx.label),
+    );
   }
 
   // Синхронизирует класс window-maximized с РЕАЛЬНЫМ состоянием окна (на случай
@@ -559,7 +764,8 @@
   initFolderPickerButtons();
   initFolderDefaultButtons();
   initFtpDiscovery();
-  initSavedPanelWebView();
+  initSavedPanelConnect();
+  initWashWebViewButton();
   initWelcomeUpdateCheck();
   initDesktopTitlebar();
 

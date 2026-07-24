@@ -828,6 +828,7 @@ def upsert_ftp_connection(config: dict[str, Any], label: str = "") -> dict[str, 
         "password_enc": protect_secret(config.get("password", ""), secret_id=conn_id),
         "path": config["path"],
         "passive": bool(config.get("passive", True)),
+        "web_scheme": config.get("web_scheme", ""),
     }
     with ftp_sources_lock:
         registry = load_ftp_sources_registry()
@@ -856,6 +857,7 @@ def connection_to_config(conn: dict[str, Any]) -> dict[str, Any]:
             "password": unprotect_secret(conn.get("password_enc", "")),
             "path": conn.get("path"),
             "passive": conn.get("passive", True),
+            "web_scheme": conn.get("web_scheme", ""),
         }
     )
 
@@ -941,6 +943,7 @@ def list_ftp_sources_public() -> list[dict[str, Any]]:
                 "port": conn.get("port") or FTP_DEFAULT_PORT,
                 "path": conn.get("path") or "/",
                 "username": conn.get("username") or "",
+                "web_scheme": conn.get("web_scheme") or "",
                 "active": conn.get("id") == registry.get("active_id"),
             }
         )
@@ -1032,6 +1035,12 @@ def normalize_ftp_connection_settings(raw_payload: Any) -> dict[str, Any]:
     else:
         passive = bool(passive)
 
+    # Схема веб-интерфейса EasyWeb (для веб-просмотра /app/dashboard). Из
+    # обнаружения приходит http/https; иначе пусто (фронтенд подставит http).
+    web_scheme = str(payload.get("web_scheme") or "").strip().lower()
+    if web_scheme not in {"http", "https"}:
+        web_scheme = ""
+
     return {
         "version": FTP_SOURCE_CONFIG_VERSION,
         "host": host,
@@ -1040,6 +1049,7 @@ def normalize_ftp_connection_settings(raw_payload: Any) -> dict[str, Any]:
         "password": password,
         "path": path,
         "passive": passive,
+        "web_scheme": web_scheme,
     }
 
 
@@ -3776,6 +3786,38 @@ def open_ftp_workspace(
     workspace_dir, display_label = create_ftp_workspace(config, label=connection_label)
     with state_lock:
         start_workspace_job(workspace_dir, display_target=display_label)
+    return RedirectResponse(url="/", status_code=303)
+
+
+@app.post("/workspace/ftp-source/add")
+def add_ftp_source(
+    host: str = Form(""),
+    port: str = Form("21"),
+    password: str = Form(""),
+    path: str = Form("/datalog"),
+    passive: str = Form(""),
+    label: str = Form(""),
+    web_scheme: str = Form(""),
+) -> RedirectResponse:
+    """Сохраняет панель в реестр БЕЗ открытия рабочей области (кнопка «Добавить
+    панель»). Панель появляется в списке сохранённых; подключение — отдельным
+    шагом (веб-просмотр / графики)."""
+    try:
+        config = normalize_ftp_connection_settings(
+            {
+                "host": host,
+                "port": port,
+                "password": password,
+                "path": path,
+                "passive": passive,
+                "web_scheme": web_scheme,
+            }
+        )
+    except ValueError as exc:
+        with state_lock:
+            state.error = str(exc)
+        return RedirectResponse(url="/", status_code=303)
+    upsert_ftp_connection(config, label=label)
     return RedirectResponse(url="/", status_code=303)
 
 

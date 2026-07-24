@@ -51,14 +51,14 @@
               <li class="ftp-source-item{% if src.active %} is-active{% endif %}">
                 <div class="ftp-source-info">
                   <span class="ftp-source-label">{{ src.label }}</span>
-                  <span class="ftp-source-meta">{{ src.host }}:{{ src.port }}{{ src.path }}</span>
+                  <span class="ftp-source-meta">{{ src.host }}</span>
                 </div>
                 <div class="ftp-source-actions">
-                  <button type="button" class="ghost" data-panel-webview data-host="{{ src.host }}" data-label="{{ src.label }}">Веб-просмотр</button>
-                  <form method="post" action="/workspace/open-ftp">
-                    <input type="hidden" name="source_id" value="{{ src.id }}">
-                    <button type="submit">Архивы моек</button>
-                  </form>
+                  <button type="button" data-panel-connect
+                    data-source-id="{{ src.id }}"
+                    data-host="{{ src.host }}"
+                    data-scheme="{{ src.web_scheme }}"
+                    data-label="{{ src.label }}">Подключиться</button>
                   <form method="post" action="/workspace/ftp-source/delete" onsubmit="return confirm('Удалить сохранённую панель?');">
                     <input type="hidden" name="source_id" value="{{ src.id }}">
                     <button type="submit" class="ghost">Удалить</button>
@@ -139,6 +139,7 @@
         <span class="welcome-version">Версия {{ app_version }}</span>
         <div class="welcome-update">
           <span class="welcome-update-status" data-check-updates-welcome-status role="status" aria-live="polite"></span>
+          <button type="button" data-install-update-welcome hidden>Установить обновление</button>
           <button type="button" class="ghost" data-check-updates-welcome>Проверить обновления</button>
         </div>
       </footer>
@@ -165,6 +166,7 @@
           {% endif %}
         </div>
         <div class="screen-header-buttons">
+          <button type="button" class="ghost" data-wash-webview hidden>Веб-просмотр</button>
           <form method="post" action="/workspace/refresh" id="workspaceRefreshForm">
             <button type="submit">Обновить данные</button>
           </form>

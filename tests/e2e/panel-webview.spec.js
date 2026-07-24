@@ -1,69 +1,103 @@
 import { test, expect } from "@playwright/test";
 
-// Обнаружение панели → попап → веб-просмотр. Обнаружение мокаем (реальный скан
-// сети в тестах не выполнить). Сброс рабочей области — чтобы показался welcome.
+// Флоу панели: поиск → «Добавить панель» (сохранение) → сохранённая панель →
+// «Подключиться» → выбор «Веб-просмотр»/«Графики». Обнаружение мокаем.
+const DISCOVER = {
+  scanned: 253,
+  ftp_hosts: 1,
+  network: "192.168.1.0/24",
+  panels: [
+    {
+      host: "192.168.1.88",
+      port: 21,
+      banner: "",
+      name: "cMT-3C6F",
+      web_scheme: "http",
+      mac: "00:0c:26:11:3c:6f",
+      mac_weintek: true,
+      confirmed_weintek: true,
+      likely_weintek: true,
+    },
+  ],
+};
+
 test.beforeEach(async ({ page }) => {
   await page.request.post("/workspace/reset");
-  await page.route("**/api/ftp/discover", (route) =>
-    route.fulfill({
-      json: {
-        scanned: 253,
-        ftp_hosts: 1,
-        network: "192.168.1.0/24",
-        panels: [
-          {
-            host: "192.168.1.88",
-            port: 21,
-            banner: "",
-            name: "cMT-3C6F",
-            web_scheme: "http",
-            mac: "00:0c:26:11:3c:6f",
-            mac_weintek: true,
-            confirmed_weintek: true,
-            likely_weintek: true,
-          },
-        ],
-      },
-    }),
+  await page.route("**/api/ftp/discover", (route) => route.fulfill({ json: DISCOVER }));
+});
+
+test("список: строка «Weintek cMT-3C6F (IP)»", async ({ page }) => {
+  await page.goto("/");
+  await page.click("[data-ftp-discover]");
+  await expect(page.locator(".ftp-discover-item")).toHaveText(
+    "Weintek cMT-3C6F (192.168.1.88)",
+    { timeout: 15000 },
   );
 });
 
-test("список: строка вида «Weintek cMT-3C6F (IP)»", async ({ page }) => {
-  await page.goto("/");
-  await page.click("[data-ftp-discover]");
-  const row = page.locator(".ftp-discover-item");
-  await expect(row).toHaveText("Weintek cMT-3C6F (192.168.1.88)", { timeout: 15000 });
-});
-
-test("попап: имя по умолчанию, лейбл «Пароль», без IP:21", async ({ page }) => {
+test("попап поиска: имя, «Пароль», «Добавить панель», без веб/архивов и IP:21", async ({
+  page,
+}) => {
   await page.goto("/");
   await page.click("[data-ftp-discover]");
   await page.click(".ftp-discover-item");
 
   const modal = page.locator(".ftp-connect-modal");
-  await expect(modal).toBeVisible();
   await expect(modal.locator(".ftp-connect-title")).toHaveText("Weintek cMT-3C6F");
   await expect(modal.locator('input[name="label"]')).toHaveValue("Weintek cMT-3C6F");
-  // Лейбл пароля — ровно «Пароль», без «по умолчанию 111111».
   await expect(modal.getByText("Пароль", { exact: true })).toBeVisible();
+  await expect(modal.getByRole("button", { name: "Добавить панель" })).toBeVisible();
+  await expect(modal.getByRole("button", { name: "Веб-просмотр" })).toHaveCount(0);
   await expect(modal.getByText(":21")).toHaveCount(0);
-  await expect(modal.getByRole("button", { name: "Веб-просмотр" })).toBeVisible();
 });
 
-test("веб-просмотр: открывает оверлей с iframe /app/dashboard", async ({ page }) => {
-  await page.goto("/");
-  await page.click("[data-ftp-discover]");
-  await page.click(".ftp-discover-item");
-  await page.getByRole("button", { name: "Веб-просмотр" }).click();
+test.describe("сохранённая панель", () => {
+  // Заводим панель через add-эндпоинт, в конце удаляем — не сорим в реестре.
+  test.beforeEach(async ({ page }) => {
+    await page.request.post("/workspace/ftp-source/add", {
+      form: {
+        host: "192.168.1.88",
+        port: "21",
+        password: "111111",
+        path: "/datalog",
+        passive: "on",
+        label: "Weintek cMT-3C6F",
+        web_scheme: "http",
+      },
+    });
+  });
+  test.afterEach(async ({ page }) => {
+    await page.goto("/");
+    const del = page.locator(".ftp-source-item form[action*='delete'] button");
+    while (await del.count()) {
+      page.once("dialog", (d) => d.accept());
+      await del.first().click();
+      await page.waitForLoadState("networkidle");
+    }
+  });
 
-  const overlay = page.locator(".panel-webview");
-  await expect(overlay).toBeVisible();
-  await expect(overlay.locator("iframe")).toHaveAttribute(
-    "src",
-    "http://192.168.1.88/app/dashboard",
-  );
-  await expect(overlay.getByRole("button", { name: "Открыть в браузере" })).toBeVisible();
-  // «Назад» закрывает оверлей.
-  await overlay.getByRole("button", { name: "← Назад" }).click();
-  await expect(page.locator(".panel-webview")).toHaveCount(0);
+  test("«Подключиться» → выбор «Веб-просмотр»/«Графики»", async ({ page }) => {
+    await page.goto("/");
+    await page.click("[data-panel-connect]");
+    const modal = page.locator(".ftp-connect-modal");
+    await expect(modal.getByRole("button", { name: "Веб-просмотр" })).toBeVisible();
+    await expect(modal.getByRole("button", { name: "Графики" })).toBeVisible();
+  });
+
+  test("«Веб-просмотр» открывает оверлей с iframe /app/dashboard", async ({ page }) => {
+    await page.goto("/");
+    await page.click("[data-panel-connect]");
+    await page.getByRole("button", { name: "Веб-просмотр" }).click();
+
+    const overlay = page.locator(".panel-webview");
+    await expect(overlay).toBeVisible();
+    await expect(overlay.locator("iframe")).toHaveAttribute(
+      "src",
+      "http://192.168.1.88/app/dashboard",
+    );
+    await expect(overlay.getByRole("button", { name: "Открыть в браузере" })).toBeVisible();
+    await expect(overlay.getByRole("button", { name: "Графики" })).toBeVisible();
+    await overlay.getByRole("button", { name: "← Назад" }).click();
+    await expect(page.locator(".panel-webview")).toHaveCount(0);
+  });
 });
