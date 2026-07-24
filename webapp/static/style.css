@@ -3842,19 +3842,50 @@ body.modal-export-mode .chart-print-document {
   display: grid;
   gap: 6px;
 }
-.ftp-discover-item.is-open {
-  border-color: rgba(23, 87, 255, 0.4);
+/* Всплывающее окно подключения к найденной панели (нативный <dialog>). */
+.ftp-connect-modal {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  padding: 0;
+  width: min(420px, calc(100vw - 32px));
   background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 30px 80px rgba(18, 28, 45, 0.28);
 }
-/* Инлайновая форма подключения к выбранной панели: пароль + «Подключиться». */
-.ftp-discover-connect {
+.ftp-connect-modal::backdrop {
+  background: rgba(15, 23, 42, 0.42);
+  backdrop-filter: blur(4px);
+}
+.ftp-connect-form {
+  display: grid;
+  gap: 12px;
+  padding: 20px;
+}
+.ftp-connect-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+.ftp-connect-sub {
+  font-size: 12px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  margin-top: -6px;
+  overflow-wrap: anywhere;
+}
+.ftp-connect-field {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.ftp-connect-field input {
+  width: 100%;
+}
+.ftp-connect-actions {
   display: flex;
+  justify-content: flex-end;
   gap: 8px;
-  padding: 0 2px 4px;
-}
-.ftp-discover-connect input[type="password"] {
-  flex: 1;
-  min-width: 0;
+  margin-top: 4px;
 }
 .ftp-source-item {
   display: flex;

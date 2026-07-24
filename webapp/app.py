@@ -242,6 +242,12 @@ FTP_DISCOVERY_MAX_HOSTS = 1024  # предохранитель на размер
 FTP_WEINTEK_HINTS = ("weintek", "cmt", "easybuilder", "ftpdmini", "hmi")
 # Папки данных на панели (Data Sampling / алармы / рецепты).
 FTP_WEINTEK_MARKER_DIRS = ("datalog", "eventlog", "recipe")
+# Надёжное опознание панели — по её веб-интерфейсу EasyWeb на порту 80: GET /
+# отдаёт SPA-оболочку cMT с этими маркерами. Работает БЕЗ FTP-пароля и при TLS,
+# поэтому это основной признак панели (баннер FTP — лишь мягкий запасной).
+HTTP_DISCOVERY_PORT = 80
+HTTP_EASYWEB_READ_LIMIT = 16384  # байт тела ответа достаточно (маркеры в <head>)
+HTTP_EASYWEB_MARKERS = ("easywebconfig", "icon-weintek", "<title>cmt</title>")
 
 PORTABLE_ENV_VAR = "OPTICIP_PORTABLE"
 APP_DATA_SUBDIRS = ("datalog", "temp")
@@ -4127,25 +4133,73 @@ async def _ftp_read_reply(reader: asyncio.StreamReader) -> tuple[str, str]:
     return code, text.strip()
 
 
-async def _ftp_command(
-    reader: asyncio.StreamReader, writer: asyncio.StreamWriter, command: str
-) -> tuple[str, str]:
-    """Отправляет команду FTP и возвращает (код, текст) ответа."""
-    writer.write((command + "\r\n").encode("latin-1", "replace"))
-    await writer.drain()
-    return await _ftp_read_reply(reader)
+async def _probe_http_easyweb(host: str) -> str | None:
+    """GET / на host:80 и поиск маркеров веб-интерфейса EasyWeb в теле ответа.
+    Так панель Weintek опознаётся по её же веб-морде — без FTP-пароля и вне
+    зависимости от TLS на FTP. Возвращает `<title>` страницы (обычно «cMT»),
+    либо `None`, если это не EasyWeb-панель."""
+    writer: asyncio.StreamWriter | None = None
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, HTTP_DISCOVERY_PORT),
+            timeout=FTP_DISCOVERY_PROBE_TIMEOUT,
+        )
+        request = (
+            f"GET / HTTP/1.0\r\nHost: {host}\r\n"
+            "User-Agent: OptiCIP-Dashboard\r\nConnection: close\r\n\r\n"
+        )
+        writer.write(request.encode("latin-1", "replace"))
+        await writer.drain()
+        body = b""
+        while len(body) < HTTP_EASYWEB_READ_LIMIT:
+            chunk = await asyncio.wait_for(
+                reader.read(4096), timeout=FTP_DISCOVERY_BANNER_TIMEOUT
+            )
+            if not chunk:
+                break
+            body += chunk
+    except (OSError, asyncio.TimeoutError):
+        return None
+    finally:
+        if writer is not None:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
+
+    text = body.decode("latin-1", "replace")
+    if not any(marker in text.lower() for marker in HTTP_EASYWEB_MARKERS):
+        return None
+    # Первый <title> — это заголовок <head> (SVG-title в спрайте идут позже).
+    match = re.search(r"<title[^>]*>(.*?)</title>", text, re.IGNORECASE | re.DOTALL)
+    return match.group(1).strip() if match else ""
+
+
+async def _reverse_dns_name(host: str) -> str:
+    """Имя хоста по обратному DNS/mDNS. Панель Weintek обычно отзывается сетевым
+    именем `cMT-XXXX` (суффикс MAC). Возвращает первую метку имени без домена,
+    либо "" если имя не разрешилось / совпало с самим IP."""
+    try:
+        info = await asyncio.wait_for(
+            asyncio.to_thread(socket.gethostbyaddr, host), timeout=2.0
+        )
+    except (OSError, asyncio.TimeoutError):
+        return ""
+    hostname = (info[0] if info else "") or ""
+    label = hostname.split(".")[0].strip()
+    return "" if label == host else label
 
 
 async def _probe_ftp_host(host: str, semaphore: asyncio.Semaphore) -> dict[str, Any] | None:
-    """Пробует TCP-подключение к host:21; читает приветствие и пытается войти
-    штатной учёткой Weintek `uploadhis` с заводским паролем 111111. Успешный
-    вход однозначно опознаёт панель (на дефолтном пароле); при смене пароля или
-    обязательном TLS вход не пройдёт — хост останется в списке как обычный FTP.
-    Возвращает описание хоста либо None, если порт закрыт/недоступен."""
+    """Пробует host:21 (FTP нужен для выгрузки datalog) и читает приветствие.
+    Опознаёт панель по её веб-интерфейсу EasyWeb на host:80 — это работает без
+    FTP-пароля и при обязательном TLS. Баннер FTP — лишь мягкий запасной признак.
+    Имя панели берём из обратного DNS (`cMT-XXXX`), иначе из `<title>` EasyWeb.
+    Возвращает описание хоста либо None, если порт 21 закрыт/недоступен."""
     async with semaphore:
         writer: asyncio.StreamWriter | None = None
         banner = ""
-        confirmed = False
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(host, FTP_DEFAULT_PORT),
@@ -4154,22 +4208,9 @@ async def _probe_ftp_host(host: str, semaphore: asyncio.Semaphore) -> dict[str, 
         except (OSError, asyncio.TimeoutError):
             return None
         try:
-            banner_code, banner = await _ftp_read_reply(reader)
-            if banner_code.startswith("2"):
-                user_code, _ = await _ftp_command(
-                    reader, writer, f"USER {FTP_HISTORY_USERNAME}"
-                )
-                # 331 — сервер запросил пароль (Pure-FTPd отвечает так на любое имя,
-                # поэтому опознание идёт по факту УСПЕШНОГО входа ниже, а не по 331).
-                if user_code == "331":
-                    pass_code, _ = await _ftp_command(
-                        reader, writer, f"PASS {FTP_HISTORY_DEFAULT_PASSWORD}"
-                    )
-                    confirmed = pass_code == "230"
-                elif user_code == "230":  # вход без пароля (нетипично)
-                    confirmed = True
+            _banner_code, banner = await _ftp_read_reply(reader)
         except (OSError, asyncio.TimeoutError):
-            pass
+            banner = ""
         finally:
             try:
                 writer.write(b"QUIT\r\n")
@@ -4182,14 +4223,23 @@ async def _probe_ftp_host(host: str, semaphore: asyncio.Semaphore) -> dict[str, 
             except OSError:
                 pass
 
+        # Опознание по веб-морде — основной признак (пароль не нужен).
+        easyweb_title = await _probe_http_easyweb(host)
+        easyweb = easyweb_title is not None
+        name = ""
+        if easyweb:
+            # Имя: обратный DNS (cMT-XXXX) приоритетнее дженерик-title «cMT».
+            name = (await _reverse_dns_name(host)) or (easyweb_title or "")
+
     lowered = banner.lower()
     banner_hint = any(hint in lowered for hint in FTP_WEINTEK_HINTS)
     return {
         "host": host,
         "port": FTP_DEFAULT_PORT,
         "banner": banner,
-        "confirmed_weintek": confirmed,
-        "likely_weintek": confirmed or banner_hint,
+        "name": name,
+        "confirmed_weintek": easyweb,  # подтверждено веб-интерфейсом EasyWeb
+        "likely_weintek": easyweb or banner_hint,
     }
 
 

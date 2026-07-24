@@ -59,144 +59,173 @@ def test_local_networks_no_route(monkeypatch):
     assert networks == []
 
 
-def test_probe_open_port_reads_banner_and_flags_weintek(monkeypatch):
-    async def scenario():
-        async def handle(_reader, writer):
-            writer.write(b"220 Weintek cMT FTP Server ready\r\n")
-            await writer.drain()
-            try:
-                await asyncio.sleep(0.2)
-            finally:
-                writer.close()
+def _reserve_closed_port():
+    """Порт, на котором заведомо никто не слушает (для проверки «HTTP закрыт»)."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return port
 
-        server = await asyncio.start_server(handle, "127.0.0.1", 0)
-        port = server.sockets[0].getsockname()[1]
-        monkeypatch.setattr(app, "FTP_DEFAULT_PORT", port)
+
+def _ftp_banner_handler(banner: bytes):
+    async def handle(_reader, writer):
+        writer.write(banner)
+        await writer.drain()
+        try:
+            await asyncio.sleep(0.05)  # даём пробе прочитать баннер, затем закрываемся
+        finally:
+            writer.close()
+
+    return handle
+
+
+def _http_handler(body: bytes):
+    async def handle(reader, writer):
+        try:
+            await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=1)
+        except (asyncio.IncompleteReadError, asyncio.TimeoutError, OSError):
+            pass
+        writer.write(b"HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n" + body)
+        await writer.drain()
+        writer.close()
+
+    return handle
+
+
+# Веб-оболочка EasyWeb (как отдаёт панель на :80): содержит маркеры easywebConfig
+# и <title>cMT</title>, по которым панель опознаётся без FTP-пароля.
+_EASYWEB_HTML = (
+    b"<html><head><title>cMT</title>"
+    b"<script>window.easywebConfig = {webPanel:'false'};</script>"
+    b"</head><body></body></html>"
+)
+
+
+def test_probe_easyweb_identifies_panel(monkeypatch):
+    # Дженерик-баннер Pure-FTPd [TLS], но веб-интерфейс EasyWeb на :80 → панель.
+    # Имя берётся из обратного DNS (cMT-3C6F).
+    async def fake_dns(_host):
+        return "cMT-3C6F"
+
+    async def scenario():
+        ftp = await asyncio.start_server(
+            _ftp_banner_handler(b"220 ---------- WELCOME TO PURE-FTPD [TLS] ----------\r\n"),
+            "127.0.0.1", 0,
+        )
+        http = await asyncio.start_server(_http_handler(_EASYWEB_HTML), "127.0.0.1", 0)
+        monkeypatch.setattr(app, "FTP_DEFAULT_PORT", ftp.sockets[0].getsockname()[1])
+        monkeypatch.setattr(app, "HTTP_DISCOVERY_PORT", http.sockets[0].getsockname()[1])
+        monkeypatch.setattr(app, "_reverse_dns_name", fake_dns)
         try:
             result = await app._probe_ftp_host("127.0.0.1", asyncio.Semaphore(4))
         finally:
-            server.close()
-            await server.wait_closed()
-        return result, port
-
-    result, port = asyncio.run(scenario())
-    assert result is not None
-    assert result["host"] == "127.0.0.1"
-    assert result["port"] == port
-    assert result["banner"].startswith("220")
-    assert result["likely_weintek"] is True
-
-
-def test_probe_open_port_generic_banner_not_weintek(monkeypatch):
-    async def scenario():
-        async def handle(_reader, writer):
-            writer.write(b"220 ProFTPD Server ready\r\n")
-            await writer.drain()
-            try:
-                await asyncio.sleep(0.2)
-            finally:
-                writer.close()
-
-        server = await asyncio.start_server(handle, "127.0.0.1", 0)
-        port = server.sockets[0].getsockname()[1]
-        monkeypatch.setattr(app, "FTP_DEFAULT_PORT", port)
-        try:
-            result = await app._probe_ftp_host("127.0.0.1", asyncio.Semaphore(4))
-        finally:
-            server.close()
-            await server.wait_closed()
+            ftp.close()
+            await ftp.wait_closed()
+            http.close()
+            await http.wait_closed()
         return result
 
     result = asyncio.run(scenario())
     assert result is not None
-    assert result["likely_weintek"] is False
+    assert result["confirmed_weintek"] is True  # опознано веб-мордой, не паролем
+    assert result["likely_weintek"] is True
+    assert result["name"] == "cMT-3C6F"  # имя из обратного DNS
 
 
-def test_probe_confirms_weintek_on_uploadhis_login(monkeypatch):
-    # Панель на дефолтном пароле: USER uploadhis → 331, PASS 111111 → 230.
-    # Успешный вход однозначно опознаёт панель даже при дженерик-баннере.
+def test_probe_name_falls_back_to_easyweb_title(monkeypatch):
+    # Обратный DNS не разрешился → имя берём из <title> EasyWeb («cMT»).
+    async def no_dns(_host):
+        return ""
+
     async def scenario():
-        async def handle(reader, writer):
-            writer.write(b"220 ---------- WELCOME TO PURE-FTPD ----------\r\n")
-            await writer.drain()
-            got_user = False
-            try:
-                while True:
-                    line = await reader.readline()
-                    if not line:
-                        break
-                    cmd = line.decode("latin-1").strip()
-                    if cmd.upper() == "USER UPLOADHIS":
-                        got_user = True
-                        writer.write(b"331 Password required\r\n")
-                    elif cmd.upper() == "PASS 111111" and got_user:
-                        writer.write(b"230 Login successful\r\n")
-                    elif cmd.upper() == "QUIT":
-                        writer.write(b"221 Bye\r\n")
-                        await writer.drain()
-                        break
-                    else:
-                        writer.write(b"530 Denied\r\n")
-                    await writer.drain()
-            finally:
-                writer.close()
-
-        server = await asyncio.start_server(handle, "127.0.0.1", 0)
-        port = server.sockets[0].getsockname()[1]
-        monkeypatch.setattr(app, "FTP_DEFAULT_PORT", port)
+        ftp = await asyncio.start_server(
+            _ftp_banner_handler(b"220 pure-ftpd\r\n"), "127.0.0.1", 0
+        )
+        http = await asyncio.start_server(_http_handler(_EASYWEB_HTML), "127.0.0.1", 0)
+        monkeypatch.setattr(app, "FTP_DEFAULT_PORT", ftp.sockets[0].getsockname()[1])
+        monkeypatch.setattr(app, "HTTP_DISCOVERY_PORT", http.sockets[0].getsockname()[1])
+        monkeypatch.setattr(app, "_reverse_dns_name", no_dns)
         try:
             result = await app._probe_ftp_host("127.0.0.1", asyncio.Semaphore(4))
         finally:
-            server.close()
-            await server.wait_closed()
+            ftp.close()
+            await ftp.wait_closed()
+            http.close()
+            await http.wait_closed()
         return result
 
     result = asyncio.run(scenario())
     assert result is not None
-    assert result["confirmed_weintek"] is True  # опознано входом, не баннером
-    assert result["likely_weintek"] is True
+    assert result["confirmed_weintek"] is True
+    assert result["name"] == "cMT"  # из <title>cMT</title>
 
 
-def test_probe_wrong_password_not_confirmed(monkeypatch):
-    # Пароль сменён с заводского: PASS 111111 → 530. Хост остаётся неопознанным.
+def test_probe_non_easyweb_http_not_identified(monkeypatch):
+    # Порт 80 открыт, но это не EasyWeb (обычный роутер) — не панель.
+    plain = b"<html><head><title>Router</title></head><body>hi</body></html>"
+
     async def scenario():
-        async def handle(reader, writer):
-            writer.write(b"220 ---------- WELCOME TO PURE-FTPD ----------\r\n")
-            await writer.drain()
-            try:
-                while True:
-                    line = await reader.readline()
-                    if not line:
-                        break
-                    cmd = line.decode("latin-1").strip().upper()
-                    if cmd == "USER UPLOADHIS":
-                        writer.write(b"331 Password required\r\n")
-                    elif cmd.startswith("PASS"):
-                        writer.write(b"530 Login incorrect\r\n")
-                    elif cmd == "QUIT":
-                        writer.write(b"221 Bye\r\n")
-                        await writer.drain()
-                        break
-                    else:
-                        writer.write(b"530 Denied\r\n")
-                    await writer.drain()
-            finally:
-                writer.close()
-
-        server = await asyncio.start_server(handle, "127.0.0.1", 0)
-        port = server.sockets[0].getsockname()[1]
-        monkeypatch.setattr(app, "FTP_DEFAULT_PORT", port)
+        ftp = await asyncio.start_server(
+            _ftp_banner_handler(b"220 ProFTPD Server ready\r\n"), "127.0.0.1", 0
+        )
+        http = await asyncio.start_server(_http_handler(plain), "127.0.0.1", 0)
+        monkeypatch.setattr(app, "FTP_DEFAULT_PORT", ftp.sockets[0].getsockname()[1])
+        monkeypatch.setattr(app, "HTTP_DISCOVERY_PORT", http.sockets[0].getsockname()[1])
         try:
             result = await app._probe_ftp_host("127.0.0.1", asyncio.Semaphore(4))
         finally:
-            server.close()
-            await server.wait_closed()
+            ftp.close()
+            await ftp.wait_closed()
+            http.close()
+            await http.wait_closed()
         return result
 
     result = asyncio.run(scenario())
     assert result is not None
     assert result["confirmed_weintek"] is False
-    assert result["likely_weintek"] is False  # баннер без слова Weintek
+    assert result["likely_weintek"] is False
+
+
+def test_probe_banner_hint_marks_likely_when_http_closed(monkeypatch):
+    # HTTP :80 закрыт, но слово Weintek в баннере → мягкая метка likely.
+    async def scenario():
+        ftp = await asyncio.start_server(
+            _ftp_banner_handler(b"220 Weintek cMT FTP Server ready\r\n"), "127.0.0.1", 0
+        )
+        monkeypatch.setattr(app, "FTP_DEFAULT_PORT", ftp.sockets[0].getsockname()[1])
+        monkeypatch.setattr(app, "HTTP_DISCOVERY_PORT", _reserve_closed_port())
+        try:
+            result = await app._probe_ftp_host("127.0.0.1", asyncio.Semaphore(4))
+        finally:
+            ftp.close()
+            await ftp.wait_closed()
+        return result
+
+    result = asyncio.run(scenario())
+    assert result is not None
+    assert result["banner"].startswith("220")
+    assert result["confirmed_weintek"] is False  # веб-морда не подтвердила
+    assert result["likely_weintek"] is True  # но баннер намекает
+
+
+def test_probe_generic_banner_http_closed_not_weintek(monkeypatch):
+    async def scenario():
+        ftp = await asyncio.start_server(
+            _ftp_banner_handler(b"220 ProFTPD Server ready\r\n"), "127.0.0.1", 0
+        )
+        monkeypatch.setattr(app, "FTP_DEFAULT_PORT", ftp.sockets[0].getsockname()[1])
+        monkeypatch.setattr(app, "HTTP_DISCOVERY_PORT", _reserve_closed_port())
+        try:
+            result = await app._probe_ftp_host("127.0.0.1", asyncio.Semaphore(4))
+        finally:
+            ftp.close()
+            await ftp.wait_closed()
+        return result
+
+    result = asyncio.run(scenario())
+    assert result is not None
+    assert result["likely_weintek"] is False
 
 
 def test_probe_closed_port_returns_none(monkeypatch):

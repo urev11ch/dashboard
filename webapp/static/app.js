@@ -204,39 +204,85 @@
       }
     };
 
-    // Инлайновая форма подключения: пароль + «Подключиться». Постит на
-    // /workspace/open-ftp (тот же серверный путь, что «Добавить и подключить»);
-    // имя пользователя сервер форсит на uploadhis, папка — /datalog.
-    const buildConnectForm = (panel) => {
-      const connect = document.createElement("form");
-      connect.className = "ftp-discover-connect";
-      connect.method = "post";
-      connect.action = "/workspace/open-ftp";
-      connect.hidden = true;
+    // Всплывающее окно подключения к выбранной панели: имя (из EasyWeb/DNS,
+    // редактируемое) + пароль. По «Подключиться» постит на /workspace/open-ftp
+    // (тот же серверный путь, что «Добавить и подключить»); имя пользователя
+    // сервер форсит на uploadhis, папка — /datalog.
+    const openConnectDialog = (panel) => {
+      const panelName = panel.name || `Панель ${panel.host}`;
+      const dialog = document.createElement("dialog");
+      dialog.className = "ftp-connect-modal";
+
+      const form = document.createElement("form");
+      form.method = "post";
+      form.action = "/workspace/open-ftp";
+      form.className = "ftp-connect-form";
       for (const [name, value] of [
         ["host", panel.host],
         ["port", String(panel.port)],
         ["path", "/datalog"],
         ["passive", "on"],
-        ["label", `Панель ${panel.host}`],
       ]) {
         const hidden = document.createElement("input");
         hidden.type = "hidden";
         hidden.name = name;
         hidden.value = value;
-        connect.append(hidden);
+        form.append(hidden);
       }
-      const pass = document.createElement("input");
-      pass.type = "password";
-      pass.name = "password";
-      pass.required = true;
-      pass.placeholder = "Пароль (по умолчанию 111111)";
-      pass.autocomplete = "current-password";
-      const submit = document.createElement("button");
-      submit.type = "submit";
-      submit.textContent = "Подключиться";
-      connect.append(pass, submit);
-      return { connect, pass };
+
+      const title = document.createElement("div");
+      title.className = "ftp-connect-title";
+      // textContent (не innerHTML): имя/host — недоверенные данные из сети.
+      title.textContent = "Подключение к панели";
+      const sub = document.createElement("div");
+      sub.className = "ftp-connect-sub";
+      sub.textContent = `${panelName} · ${panel.host}:${panel.port}`;
+
+      const nameLabel = document.createElement("label");
+      nameLabel.className = "ftp-connect-field";
+      nameLabel.append(document.createTextNode("Название панели"));
+      const nameInput = document.createElement("input");
+      nameInput.type = "text";
+      nameInput.name = "label";
+      nameInput.value = panelName; // имя из EasyWeb/DNS, можно поправить
+      nameInput.autocomplete = "off";
+      nameLabel.append(nameInput);
+
+      const passLabel = document.createElement("label");
+      passLabel.className = "ftp-connect-field";
+      passLabel.append(document.createTextNode("Пароль (по умолчанию 111111)"));
+      const passInput = document.createElement("input");
+      passInput.type = "password";
+      passInput.name = "password";
+      passInput.required = true;
+      passInput.placeholder = "111111";
+      passInput.autocomplete = "current-password";
+      passLabel.append(passInput);
+
+      const actions = document.createElement("div");
+      actions.className = "ftp-connect-actions";
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "ghost";
+      cancel.textContent = "Отмена";
+      cancel.addEventListener("click", () => dialog.close());
+      const connect = document.createElement("button");
+      connect.type = "submit";
+      connect.textContent = "Подключиться";
+      actions.append(cancel, connect);
+
+      form.append(title, sub, nameLabel, passLabel, actions);
+      dialog.append(form);
+      // Клик по подложке (вне формы) закрывает окно.
+      dialog.addEventListener("click", (event) => {
+        if (event.target === dialog) {
+          dialog.close();
+        }
+      });
+      dialog.addEventListener("close", () => dialog.remove());
+      document.body.append(dialog);
+      dialog.showModal();
+      passInput.focus();
     };
 
     const renderResults = (panels) => {
@@ -251,19 +297,12 @@
         const choose = document.createElement("button");
         choose.type = "button";
         choose.className = "ftp-discover-item";
-        // Список — только панели Weintek, поэтому метка одна на всех.
-        // textContent (не innerHTML): host — недоверенные данные из сети.
-        choose.textContent = `Панель Weintek · ${panel.host}:${panel.port}`;
-        const { connect, pass } = buildConnectForm(panel);
-        choose.addEventListener("click", () => {
-          const opening = connect.hidden;
-          connect.hidden = !opening;
-          choose.classList.toggle("is-open", opening);
-          if (opening) {
-            pass.focus();
-          }
-        });
-        item.append(choose, connect);
+        // Показываем имя панели (из EasyWeb/DNS), иначе host.
+        // textContent (не innerHTML): имя/host — недоверенные данные из сети.
+        const shown = panel.name || panel.host;
+        choose.textContent = `Панель Weintek · ${shown} (${panel.host}:${panel.port})`;
+        choose.addEventListener("click", () => openConnectDialog(panel));
+        item.append(choose);
         resultsEl.append(item);
       });
       resultsEl.hidden = false;
@@ -293,8 +332,8 @@
           } else if (data.ftp_hosts) {
             setStatus(
               `Панели Weintek не опознаны. FTP-хостов в сети: ${data.ftp_hosts} ` +
-                `(проверено ${data.scanned}). Панель с нестандартным паролем по FTP ` +
-                `не определяется — добавьте её вручную через «Добавить панель».`
+                `(проверено ${data.scanned}). Если панель есть, но не видна — ` +
+                `у неё может быть отключён веб-интерфейс (:80); добавьте вручную.`
             );
           } else {
             setStatus(`Проверено адресов: ${data.scanned}. Панели не найдены.`);
