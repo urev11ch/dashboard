@@ -1010,6 +1010,31 @@ class DesktopBridge:
             return {"ok": False}
         return {"ok": True}
 
+    def open_panel_window(self, payload: dict | None = None) -> dict[str, bool]:
+        """Открывает WebView панели ОТДЕЛЬНЫМ окном (топ-левел), а не в iframe:
+        EasyWeb шлёт X-Frame-Options и запрещает встраивание, поэтому iframe даёт
+        «отказано в подключении». Топ-левел этим не ограничен и работает как в
+        браузере. Самоподписанный https покрыт --ignore-certificate-errors. При
+        сбое создания окна — фолбэк в системный браузер."""
+        payload = payload or {}
+        url = str(payload.get("url") or "").strip()
+        title = str(payload.get("title") or "WebView")
+        if not (url.startswith("http://") or url.startswith("https://")):
+            return {"ok": False}
+        try:
+            import webview
+
+            webview.create_window(title, url, width=1200, height=800)
+            return {"ok": True}
+        except Exception:  # noqa: BLE001 — падать нельзя; уходим в браузер
+            logging.exception("Не удалось открыть окно WebView, открываю в браузере")
+            try:
+                webbrowser.open(url)
+                return {"ok": True}
+            except Exception:  # noqa: BLE001
+                logging.exception("Не удалось открыть WebView в браузере")
+                return {"ok": False}
+
     def choose_folder(self, payload: dict | None = None) -> dict[str, str | bool]:
         if self._window is None:
             raise RuntimeError("Окно приложения не инициализировано.")

@@ -29,7 +29,6 @@
   <main class="welcome-shell">
     <section class="welcome-card">
       <div class="eyebrow">OptiCIP Dashboard</div>
-      <h1>Источник данных</h1>
 
       <div class="welcome-source-switcher" role="tablist" aria-label="Источник данных">
         <button type="button" class="welcome-source-tab is-active" data-source-tab="ftp" aria-pressed="true">Панель</button>
@@ -40,6 +39,7 @@
         <section class="welcome-source-panel welcome-source-panel--primary" data-source-panel="ftp">
           <div class="ftp-discover" data-ftp-discover-root>
             <button type="button" class="ghost" data-ftp-discover>Найти панель в сети</button>
+            <button type="button" class="ghost" data-ftp-manual hidden>Добавить вручную</button>
             <span class="ftp-discover-status" data-ftp-discover-status role="status" aria-live="polite"></span>
             <ul class="ftp-discover-results" data-ftp-discover-results hidden></ul>
           </div>
@@ -70,9 +70,9 @@
           </div>
           {% endif %}
 
-          <details class="welcome-ftp-add" data-ftp-add>
-            <summary>Добавить панель</summary>
-            <form method="post" action="/workspace/open-ftp" class="folder-form folder-form--ftp" data-ftp-add-form>
+          <details class="welcome-ftp-add" data-ftp-add hidden>
+            <summary>Добавить панель вручную</summary>
+            <form method="post" action="/workspace/ftp-source/add" class="folder-form folder-form--ftp" data-ftp-add-form>
               <div class="welcome-ftp-panel">
               <div class="welcome-form-grid">
                 <label>
@@ -90,11 +90,11 @@
               </div>
               <label for="ftpLabel">Название панели (необязательно)</label>
               <input id="ftpLabel" type="text" name="label" placeholder="Например: Цех 1" autocomplete="off" spellcheck="false">
-              <label for="ftpPassword">Пароль (history upload, по умолчанию 111111)</label>
+              <label for="ftpPassword">Пароль</label>
               <input id="ftpPassword" type="password" name="password" value="{{ ftp_form_defaults.password }}" placeholder="111111" autocomplete="current-password">
               <input type="hidden" name="passive" value="on">
               <div class="folder-actions">
-                <button type="submit">Добавить и подключить</button>
+                <button type="submit">Добавить панель</button>
               </div>
               </div>
             </form>
@@ -137,11 +137,7 @@
 
       <footer class="welcome-footer">
         <span class="welcome-version">Версия {{ app_version }}</span>
-        <div class="welcome-update">
-          <span class="welcome-update-status" data-check-updates-welcome-status role="status" aria-live="polite"></span>
-          <button type="button" data-install-update-welcome hidden>Установить обновление</button>
-          <button type="button" class="ghost" data-check-updates-welcome>Проверить обновления</button>
-        </div>
+        <button type="button" class="ghost" data-welcome-settings>Настройки</button>
       </footer>
     </section>
   </main>

@@ -198,6 +198,18 @@
       return;
     }
 
+    // Ручное добавление: кнопка скрыта по умолчанию, показывается, когда скан
+    // не нашёл панелей; клик раскрывает форму «Добавить панель вручную».
+    const manualBtn = document.querySelector("[data-ftp-manual]");
+    const manualDetails = document.querySelector("[data-ftp-add]");
+    if (manualBtn && manualDetails) {
+      manualBtn.addEventListener("click", () => {
+        manualDetails.hidden = false;
+        manualDetails.open = true;
+        manualDetails.querySelector('[name="host"]')?.focus();
+      });
+    }
+
     const setStatus = (text) => {
       if (statusEl) {
         statusEl.textContent = text || "";
@@ -341,39 +353,68 @@
             setStatus(`Проверено адресов: ${data.scanned}. Панели не найдены.`);
           }
           renderResults([]);
+          if (manualBtn) {
+            manualBtn.hidden = false; // панелей нет — предлагаем добавить вручную
+          }
           return;
         }
         setStatus("");  // список говорит сам за себя — без строки-счётчика
+        if (manualBtn) {
+          manualBtn.hidden = true;
+        }
         renderResults(panels);
       } catch (_error) {
         // Инлайновый статус, не showToast: экран выбора источника — до гейта,
         // toastRoot ещё не создан (TDZ).
         setStatus("Не удалось выполнить поиск панели.");
+        if (manualBtn) {
+          manualBtn.hidden = false; // скан не удался — путь ручного добавления
+        }
       } finally {
         button.disabled = false;
       }
     });
   }
 
-  // Кнопка «Проверить обновления» на экране выбора источника. САМОДОСТАТОЧНА:
-  // экран выбора источника — до гейта `if (!hasWorkspace) return`, поэтому
-  // showToast/state/checkForUpdates здесь ещё не инициализированы (TDZ). Свой
-  // fetch + инлайновый статус, без зависимостей от пост-гейтовой машинерии.
-  function initWelcomeUpdateCheck() {
-    const button = document.querySelector("[data-check-updates-welcome]");
-    if (!button) {
-      return;
-    }
-    const statusEl = document.querySelector("[data-check-updates-welcome-status]");
-    const installBtn = document.querySelector("[data-install-update-welcome]");
+  // Кнопка «Настройки» на экране выбора источника открывает самодостаточный
+  // диалог (проверка/установка обновлений). САМОДОСТАТОЧНОСТЬ обязательна: экран
+  // выбора источника — до гейта `if (!hasWorkspace) return`, где state/toastRoot/
+  // checkForUpdates ещё в TDZ. Диалог использует только fetch + свои элементы.
+  function openWelcomeSettingsDialog() {
+    const dialog = document.createElement("dialog");
+    dialog.className = "ftp-connect-modal";
+    const box = document.createElement("div");
+    box.className = "ftp-connect-form";
+
+    const title = document.createElement("div");
+    title.className = "ftp-connect-title";
+    title.textContent = "Настройки";
+
+    const heading = document.createElement("div");
+    heading.className = "ftp-connect-divider";
+    heading.textContent = "Обновления";
+
+    const statusEl = document.createElement("div");
+    statusEl.className = "welcome-update-status";
+    statusEl.setAttribute("role", "status");
+    statusEl.setAttribute("aria-live", "polite");
     const setStatus = (text) => {
-      if (statusEl) {
-        statusEl.textContent = text || "";
-      }
+      statusEl.textContent = text || "";
     };
+
+    const installBtn = document.createElement("button");
+    installBtn.type = "button";
+    installBtn.className = "ftp-connect-web";
+    installBtn.textContent = "Установить обновление";
+    installBtn.hidden = true;
+
+    const checkBtn = document.createElement("button");
+    checkBtn.type = "button";
+    checkBtn.className = "ftp-connect-web";
+    checkBtn.textContent = "Проверить обновления";
+
     // Установить «в один клик» можно только собранную Windows-версию через мост
-    // pywebview (ставит .exe, закрывает окно). В браузере/не-Windows — только
-    // ссылка на Releases. Признак installable приходит с бэкенда.
+    // pywebview (ставит .exe, закрывает окно). Иначе — только ссылка на Releases.
     const canInstall = (data) =>
       !!data &&
       data.update_available &&
@@ -381,14 +422,12 @@
       typeof window.pywebview?.api?.install_update === "function";
 
     let installBusy = false;
-    async function runInstall() {
+    installBtn.addEventListener("click", async () => {
       if (installBusy) {
         return;
       }
       installBusy = true;
-      if (installBtn) {
-        installBtn.disabled = true;
-      }
+      installBtn.disabled = true;
       setStatus("Скачиваю обновление…");
       try {
         const started = await fetch("/api/update/download", { method: "POST" });
@@ -428,28 +467,21 @@
         setStatus("Запускаю установку — приложение закроется…");
       } catch (error) {
         setStatus(String(error.message || error));
-        if (installBtn) {
-          installBtn.disabled = false;
-        }
+        installBtn.disabled = false;
       } finally {
         installBusy = false;
       }
-    }
-    if (installBtn) {
-      installBtn.addEventListener("click", runInstall);
-    }
+    });
 
-    button.addEventListener("click", async () => {
-      if (button.disabled) {
+    checkBtn.addEventListener("click", async () => {
+      if (checkBtn.disabled) {
         return;
       }
-      button.disabled = true;
-      const original = button.textContent;
-      button.textContent = "Проверяю…";
+      checkBtn.disabled = true;
+      const original = checkBtn.textContent;
+      checkBtn.textContent = "Проверяю…";
       setStatus("");
-      if (installBtn) {
-        installBtn.hidden = true;
-      }
+      installBtn.hidden = true;
       try {
         const response = await fetch("/api/update-check", {
           headers: { Accept: "application/json" },
@@ -465,9 +497,7 @@
               ? `Доступно обновление ${data.latest}.`
               : `Доступно обновление ${data.latest}. Смотрите GitHub Releases.`,
           );
-          if (installBtn) {
-            installBtn.hidden = !installable;
-          }
+          installBtn.hidden = !installable;
         } else if (data.latest) {
           setStatus("Установлена последняя версия.");
         } else {
@@ -477,20 +507,36 @@
       } catch (_error) {
         setStatus("Не удалось проверить обновления.");
       } finally {
-        button.disabled = false;
-        button.textContent = original;
+        checkBtn.disabled = false;
+        checkBtn.textContent = original;
       }
     });
+
+    const actions = document.createElement("div");
+    actions.className = "ftp-connect-actions";
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "ghost";
+    close.textContent = "Закрыть";
+    close.addEventListener("click", () => dialog.close());
+    actions.append(close);
+
+    box.append(title, heading, statusEl, installBtn, checkBtn, actions);
+    dialog.append(box);
+    dialog.addEventListener("click", (event) => {
+      if (event.target === dialog) {
+        dialog.close();
+      }
+    });
+    dialog.addEventListener("close", () => dialog.remove());
+    document.body.append(dialog);
+    dialog.showModal();
   }
 
-  // Открывает URL во внешнем браузере: десктоп — через мост (webbrowser), веб —
-  // новая вкладка. Запасной путь для веб-просмотра, если iframe не отрисовался.
-  function openExternalUrl(url) {
-    const api = window.pywebview && window.pywebview.api;
-    if (api && typeof api.open_external === "function") {
-      api.open_external({ url });
-    } else {
-      window.open(url, "_blank", "noopener");
+  function initWelcomeSettings() {
+    const button = document.querySelector("[data-welcome-settings]");
+    if (button) {
+      button.addEventListener("click", openWelcomeSettingsDialog);
     }
   }
 
@@ -506,93 +552,19 @@
     }
   }
 
-  // Веб-просмотр панели: полноэкранный оверлей с iframe EasyWeb (/app/dashboard).
-  // Самодостаточен (без toastRoot/state) — работает и на экране выбора источника.
-  // Схема http/https берётся из обнаружения (панели с TLS отдают веб по https).
-  // graphsSourceId (опц.) добавляет кнопку «Графики» — быстрый переход к архивам.
-  function openPanelWebView(host, scheme, displayName, graphsSourceId) {
+  // WebView панели: открывает EasyWeb (/app/dashboard) ОТДЕЛЬНЫМ окном (десктоп,
+  // мост open_panel_window) либо вкладкой (веб). НЕ iframe: EasyWeb шлёт
+  // X-Frame-Options и запрещает встраивание («отказано в подключении»);
+  // топ-левел этим не ограничен и работает как в браузере — панель запросит свой
+  // пароль. Схема http/https — из обнаружения (панели с TLS отдают веб по https).
+  function openPanelWebView(host, scheme, displayName) {
     const url = `${scheme || "http"}://${host}/app/dashboard`;
-    const overlay = document.createElement("div");
-    overlay.className = "panel-webview";
-
-    const bar = document.createElement("div");
-    bar.className = "panel-webview-bar";
-    const back = document.createElement("button");
-    back.type = "button";
-    back.className = "ghost";
-    back.textContent = "← Назад";
-    const title = document.createElement("span");
-    title.className = "panel-webview-title";
-    title.textContent = displayName || host; // textContent — данные из сети
-    bar.append(back, title);
-
-    if (graphsSourceId) {
-      // Быстрое переключение веб → графики: сабмит открывает архивы панели.
-      const graphsForm = document.createElement("form");
-      graphsForm.method = "post";
-      graphsForm.action = "/workspace/open-ftp";
-      graphsForm.className = "panel-webview-graphs";
-      const sid = document.createElement("input");
-      sid.type = "hidden";
-      sid.name = "source_id";
-      sid.value = graphsSourceId;
-      const graphsBtn = document.createElement("button");
-      graphsBtn.type = "submit";
-      graphsBtn.className = "ghost";
-      graphsBtn.textContent = "Графики";
-      graphsForm.append(sid, graphsBtn);
-      graphsForm.addEventListener("submit", () =>
-        rememberPanelContext(host, scheme, displayName),
-      );
-      bar.append(graphsForm);
+    const api = window.pywebview && window.pywebview.api;
+    if (api && typeof api.open_panel_window === "function") {
+      api.open_panel_window({ url, title: `WebView — ${displayName || host}` });
+    } else {
+      window.open(url, "_blank", "noopener");
     }
-
-    const ext = document.createElement("button");
-    ext.type = "button";
-    ext.className = "ghost";
-    ext.textContent = "Открыть в браузере";
-    ext.addEventListener("click", () => openExternalUrl(url));
-    bar.append(ext);
-
-    // Подсказка, если встроить не удалось (https с самоподписанным сертификатом
-    // WebView2 блокирует, либо панель запрещает встраивание).
-    const hint = document.createElement("div");
-    hint.className = "panel-webview-hint";
-    hint.hidden = true;
-    hint.textContent =
-      "Не удалось встроить панель — нажмите «Открыть в браузере».";
-
-    const frame = document.createElement("iframe");
-    frame.className = "panel-webview-frame";
-    frame.src = url;
-    frame.referrerPolicy = "no-referrer";
-
-    let loaded = false;
-    frame.addEventListener("load", () => {
-      loaded = true;
-      hint.hidden = true;
-    });
-    const hintTimer = setTimeout(() => {
-      if (!loaded) {
-        hint.hidden = false;
-      }
-    }, 4000);
-
-    const cleanup = () => {
-      clearTimeout(hintTimer);
-      document.removeEventListener("keydown", onEsc);
-      overlay.remove();
-    };
-    function onEsc(event) {
-      if (event.key === "Escape") {
-        cleanup();
-      }
-    }
-    back.addEventListener("click", cleanup);
-    document.addEventListener("keydown", onEsc);
-
-    overlay.append(bar, hint, frame);
-    document.body.append(overlay);
   }
 
   // Выбор действия для сохранённой панели: «Веб-просмотр» или «Графики».
@@ -612,7 +584,7 @@
     webBtn.textContent = "Веб-просмотр";
     webBtn.addEventListener("click", () => {
       dialog.close();
-      openPanelWebView(host, scheme, label, sourceId);
+      openPanelWebView(host, scheme, label);
     });
 
     // «Графики» — сабмит открывает архивы (рабочую область) панели.
@@ -766,7 +738,7 @@
   initFtpDiscovery();
   initSavedPanelConnect();
   initWashWebViewButton();
-  initWelcomeUpdateCheck();
+  initWelcomeSettings();
   initDesktopTitlebar();
 
   const workspaceJobRoot = document.querySelector("[data-workspace-job]");
