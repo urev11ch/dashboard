@@ -513,19 +513,23 @@
     }
   }
 
-  // WebView панели: открывает EasyWeb (/app/dashboard) ОТДЕЛЬНЫМ окном (десктоп,
-  // мост open_panel_window) либо вкладкой (веб). НЕ iframe: EasyWeb шлёт
-  // X-Frame-Options и запрещает встраивание («отказано в подключении»);
-  // топ-левел этим не ограничен и работает как в браузере — панель запросит свой
-  // пароль. Схема http/https — из обнаружения (панели с TLS отдают веб по https).
-  function openPanelWebView(host, scheme, displayName) {
+  // WebView панели: открывает EasyWeb (/app/dashboard) топ-левел (НЕ iframe —
+  // EasyWeb шлёт X-Frame-Options и запрещает встраивание). По умолчанию — в
+  // СИСТЕМНОМ БРАУЗЕРЕ (легче: отдельный GPU-процесс, не второй встроенный
+  // WebView2 рядом с приложением → меньше тормозит). mode="window" — встроенное
+  // окно (десктоп, мост open_panel_window). Схема http/https — из обнаружения.
+  function openPanelWebView(host, scheme, displayName, mode) {
     const url = `${scheme || "http"}://${host}/app/dashboard`;
     const api = window.pywebview && window.pywebview.api;
-    if (api && typeof api.open_panel_window === "function") {
+    if (mode === "window" && api && typeof api.open_panel_window === "function") {
       api.open_panel_window({ url, title: `WebView — ${displayName || host}` });
+      return;
+    }
+    // По умолчанию — системный браузер.
+    if (api && typeof api.open_external === "function") {
+      api.open_external({ url });
     } else {
-      // Именованная вкладка per-host: повторный клик переиспользует то же окно,
-      // а не плодит новые (аналог дедупа окон в десктопе).
+      // Веб: именованная вкладка per-host — повторный клик переиспользует её.
       const name = `opticip_webview_${host.replace(/[^\w]/g, "_")}`;
       window.open(url, name);
     }
@@ -548,8 +552,21 @@
     webBtn.textContent = "WebView";
     webBtn.addEventListener("click", () => {
       dialog.close();
-      openPanelWebView(host, scheme, label);
+      openPanelWebView(host, scheme, label); // по умолчанию — системный браузер
     });
+
+    // Запасной вариант: открыть встроенным окном приложения (только десктоп).
+    let windowBtn = null;
+    if (typeof window.pywebview?.api?.open_panel_window === "function") {
+      windowBtn = document.createElement("button");
+      windowBtn.type = "button";
+      windowBtn.className = "ghost";
+      windowBtn.textContent = "WebView в окне приложения";
+      windowBtn.addEventListener("click", () => {
+        dialog.close();
+        openPanelWebView(host, scheme, label, "window");
+      });
+    }
 
     // «Графики» — сабмит открывает архивы (рабочую область) панели.
     const graphsForm = document.createElement("form");
@@ -577,7 +594,11 @@
     cancel.addEventListener("click", () => dialog.close());
     actions.append(cancel);
 
-    box.append(title, webBtn, graphsForm, actions);
+    box.append(title, webBtn);
+    if (windowBtn) {
+      box.append(windowBtn);
+    }
+    box.append(graphsForm, actions);
     dialog.append(box);
     dialog.addEventListener("click", (event) => {
       if (event.target === dialog) {
@@ -664,6 +685,19 @@
     document.querySelectorAll("[data-panel-rename]").forEach((button) => {
       button.addEventListener("click", () => {
         openRenameDialog(button.dataset.sourceId || "", button.dataset.label || "");
+      });
+    });
+  }
+
+  // Кнопка «WebView» у подключённой панели в главном меню (открывает EasyWeb).
+  function initConnectedPanelWebView() {
+    document.querySelectorAll("[data-panel-webview]").forEach((button) => {
+      button.addEventListener("click", () => {
+        openPanelWebView(
+          button.dataset.host || "",
+          button.dataset.scheme || "http",
+          button.dataset.label || button.dataset.host || "",
+        );
       });
     });
   }
@@ -767,6 +801,7 @@
   initFtpDiscovery();
   initSavedPanelConnect();
   initSavedPanelRename();
+  initConnectedPanelWebView();
   initWashWebViewButton();
   initWelcomeUpdateButton();
   initDesktopTitlebar();

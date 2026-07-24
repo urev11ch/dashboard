@@ -305,6 +305,10 @@ code {
   font-size: 12px;
   color: var(--muted);
 }
+/* Кнопка «← К графикам» в меню, когда рабочая область загружена. */
+.welcome-back-to-graphs {
+  margin: 4px 0 8px;
+}
 .welcome-update {
   display: flex;
   align-items: center;

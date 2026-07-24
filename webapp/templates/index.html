@@ -25,10 +25,16 @@
       </button>
     </div>
   </div>
-  {% if not has_analysis %}
+  {% if not has_analysis or force_menu %}
   <main class="welcome-shell">
     <section class="welcome-card">
       <div class="eyebrow">OptiCIP Dashboard</div>
+
+      {% if has_analysis %}
+      <form method="get" action="/" class="welcome-back-to-graphs">
+        <button type="submit" class="ghost">← К графикам</button>
+      </form>
+      {% endif %}
 
       <div class="welcome-source-switcher" role="tablist" aria-label="Источник данных">
         <button type="button" class="welcome-source-tab is-active" data-source-tab="ftp" aria-pressed="true">Панель</button>
@@ -48,6 +54,18 @@
                   <span class="ftp-source-meta">{{ src.host }}</span>
                 </div>
                 <div class="ftp-source-actions">
+                  {% if src.id == connected_id %}
+                  <button type="button" data-panel-webview
+                    data-host="{{ src.host }}"
+                    data-scheme="{{ src.web_scheme }}"
+                    data-label="{{ src.label }}">WebView</button>
+                  <form method="get" action="/">
+                    <button type="submit">Графики</button>
+                  </form>
+                  <form method="post" action="/workspace/reset">
+                    <button type="submit" class="ghost">Отключить</button>
+                  </form>
+                  {% else %}
                   <button type="button" data-panel-connect
                     data-source-id="{{ src.id }}"
                     data-host="{{ src.host }}"
@@ -60,6 +78,7 @@
                     <input type="hidden" name="source_id" value="{{ src.id }}">
                     <button type="submit" class="ghost">Удалить</button>
                   </form>
+                  {% endif %}
                 </div>
               </li>
               {% endfor %}
@@ -178,7 +197,8 @@
           <form method="post" action="/workspace/refresh" id="workspaceRefreshForm">
             <button type="submit">Обновить данные</button>
           </form>
-          <form method="post" action="/workspace/reset">
+          <form method="get" action="/">
+            <input type="hidden" name="view" value="menu">
             <button type="submit" class="ghost">Главное меню</button>
           </form>
           <button type="button" class="ghost" id="openObjectEditor">Редактор объектов</button>

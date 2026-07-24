@@ -3689,6 +3689,21 @@ def page_context(request: Request, snapshot: AppStateSnapshot) -> dict[str, Any]
     pending_root = snapshot.pending_root
     workspace_payload = build_workspace_payload(snapshot)
     workspace_input_value = resolve_workspace_input_value(selected_root, pending_root)
+
+    # «Главное меню» без разрыва соединения: ?view=menu показывает экран выбора
+    # источника даже при загруженной рабочей области. Подключённая панель (её id =
+    # имя папки рабочей области) в этом меню показывается с кнопками WebView /
+    # Графики / Отключить. Одновременно активна одна панель (одна рабочая область).
+    ftp_sources = list_ftp_sources_public()
+    force_menu = request.query_params.get("view") == "menu"
+    connected_id = ""
+    if analysis is not None and selected_root is not None:
+        root_name = selected_root.name
+        if any(src["id"] == root_name for src in ftp_sources):
+            connected_id = root_name
+    # На экране меню (даже при загруженной области) wash-JS не должен стартовать —
+    # его DOM отсутствует. Гейт `if (!hasWorkspace) return` смотрит на hasWorkspace.
+    wash_visible = analysis is not None and not force_menu
     def asset_version(filename: str) -> int:
         try:
             return int((STATIC_DIR / filename).stat().st_mtime)
@@ -3715,7 +3730,9 @@ def page_context(request: Request, snapshot: AppStateSnapshot) -> dict[str, Any]
         "workspace_path_placeholder": resolve_default_folder_path(),
         "workspace_default_path": resolve_default_folder_path(),
         "ftp_form_defaults": dict(DEFAULT_FTP_FORM_VALUES),
-        "ftp_sources": list_ftp_sources_public(),
+        "ftp_sources": ftp_sources,
+        "force_menu": force_menu,
+        "connected_id": connected_id,
         "app_version": APP_VERSION,
         "summary": workspace_payload["summary"],
         "error": workspace_payload["error"],
@@ -3723,7 +3740,9 @@ def page_context(request: Request, snapshot: AppStateSnapshot) -> dict[str, Any]
         "job_status": workspace_payload["job_status"],
         "app_state": {
             "appVersion": APP_VERSION,
-            "hasWorkspace": analysis is not None,
+            # hasWorkspace = показан ли wash-экран (в меню он false, даже если
+            # рабочая область загружена) — по нему wash-JS решает, стартовать ли.
+            "hasWorkspace": wash_visible,
             "hasAnalysis": analysis is not None,
             "displayRoot": workspace_payload["display_root"],
             "summary": workspace_payload["summary"],
