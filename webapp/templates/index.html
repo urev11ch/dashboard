@@ -136,7 +136,10 @@
 
       <footer class="welcome-footer">
         <span class="welcome-version">Версия {{ app_version }}</span>
-        <button type="button" class="ghost" data-check-updates-welcome>Проверить обновления</button>
+        <div class="welcome-update">
+          <span class="welcome-update-status" data-check-updates-welcome-status role="status" aria-live="polite"></span>
+          <button type="button" class="ghost" data-check-updates-welcome>Проверить обновления</button>
+        </div>
       </footer>
     </section>
   </main>

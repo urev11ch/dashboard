@@ -305,6 +305,17 @@ code {
   font-size: 12px;
   color: var(--muted);
 }
+.welcome-update {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.welcome-update-status {
+  font-size: 12px;
+  color: var(--muted);
+}
 
 /* Сегментный переключатель вместо двух отдельных кнопок по 220×46: выбор из двух
    взаимоисключающих режимов читается как один контрол, а не как два действия. */

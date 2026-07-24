@@ -115,7 +115,7 @@ def test_probe_easyweb_identifies_panel(monkeypatch):
         )
         http = await asyncio.start_server(_http_handler(_EASYWEB_HTML), "127.0.0.1", 0)
         monkeypatch.setattr(app, "FTP_DEFAULT_PORT", ftp.sockets[0].getsockname()[1])
-        monkeypatch.setattr(app, "HTTP_DISCOVERY_PORT", http.sockets[0].getsockname()[1])
+        monkeypatch.setattr(app, "HTTP_EASYWEB_PORTS", ((http.sockets[0].getsockname()[1], False),))
         monkeypatch.setattr(app, "_reverse_dns_name", fake_dns)
         try:
             result = await app._probe_ftp_host("127.0.0.1", asyncio.Semaphore(4))
@@ -144,7 +144,7 @@ def test_probe_name_falls_back_to_easyweb_title(monkeypatch):
         )
         http = await asyncio.start_server(_http_handler(_EASYWEB_HTML), "127.0.0.1", 0)
         monkeypatch.setattr(app, "FTP_DEFAULT_PORT", ftp.sockets[0].getsockname()[1])
-        monkeypatch.setattr(app, "HTTP_DISCOVERY_PORT", http.sockets[0].getsockname()[1])
+        monkeypatch.setattr(app, "HTTP_EASYWEB_PORTS", ((http.sockets[0].getsockname()[1], False),))
         monkeypatch.setattr(app, "_reverse_dns_name", no_dns)
         try:
             result = await app._probe_ftp_host("127.0.0.1", asyncio.Semaphore(4))
@@ -171,7 +171,7 @@ def test_probe_non_easyweb_http_not_identified(monkeypatch):
         )
         http = await asyncio.start_server(_http_handler(plain), "127.0.0.1", 0)
         monkeypatch.setattr(app, "FTP_DEFAULT_PORT", ftp.sockets[0].getsockname()[1])
-        monkeypatch.setattr(app, "HTTP_DISCOVERY_PORT", http.sockets[0].getsockname()[1])
+        monkeypatch.setattr(app, "HTTP_EASYWEB_PORTS", ((http.sockets[0].getsockname()[1], False),))
         try:
             result = await app._probe_ftp_host("127.0.0.1", asyncio.Semaphore(4))
         finally:
@@ -194,7 +194,7 @@ def test_probe_banner_hint_marks_likely_when_http_closed(monkeypatch):
             _ftp_banner_handler(b"220 Weintek cMT FTP Server ready\r\n"), "127.0.0.1", 0
         )
         monkeypatch.setattr(app, "FTP_DEFAULT_PORT", ftp.sockets[0].getsockname()[1])
-        monkeypatch.setattr(app, "HTTP_DISCOVERY_PORT", _reserve_closed_port())
+        monkeypatch.setattr(app, "HTTP_EASYWEB_PORTS", ((_reserve_closed_port(), False),))
         try:
             result = await app._probe_ftp_host("127.0.0.1", asyncio.Semaphore(4))
         finally:
@@ -215,7 +215,7 @@ def test_probe_generic_banner_http_closed_not_weintek(monkeypatch):
             _ftp_banner_handler(b"220 ProFTPD Server ready\r\n"), "127.0.0.1", 0
         )
         monkeypatch.setattr(app, "FTP_DEFAULT_PORT", ftp.sockets[0].getsockname()[1])
-        monkeypatch.setattr(app, "HTTP_DISCOVERY_PORT", _reserve_closed_port())
+        monkeypatch.setattr(app, "HTTP_EASYWEB_PORTS", ((_reserve_closed_port(), False),))
         try:
             result = await app._probe_ftp_host("127.0.0.1", asyncio.Semaphore(4))
         finally:
@@ -226,6 +226,22 @@ def test_probe_generic_banner_http_closed_not_weintek(monkeypatch):
     result = asyncio.run(scenario())
     assert result is not None
     assert result["likely_weintek"] is False
+
+
+def test_probe_http_easyweb_falls_back_to_https(monkeypatch):
+    # Веб EasyWeb только по https (:443): :80 не отвечает → пробуем :443.
+    calls = []
+
+    async def fake_fetch(host, port, use_tls):
+        calls.append((port, use_tls))
+        return "cMT" if use_tls else None  # :80 — нет, :443 — есть
+
+    monkeypatch.setattr(app, "_fetch_easyweb_title", fake_fetch)
+    monkeypatch.setattr(app, "HTTP_EASYWEB_PORTS", ((80, False), (443, True)))
+
+    title = asyncio.run(app._probe_http_easyweb("10.0.0.9"))
+    assert title == "cMT"
+    assert calls == [(80, False), (443, True)]  # порядок: сначала :80, затем :443
 
 
 def test_probe_closed_port_returns_none(monkeypatch):
@@ -271,6 +287,7 @@ def test_discover_returns_only_weintek_panels_and_excludes_own(monkeypatch):
         return canned.get(host)
 
     monkeypatch.setattr(app, "_probe_ftp_host", fake_probe)
+    monkeypatch.setattr(app, "_read_arp_table", lambda: {})  # MAC не влияет
 
     result = asyncio.run(app.discover_ftp_panels())
     assert result["network"] == "192.168.1.0/24"
@@ -281,6 +298,95 @@ def test_discover_returns_only_weintek_panels_and_excludes_own(monkeypatch):
     hosts = [panel["host"] for panel in result["panels"]]
     # Только панели Weintek; подтверждённая входом — первой; обычный FTP скрыт.
     assert hosts == ["192.168.1.30", "192.168.1.20"]
+
+
+def test_discover_identifies_panel_by_weintek_mac(monkeypatch):
+    # Хост ответил на :21, но по web/баннеру НЕ опознан. ARP показывает MAC
+    # Weintek (00:0C:26) → панель попадает в список (подтверждена по MAC).
+    monkeypatch.setattr(
+        app,
+        "_local_ipv4_networks",
+        lambda: ("192.168.1.50", [app.ipaddress.ip_network("192.168.1.0/24")]),
+    )
+    canned = {
+        "192.168.1.77": {
+            "host": "192.168.1.77", "port": 21, "banner": "220 pure-ftpd [tls]",
+            "name": "", "likely_weintek": False, "confirmed_weintek": False,
+        },
+    }
+
+    async def fake_probe(host, _sem):
+        return canned.get(host)
+
+    async def fake_dns(_host):
+        return "cMT-3C6F"
+
+    monkeypatch.setattr(app, "_probe_ftp_host", fake_probe)
+    monkeypatch.setattr(app, "_reverse_dns_name", fake_dns)
+    monkeypatch.setattr(
+        app, "_read_arp_table", lambda: {"192.168.1.77": "00:0c:26:aa:bb:cc"}
+    )
+
+    result = asyncio.run(app.discover_ftp_panels())
+    panels = result["panels"]
+    assert [p["host"] for p in panels] == ["192.168.1.77"]
+    assert panels[0]["confirmed_weintek"] is True
+    assert panels[0]["mac_weintek"] is True
+    assert panels[0]["name"] == "cMT-3C6F"  # имя добрали по DNS
+
+
+def test_discover_adds_mac_panel_without_ftp_response(monkeypatch):
+    # Панель по MAC есть в ARP, но на :21 не ответила (FTP выкл/медленный) —
+    # всё равно добавляем в список.
+    monkeypatch.setattr(
+        app,
+        "_local_ipv4_networks",
+        lambda: ("192.168.1.50", [app.ipaddress.ip_network("192.168.1.0/24")]),
+    )
+
+    async def fake_probe(_host, _sem):
+        return None  # никто не ответил на :21
+
+    async def fake_dns(_host):
+        return "cMT-3C6F"
+
+    monkeypatch.setattr(app, "_probe_ftp_host", fake_probe)
+    monkeypatch.setattr(app, "_reverse_dns_name", fake_dns)
+    monkeypatch.setattr(
+        app,
+        "_read_arp_table",
+        lambda: {"192.168.1.88": "00-0C-26-11-22-33", "192.168.1.9": "aa:bb:cc:dd:ee:ff"},
+    )
+
+    result = asyncio.run(app.discover_ftp_panels())
+    hosts = [p["host"] for p in result["panels"]]
+    assert hosts == ["192.168.1.88"]  # только Weintek-MAC; чужой MAC не добавлен
+    assert result["ftp_hosts"] == 0
+    assert result["panels"][0]["name"] == "cMT-3C6F"
+
+
+def test_is_weintek_mac_matches_oui():
+    assert app._is_weintek_mac("00:0c:26:11:22:33") is True
+    assert app._is_weintek_mac("00-0C-26-AA-BB-CC") is True  # дефисы, верхний регистр
+    assert app._is_weintek_mac("aa:bb:cc:dd:ee:ff") is False
+    assert app._is_weintek_mac("") is False
+
+
+def test_read_arp_table_parses_output(monkeypatch):
+    sample = (
+        "192.168.1.88 dev eth0 lladdr 00:0c:26:11:22:33 REACHABLE\n"
+        "192.168.1.9 dev eth0 lladdr aa:bb:cc:dd:ee:ff STALE\n"
+        "192.168.1.5 dev eth0  FAILED\n"  # без MAC — пропускается
+    )
+
+    class _Proc:
+        stdout = sample
+
+    monkeypatch.setattr(app.subprocess, "run", lambda *a, **k: _Proc())
+    table = app._read_arp_table()
+    assert table["192.168.1.88"] == "00:0c:26:11:22:33"
+    assert table["192.168.1.9"] == "aa:bb:cc:dd:ee:ff"
+    assert "192.168.1.5" not in table
 
 
 def test_discover_no_network_returns_empty(monkeypatch):

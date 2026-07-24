@@ -15,7 +15,9 @@ import re
 import secrets
 import shutil
 import socket
+import ssl
 import sqlite3
+import subprocess
 import sys
 import tarfile
 import threading
@@ -242,12 +244,20 @@ FTP_DISCOVERY_MAX_HOSTS = 1024  # предохранитель на размер
 FTP_WEINTEK_HINTS = ("weintek", "cmt", "easybuilder", "ftpdmini", "hmi")
 # Папки данных на панели (Data Sampling / алармы / рецепты).
 FTP_WEINTEK_MARKER_DIRS = ("datalog", "eventlog", "recipe")
-# Надёжное опознание панели — по её веб-интерфейсу EasyWeb на порту 80: GET /
-# отдаёт SPA-оболочку cMT с этими маркерами. Работает БЕЗ FTP-пароля и при TLS,
-# поэтому это основной признак панели (баннер FTP — лишь мягкий запасной).
+# Надёжное опознание панели — по её веб-интерфейсу EasyWeb: GET / отдаёт
+# SPA-оболочку cMT с этими маркерами. Работает БЕЗ FTP-пароля и при TLS, поэтому
+# это основной признак панели (баннер FTP — лишь мягкий запасной). Пробуем и
+# HTTP :80, и HTTPS :443 (панели с «[TLS]» отдают веб только по https).
 HTTP_DISCOVERY_PORT = 80
+HTTPS_DISCOVERY_PORT = 443
+# Порядок проб веб-интерфейса: (порт, использовать_TLS).
+HTTP_EASYWEB_PORTS = ((HTTP_DISCOVERY_PORT, False), (HTTPS_DISCOVERY_PORT, True))
 HTTP_EASYWEB_READ_LIMIT = 16384  # байт тела ответа достаточно (маркеры в <head>)
 HTTP_EASYWEB_MARKERS = ("easywebconfig", "icon-weintek", "<title>cmt</title>")
+# Самый надёжный признак: MAC-префикс (OUI) Weintek Labs. Берётся из ARP-таблицы
+# ОС (её наполняют TCP-пробы скана), работает без пароля/web и при любом TLS,
+# но только в пределах своей L2-подсети (ARP не ходит за маршрутизатор).
+WEINTEK_MAC_PREFIXES = ("00:0c:26",)
 
 PORTABLE_ENV_VAR = "OPTICIP_PORTABLE"
 APP_DATA_SUBDIRS = ("datalog", "temp")
@@ -4133,20 +4143,31 @@ async def _ftp_read_reply(reader: asyncio.StreamReader) -> tuple[str, str]:
     return code, text.strip()
 
 
-async def _probe_http_easyweb(host: str) -> str | None:
-    """GET / на host:80 и поиск маркеров веб-интерфейса EasyWeb в теле ответа.
-    Так панель Weintek опознаётся по её же веб-морде — без FTP-пароля и вне
-    зависимости от TLS на FTP. Возвращает `<title>` страницы (обычно «cMT»),
-    либо `None`, если это не EasyWeb-панель."""
+def _insecure_ssl_context() -> ssl.SSLContext:
+    """TLS без проверки сертификата: у панелей самоподписанный серт. Опознание —
+    только чтение публичной стартовой страницы, конфиденциальных данных нет."""
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
+async def _fetch_easyweb_title(host: str, port: int, use_tls: bool) -> str | None:
+    """GET / на host:port (опц. TLS), поиск маркеров EasyWeb в теле. Возвращает
+    `<title>` (обычно «cMT») либо None, если это не EasyWeb / порт недоступен."""
     writer: asyncio.StreamWriter | None = None
     try:
         reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(host, HTTP_DISCOVERY_PORT),
+            asyncio.open_connection(
+                host, port, ssl=_insecure_ssl_context() if use_tls else None
+            ),
             timeout=FTP_DISCOVERY_PROBE_TIMEOUT,
         )
+        # HTTP/1.0 + identity: без gzip, иначе маркеры не найти в сжатом теле.
         request = (
             f"GET / HTTP/1.0\r\nHost: {host}\r\n"
-            "User-Agent: OptiCIP-Dashboard\r\nConnection: close\r\n\r\n"
+            "User-Agent: OptiCIP-Dashboard\r\n"
+            "Accept-Encoding: identity\r\nConnection: close\r\n\r\n"
         )
         writer.write(request.encode("latin-1", "replace"))
         await writer.drain()
@@ -4158,14 +4179,14 @@ async def _probe_http_easyweb(host: str) -> str | None:
             if not chunk:
                 break
             body += chunk
-    except (OSError, asyncio.TimeoutError):
+    except (OSError, asyncio.TimeoutError, ssl.SSLError):
         return None
     finally:
         if writer is not None:
             writer.close()
             try:
                 await writer.wait_closed()
-            except OSError:
+            except (OSError, ssl.SSLError):
                 pass
 
     text = body.decode("latin-1", "replace")
@@ -4174,6 +4195,17 @@ async def _probe_http_easyweb(host: str) -> str | None:
     # Первый <title> — это заголовок <head> (SVG-title в спрайте идут позже).
     match = re.search(r"<title[^>]*>(.*?)</title>", text, re.IGNORECASE | re.DOTALL)
     return match.group(1).strip() if match else ""
+
+
+async def _probe_http_easyweb(host: str) -> str | None:
+    """Ищет веб-интерфейс EasyWeb на host по HTTP :80, затем HTTPS :443 (панели с
+    «[TLS]» отдают веб только по https). Возвращает `<title>` первой ответившей
+    EasyWeb-морды, либо None, если это не панель."""
+    for port, use_tls in HTTP_EASYWEB_PORTS:
+        title = await _fetch_easyweb_title(host, port, use_tls)
+        if title is not None:
+            return title
+    return None
 
 
 async def _reverse_dns_name(host: str) -> str:
@@ -4189,6 +4221,50 @@ async def _reverse_dns_name(host: str) -> str:
     hostname = (info[0] if info else "") or ""
     label = hostname.split(".")[0].strip()
     return "" if label == host else label
+
+
+def _is_weintek_mac(mac: str) -> bool:
+    """True, если MAC начинается с OUI Weintek (00:0C:26)."""
+    normalized = (mac or "").replace("-", ":").lower()
+    return any(normalized.startswith(prefix) for prefix in WEINTEK_MAC_PREFIXES)
+
+
+def _read_arp_table() -> dict[str, str]:
+    """IP→MAC из ARP-таблицы ОС (её наполняют TCP-пробы скана). MAC — в нижнем
+    регистре через двоеточие. Пусто, если таблицу не удалось прочитать."""
+    commands = (
+        ["arp", "-a"] if os.name == "nt" else ["ip", "neigh", "show"],
+        ["arp", "-a"],  # фолбэк (net-tools есть и в Linux)
+        ["arp", "-n"],
+    )
+    # На Windows подавляем мелькание консольного окна в GUI-сборке (pywebview).
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    output = ""
+    for command in commands:
+        try:
+            proc = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                creationflags=creationflags,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if proc.stdout:
+            output = proc.stdout
+            break
+    if not output:
+        return {}
+    ip_re = re.compile(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b")
+    mac_re = re.compile(r"\b([0-9a-fA-F]{2}(?:[:-][0-9a-fA-F]{2}){5})\b")
+    table: dict[str, str] = {}
+    for line in output.splitlines():
+        ip_match = ip_re.search(line)
+        mac_match = mac_re.search(line)
+        if ip_match and mac_match:
+            table[ip_match.group(1)] = mac_match.group(1).replace("-", ":").lower()
+    return table
 
 
 async def _probe_ftp_host(host: str, semaphore: asyncio.Semaphore) -> dict[str, Any] | None:
@@ -4262,19 +4338,57 @@ async def discover_ftp_panels() -> dict[str, Any]:
     semaphore = asyncio.Semaphore(FTP_DISCOVERY_CONCURRENCY)
     probed = await asyncio.gather(*(_probe_ftp_host(host, semaphore) for host in hosts))
     responded = [item for item in probed if item is not None]
-    # В список отдаём ТОЛЬКО опознанные панели Weintek (вход uploadhis прошёл или
-    # Weintek в баннере). Прочие FTP-хосты скрываем — но их число возвращаем,
-    # чтобы UI мог пояснить, если панель с нестандартным паролем не опозналась.
+    ftp_hosts = len(responded)  # откликнулось на порт 21
+
+    # MAC из ARP (пробы скана уже наполнили таблицу) — самый надёжный признак
+    # Weintek (OUI 00:0C:26): без пароля, без web, при любом TLS.
+    arp = await asyncio.to_thread(_read_arp_table)
+    seen = set()
+    for item in responded:
+        mac = arp.get(item["host"], "")
+        item["mac"] = mac
+        item["mac_weintek"] = _is_weintek_mac(mac)
+        if item["mac_weintek"]:
+            item["confirmed_weintek"] = True
+            item["likely_weintek"] = True
+            if not item.get("name"):  # имя не добыли через EasyWeb — берём из DNS
+                item["name"] = await _reverse_dns_name(item["host"])
+        seen.add(item["host"])
+
+    # Панели, опознанные по MAC, но не ответившие на :21 (FTP выкл/медленный):
+    # добавляем, чтобы не терять — подключение потом само попробует FTP.
+    host_set = set(hosts)
+    mac_only = [
+        ip
+        for ip, mac in arp.items()
+        if ip in host_set and ip not in seen and ip != own_ip and _is_weintek_mac(mac)
+    ]
+    for ip in mac_only:
+        responded.append(
+            {
+                "host": ip,
+                "port": FTP_DEFAULT_PORT,
+                "banner": "",
+                "name": await _reverse_dns_name(ip),
+                "mac": arp.get(ip, ""),
+                "mac_weintek": True,
+                "confirmed_weintek": True,
+                "likely_weintek": True,
+            }
+        )
+
+    # В список отдаём ТОЛЬКО опознанные панели Weintek (MAC / EasyWeb / баннер).
+    # Прочие FTP-хосты скрываем, но их число возвращаем для пояснения в UI.
     panels = [item for item in responded if item.get("likely_weintek")]
     panels.sort(
         key=lambda item: (
-            not item.get("confirmed_weintek"),  # подтверждённые входом — первыми
+            not item.get("confirmed_weintek"),  # подтверждённые — первыми
             tuple(int(part) for part in item["host"].split(".")),
         )
     )
     return {
         "scanned": len(hosts),
-        "ftp_hosts": len(responded),  # всего откликнулось FTP-хостов (порт 21)
+        "ftp_hosts": ftp_hosts,
         "network": str(networks[0]) if networks else "",
         "panels": panels,
     }

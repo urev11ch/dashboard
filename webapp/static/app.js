@@ -331,9 +331,10 @@
             setStatus("Не удалось определить локальную сеть.");
           } else if (data.ftp_hosts) {
             setStatus(
-              `Панели Weintek не опознаны. FTP-хостов в сети: ${data.ftp_hosts} ` +
+              `Панели Weintek не найдены. FTP-хостов в сети: ${data.ftp_hosts} ` +
                 `(проверено ${data.scanned}). Если панель есть, но не видна — ` +
-                `у неё может быть отключён веб-интерфейс (:80); добавьте вручную.`
+                `она в другой подсети (MAC-поиск не проходит за маршрутизатор); ` +
+                `добавьте вручную.`
             );
           } else {
             setStatus(`Проверено адресов: ${data.scanned}. Панели не найдены.`);
@@ -347,22 +348,30 @@
         );
         renderResults(panels);
       } catch (_error) {
-        setStatus("");
-        showToast("Не удалось выполнить поиск панели.", "error");
+        // Инлайновый статус, не showToast: экран выбора источника — до гейта,
+        // toastRoot ещё не создан (TDZ).
+        setStatus("Не удалось выполнить поиск панели.");
       } finally {
         button.disabled = false;
       }
     });
   }
 
-  // Кнопка «Проверить обновления» на экране выбора источника. Реюзает
-  // checkForUpdates() (тот же путь, что и в настройках): одна проверка на нажатие,
-  // результат — тостом. Кнопку блокируем на время запроса от повторных кликов.
+  // Кнопка «Проверить обновления» на экране выбора источника. САМОДОСТАТОЧНА:
+  // экран выбора источника — до гейта `if (!hasWorkspace) return`, поэтому
+  // showToast/state/checkForUpdates здесь ещё не инициализированы (TDZ). Свой
+  // fetch + инлайновый статус, без зависимостей от пост-гейтовой машинерии.
   function initWelcomeUpdateCheck() {
     const button = document.querySelector("[data-check-updates-welcome]");
     if (!button) {
       return;
     }
+    const statusEl = document.querySelector("[data-check-updates-welcome-status]");
+    const setStatus = (text) => {
+      if (statusEl) {
+        statusEl.textContent = text || "";
+      }
+    };
     button.addEventListener("click", async () => {
       if (button.disabled) {
         return;
@@ -370,8 +379,25 @@
       button.disabled = true;
       const original = button.textContent;
       button.textContent = "Проверяю…";
+      setStatus("");
       try {
-        await checkForUpdates();
+        const response = await fetch("/api/update-check", {
+          headers: { Accept: "application/json" },
+        });
+        if (!response.ok) {
+          throw new Error("update-check-failed");
+        }
+        const data = await response.json();
+        if (data.update_available) {
+          setStatus(`Доступно обновление ${data.latest}. Смотрите GitHub Releases.`);
+        } else if (data.latest) {
+          setStatus("Установлена последняя версия.");
+        } else {
+          // Пустой latest — «не выяснили» (нет сети/релизов), не «актуально».
+          setStatus("Не удалось проверить обновления.");
+        }
+      } catch (_error) {
+        setStatus("Не удалось проверить обновления.");
       } finally {
         button.disabled = false;
         button.textContent = original;
