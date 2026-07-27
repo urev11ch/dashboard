@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import ipaddress
+import json
 import logging
 import os
 import socket
@@ -31,6 +32,14 @@ APP_TITLE = "OptiCIP Dashboard"
 # Full HD «половина экрана» (960×540) была бы тесна для интерфейса по высоте.
 MIN_WINDOW_WIDTH = 960
 MIN_WINDOW_HEIGHT = 600
+
+# Фоновое автообновление (десктоп, Windows): первый цикл — вскоре после старта,
+# далее реже. Ставим только тихо (per-user установщик, без UAC) и только когда нет
+# активной обработки источника, чтобы не прервать оператора и не дёргать сеть/диск.
+AUTO_UPDATE_INITIAL_DELAY_SECONDS = 120.0
+AUTO_UPDATE_POLL_SECONDS = 3 * 60 * 60  # раз в ~3 часа сверяемся с релизом
+AUTO_UPDATE_DOWNLOAD_TIMEOUT_SECONDS = 600.0
+AUTO_UPDATE_JOB_POLL_INTERVAL = 2.0
 
 
 def configure_runtime_environment() -> None:
@@ -497,6 +506,115 @@ def show_window_error(window: "webview.Window", message: str) -> None:
         logging.exception("Window destroy failed after navigation error")
 
 
+_auto_update_stop = threading.Event()
+
+
+def _local_get_json(base_url: str, path: str, timeout: float = 10.0) -> dict:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    request = urllib.request.Request(
+        base_url + path, method="GET", headers={"Accept": "application/json"}
+    )
+    with opener.open(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _local_post(base_url: str, path: str, timeout: float = 30.0) -> dict:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    request = urllib.request.Request(
+        base_url + path,
+        method="POST",
+        # Без Origin (его нет у server-to-server запроса) — loopback-guard проверит
+        # только Host (127.0.0.1) и пропустит. Content-Length: 0 — тело пустое.
+        headers={"Accept": "application/json", "Content-Length": "0"},
+    )
+    with opener.open(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _auto_update_enabled() -> bool:
+    try:
+        from webapp.settings_store import load_app_settings
+
+        return bool(load_app_settings().get("update_auto_enabled"))
+    except Exception:  # noqa: BLE001 — сбой чтения настроек не должен ронять поток
+        logging.exception("Автообновление: не удалось прочитать настройки")
+        return False
+
+
+def _workspace_busy() -> bool:
+    """Идёт ли сейчас обработка источника — тогда установку/скачивание откладываем,
+    чтобы не прервать оператора и не выдёргивать файлы зеркала из-под загрузки."""
+    try:
+        from webapp.state import state, state_lock
+
+        with state_lock:
+            job = state.workspace_job
+            return job is not None and job.status in {"running", "cancelling"}
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def run_auto_update_loop(bridge: "DesktopBridge", base_url: str, stop_event: threading.Event) -> None:
+    """Фоновая тихая проверка/скачивание/установка обновлений (только Windows).
+
+    Ставит, только когда включён тумблер `update_auto_enabled` и нет активной
+    обработки источника. Установка per-user идёт без UAC (см. installer.iss).
+    Скачивание/установку выполняем через уже существующие эндпоинты и
+    DesktopBridge.install_update — та же логика, что и у кнопки «Установить»."""
+    if os.name != "nt":
+        return  # установка обновления доступна только в Windows
+    if stop_event.wait(AUTO_UPDATE_INITIAL_DELAY_SECONDS):
+        return
+    while not stop_event.is_set():
+        try:
+            _auto_update_cycle(bridge, base_url, stop_event)
+        except Exception:  # noqa: BLE001 — защита фонового потока
+            logging.exception("Автообновление: сбой цикла")
+        if stop_event.wait(AUTO_UPDATE_POLL_SECONDS):
+            return
+
+
+def _auto_update_cycle(bridge: "DesktopBridge", base_url: str, stop_event: threading.Event) -> None:
+    if not _auto_update_enabled() or _workspace_busy():
+        return
+
+    check = _local_get_json(base_url, "/api/update-check", timeout=15.0)
+    if not (check.get("update_available") and check.get("installable")):
+        return
+    latest = check.get("latest") or ""
+
+    logging.info("Автообновление: доступна версия %s — скачиваю в фоне.", latest)
+    _local_post(base_url, "/api/update/download", timeout=30.0)
+
+    deadline = time.monotonic() + AUTO_UPDATE_DOWNLOAD_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if stop_event.wait(AUTO_UPDATE_JOB_POLL_INTERVAL):
+            return
+        job = _local_get_json(base_url, "/api/update/job", timeout=10.0)
+        status = job.get("status")
+        if status == "ready":
+            break
+        if status == "error":
+            logging.warning("Автообновление: скачивание не удалось (%s).", job.get("error"))
+            return
+    else:
+        logging.warning("Автообновление: скачивание не завершилось за отведённое время.")
+        return
+
+    # За время скачивания оператор мог начать работу — тогда установку (с
+    # перезапуском) откладываем до следующего цикла, файл уже готов.
+    if _workspace_busy():
+        logging.info("Автообновление: идёт обработка источника — установку отложил.")
+        return
+
+    logging.info("Автообновление: устанавливаю %s тихо (без UAC, per-user).", latest)
+    result = bridge.install_update()
+    if not (result and result.get("ok")):
+        logging.warning(
+            "Автообновление: установка не запустилась (%s).", (result or {}).get("error")
+        )
+
+
 def load_desktop_window_url(bridge: "DesktopBridge", window: "webview.Window", server: "DesktopServer") -> None:
     logging.info("Waiting for desktop window before starting local UI")
     if not window.events.shown.wait(20):
@@ -533,6 +651,17 @@ def load_desktop_window_url(bridge: "DesktopBridge", window: "webview.Window", s
     except Exception:
         logging.exception("Desktop window navigation failed")
         show_window_error(window, "Не удалось загрузить локальный web-интерфейс.")
+
+    # Фоновое автообновление (Windows): проверяет/качает/ставит тихо, когда
+    # включено в настройках и нет активной обработки. Демон-поток — умрёт с
+    # процессом; stop_event делает ожидания прерываемыми при выходе.
+    if os.name == "nt":
+        threading.Thread(
+            target=run_auto_update_loop,
+            args=(bridge, server.url, _auto_update_stop),
+            name="wash-auto-update",
+            daemon=True,
+        ).start()
 
 
 def show_fatal_error(message: str) -> None:
@@ -1638,6 +1767,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         exit_code = 1
     finally:
+        # Останавливаем фоновое автообновление (демон, но так его ожидания
+        # прерываются сразу, а не висят до POLL_SECONDS).
+        _auto_update_stop.set()
         # Отмену фоновой загрузки выставляем до остановки uvicorn, чтобы задача
         # сворачивалась параллельно с сервером, а ждём её уже после.
         loader_thread = request_background_shutdown()

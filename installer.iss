@@ -34,7 +34,14 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-PrivilegesRequired=admin
+; Per-user установка (без UAC): PrivilegesRequired=lowest → установщик работает от
+; имени пользователя, а константы {autopf}/{autoprograms}/{autodesktop}
+; автоматически превращаются в пользовательские (%LocalAppData%\Programs,
+; пользовательские «Пуск»/рабочий стол). Это даёт ТИХОЕ фоновое обновление без
+; запроса UAC (см. run_wash_desktop.run_auto_update_loop). Данные (datalog/temp,
+; ключ DPAPI, автозапуск HKCU) и так per-user — при переезде не теряются.
+; PrivilegesRequiredOverridesAllowed пусто: не даём поднимать до admin.
+PrivilegesRequired=lowest
 ; Обновление поверх работающего приложения иначе упирается в занятый .exe:
 ; просим закрыть его до копирования файлов.
 AppMutex={#AppSingleInstanceMutex}
@@ -63,46 +70,30 @@ Name: "{group}\{cm:UninstallProgram,{#AppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
 [Run]
+; При PrivilegesRequired=lowest установщик работает от имени пользователя, поэтому
+; флаг runasoriginaluser больше не нужен (он имел смысл только под админ-токеном).
+; WebView2 при non-elevated ставится per-user; проверка WebView2Installed смотрит
+; и HKCU, так что уже установленный (в т.ч. системный) рантайм пропускается.
 Filename: "{tmp}\MicrosoftEdgeWebview2Setup.exe"; Parameters: "/silent /install"; StatusMsg: "Установка среды Microsoft Edge WebView2..."; Check: not WebView2Installed; Flags: waituntilterminated
 ; Сброс кэша иконок оболочки — половина «очисти» (половина «перерисуй» — это
 ; SHChangeNotify в [Code], см. комментарий там). Без него обновившиеся с 1.0.x
-; продолжают видеть старую иконку в «Пуске» и на рабочем столе.
-;
-; ie4uinit — родная утилита оболочки: перестраивает кэш иконок, НЕ перезапуская
-; Проводник и не удаляя iconcache_*.db руками. Ручной рецепт (taskkill explorer +
-; del iconcache*.db) работает, но закрывает пользователю все окна папок — при
-; тихом автообновлении это выглядело бы как сбой, поэтому здесь он не годится.
-;
-; runasoriginaluser обязателен по той же причине, что и у строк ниже: кэш иконок
-; лежит в профиле пользователя (%LocalAppData%\Microsoft\Windows\Explorer), а
-; установщик работает с админским токеном. Без флага мы перестроили бы кэш
-; администратора, а у оператора осталась бы старая иконка — то есть тихо не
-; сделали бы ничего.
-;
-; skipifdoesntexist — подстраховка: ie4uinit есть во всех поддерживаемых
-; Windows, но отсутствие косметической утилиты не повод ронять установку.
-Filename: "{sys}\ie4uinit.exe"; Parameters: "-show"; Flags: runasoriginaluser runhidden skipifdoesntexist
-; runasoriginaluser обязателен: установщик работает с админским токеном, и без
-; этого флага приложение стартовало бы под администратором — его данные, ключ
-; DPAPI (пароль FTP) и автозапуск HKCU достались бы админу, а не оператору.
-Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent runasoriginaluser
+; продолжают видеть старую иконку в «Пуске» и на рабочем столе. ie4uinit —
+; родная утилита оболочки: перестраивает кэш иконок, НЕ перезапуская Проводник.
+; skipifdoesntexist — подстраховка: отсутствие косметической утилиты не повод
+; ронять установку.
+Filename: "{sys}\ie4uinit.exe"; Parameters: "-show"; Flags: runhidden skipifdoesntexist
+Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
 ; Автообновление из приложения: оно запускает установщик с /SILENT /RELAUNCH=1 и
 ; закрывается. Строка выше при /SILENT пропускается (skipifsilent), поэтому
 ; поднимаем приложение обратно здесь — иначе после обновления окно бы не
-; вернулось и выглядело бы как вылет. runasoriginaluser по той же причине, что
-; и выше: под админом приложение писало бы данные и DPAPI-ключ не тому юзеру.
-Filename: "{app}\{#AppExe}"; Flags: nowait runasoriginaluser; Check: WantsRelaunch
+; вернулось и выглядело бы как вылет.
+Filename: "{app}\{#AppExe}"; Flags: nowait; Check: WantsRelaunch
 
 [UninstallRun]
 ; Автозапуск приложение пишет в HKCU\...\Run текущего пользователя; при удалении
-; просим само приложение снять запись (--remove-autostart).
-; Флаг runasoriginaluser в [UninstallRun] Inno Setup НЕ поддерживается (доступен
-; только в [Run]) — из-за него компилятор падал с «flag not supported in this
-; section». Поэтому очистка идёт в обычном контексте деинсталлятора: она
-; срабатывает, когда удаление запускает тот же пользователь, что ставил программу
-; (обычный случай). В редком случае удаления под другой учётной записью запись
-; автозапуска останется указывать на удалённый .exe — Windows молча игнорирует
-; такой «мёртвый» автозапуск, вреда нет.
+; просим само приложение снять запись (--remove-autostart). Деинсталлятор при
+; per-user установке и так работает от имени пользователя, поэтому запись HKCU\Run
+; чистится в его контексте штатно.
 Filename: "{app}\{#AppExe}"; Parameters: "--remove-autostart"; Flags: waituntilterminated runhidden skipifdoesntexist; RunOnceId: "RemoveAutostart"
 
 [Code]
@@ -126,8 +117,46 @@ const
 procedure SHChangeNotify(wEventId: Integer; uFlags: Cardinal; dwItem1: Cardinal; dwItem2: Cardinal);
   external 'SHChangeNotify@shell32.dll stdcall';
 
+// Деинсталлятор прежней per-machine (admin, Program Files) установки — её ключ
+// лежит в HKLM. Пусто, если такой установки нет (чистая машина или уже per-user).
+function PerMachineUninstaller(): String;
+var
+  Cmd: String;
+begin
+  Result := '';
+  if RegQueryStringValue(HKLM, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{B7E6F1A2-3C4D-4E5F-9A1B-2C3D4E5F6A7B}_is1', 'QuietUninstallString', Cmd) then
+    Result := Cmd;
+end;
+
+// Одноразовая миграция Program Files → per-user: снимаем прежнюю admin-копию,
+// чтобы не осталось дубля с ярлыками в общем «Пуске». ВАЖНО: делаем это ТОЛЬКО в
+// интерактивном режиме (ручной запуск Setup.exe) — там один запрос UAC ожидаем.
+// При /SILENT (внутриприложенческое авто-обновление) НЕ трогаем: иначе UAC
+// всплыл бы «из ниоткуда». Best-effort: любая осечка не влияет на уже
+// установленную новую копию (вызывается на ssPostInstall, после установки).
+// ПРОВЕРИТЬ НА WINDOWS перед раскаткой на заводские ПК (на Linux не тестируется).
+procedure MigrateFromPerMachine();
+var
+  UninstCmd: String;
+  ResultCode: Integer;
+begin
+  if WizardSilent() then
+    Exit;
+  UninstCmd := PerMachineUninstaller();
+  if UninstCmd = '' then
+    Exit;
+  // QuietUninstallString уже содержит /VERYSILENT. Старый деинсталлятор помечен
+  // requireAdministrator → покажет один UAC; отказ пользователя просто оставит
+  // прежнюю копию (не критично).
+  Exec(ExpandConstant('{cmd}'), '/C ' + UninstCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
+  // Прежнюю per-machine копию снимаем сразу после установки новой per-user (до
+  // [Run] с релончем) — только в интерактивном режиме (см. MigrateFromPerMachine).
+  if CurStep = ssPostInstall then
+    MigrateFromPerMachine();
   // Именно ssDone, а не ssPostInstall: секция [Run] выполняется между ними, а
   // порядок здесь важен — сначала ie4uinit чистит кэш, и только потом имеет
   // смысл просить оболочку перерисовать. На ssPostInstall уведомление ушло бы
