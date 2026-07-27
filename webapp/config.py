@@ -127,6 +127,12 @@ UPDATE_ASSET_NAME = "OptiCIP-Dashboard-Setup.exe"
 UPDATE_ASSET_URL_PREFIX = f"https://github.com/{GITHUB_REPO}/releases/download/"
 # Больше установщика (~22 МБ) быть не должно; ограничение отсекает бесконечный
 # ответ, который иначе забил бы диск.
+# Локальный токен доступа. Loopback-guard пускает любого пользователя машины
+# (на общем/RDP-хосте эндпоинты видны другим локальным юзерам). Токен взводит
+# только десктоп-лаунчер: первичная навигация окна идёт на /?k=<token>, ответ
+# ставит HttpOnly-cookie, дальше fetch/EventSource шлют его сами (same-origin).
+API_TOKEN_COOKIE_NAME = "opticip_api_token"
+API_TOKEN_QUERY_PARAM = "k"
 UPDATE_MAX_BYTES = 256 * 1024 * 1024
 # Потолок на тело JSON релиза (releases/latest). Реальный ответ — единицы КБ;
 # 4 МБ с запасом на много вложений, но отсекает раздувание памяти враждебным/

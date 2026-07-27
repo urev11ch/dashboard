@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import threading
 import time
 import uuid
@@ -345,6 +346,47 @@ def _origin_is_local(origin_header: str) -> bool:
         return False
 
 
+# Токен локального доступа. Пустая строка = проверка выключена (тесты и запуск
+# без окна). Взводит его только десктоп-лаунчер через arm_api_token — так на
+# общем/RDP-хосте другой локальный пользователь, дотянувшийся до 127.0.0.1:port,
+# не читает данные и не дёргает действия (loopback-guard его не отличает).
+_api_token: str = ""
+
+
+def arm_api_token(token: str | None = None) -> str:
+    """Взводит токен локального доступа (генерирует случайный, если не задан) и
+    возвращает его. Пустая строка выключает проверку."""
+    global _api_token
+    _api_token = token if token is not None else secrets.token_urlsafe(32)
+    return _api_token
+
+
+def get_api_token() -> str:
+    return _api_token
+
+
+def _path_requires_api_token(path: str) -> bool:
+    # Статику (JS/CSS/иконки — код, не данные; с неё же грузится страница) отдаём
+    # без токена. Всё остальное, включая "/" (в неё встроены список панелей и
+    # сводка мойки), токен требует.
+    return not (path.startswith("/static/") or path == "/favicon.ico")
+
+
+def _provided_api_token(request: Request) -> str:
+    # Порядок важен: query ?k= проверяем ПЕРВЫМ. Его несёт только первичная
+    # навигация окна, и он всегда актуален; при этом окно с persistent-хранилищем
+    # (private_mode=False) на старте пришлёт ещё и СТАРЫЙ cookie прошлой сессии
+    # (токен меняется каждый запуск) — если бы cookie шёл первым, старое значение
+    # не совпало бы с новым токеном и первая же загрузка получила бы 403. Дальше,
+    # когда cookie переставлен на текущий токен, работают cookie и заголовок.
+    return (
+        request.query_params.get(API_TOKEN_QUERY_PARAM)
+        or request.cookies.get(API_TOKEN_COOKIE_NAME)
+        or request.headers.get("x-opticip-api-token")
+        or ""
+    )
+
+
 @app.middleware("http")
 async def local_request_guard(request: Request, call_next):
     if not client_is_local(request) and not remote_access_allowed():
@@ -361,7 +403,30 @@ async def local_request_guard(request: Request, call_next):
         origin_header = request.headers.get("origin")
         if origin_header and not _origin_is_local(origin_header) and not remote_access_allowed():
             return JSONResponse({"detail": "Недопустимый Origin запроса."}, status_code=403)
-    return await call_next(request)
+
+    token = _api_token
+    if token and _path_requires_api_token(request.url.path):
+        if not secrets.compare_digest(_provided_api_token(request), token):
+            return JSONResponse(
+                {"detail": "Требуется локальный токен доступа."}, status_code=403
+            )
+
+    response = await call_next(request)
+
+    if token:
+        query_token = request.query_params.get(API_TOKEN_QUERY_PARAM) or ""
+        if query_token and secrets.compare_digest(query_token, token):
+            # Первичная навигация окна принесла токен в query — закрепляем его
+            # HttpOnly-cookie: дальше запросы (включая EventSource, который не
+            # умеет слать заголовки) авторизуются автоматически как same-origin.
+            response.set_cookie(
+                API_TOKEN_COOKIE_NAME,
+                token,
+                httponly=True,
+                samesite="strict",
+                path="/",
+            )
+    return response
 
 
 

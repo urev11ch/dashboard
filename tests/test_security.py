@@ -7,15 +7,17 @@ from fastapi.responses import JSONResponse
 import webapp.app as app
 
 
-def _make_request(client, headers=None, method="GET"):
+def _make_request(
+    client, headers=None, method="GET", path="/api/workspace-data", query_string=b""
+):
     scope = {
         "type": "http",
         "http_version": "1.1",
         "method": method,
         "scheme": "http",
-        "path": "/api/workspace-data",
-        "raw_path": b"/api/workspace-data",
-        "query_string": b"",
+        "path": path,
+        "raw_path": path.encode("latin-1"),
+        "query_string": query_string,
         "root_path": "",
         "server": ("0.0.0.0", 8000),
         "client": client,
@@ -103,3 +105,83 @@ def test_loopback_detection(value, expected):
 def test_missing_client_is_treated_as_local():
     # Нет TCP-пира (unix-сокет / внутренний транспорт) — удалённым быть не может.
     assert app.client_is_local(_make_request(None, {"host": "127.0.0.1:8000"})) is True
+
+
+# --- Локальный токен доступа (защита от других локальных пользователей) ---------
+
+_LOCAL = ("127.0.0.1", 51234)
+_LOCAL_HOST = {"host": "127.0.0.1:8000"}
+_TOKEN = "test-secret-token-abc123"
+
+
+def test_no_token_check_when_disarmed():
+    # По умолчанию (тесты/дев) токен не взведён — loopback-запрос проходит.
+    assert app.get_api_token() == ""
+    assert _guard(_make_request(_LOCAL, _LOCAL_HOST)).status_code == 200
+
+
+def test_armed_rejects_request_without_token(monkeypatch):
+    monkeypatch.setattr(app, "_api_token", _TOKEN)
+    # Тот же loopback-клиент, но без токена — 403 (другой юзер машины).
+    assert _guard(_make_request(_LOCAL, _LOCAL_HOST)).status_code == 403
+
+
+def test_armed_accepts_valid_cookie(monkeypatch):
+    monkeypatch.setattr(app, "_api_token", _TOKEN)
+    headers = {**_LOCAL_HOST, "cookie": f"{app.API_TOKEN_COOKIE_NAME}={_TOKEN}"}
+    assert _guard(_make_request(_LOCAL, headers)).status_code == 200
+
+
+def test_armed_rejects_wrong_token(monkeypatch):
+    monkeypatch.setattr(app, "_api_token", _TOKEN)
+    headers = {**_LOCAL_HOST, "cookie": f"{app.API_TOKEN_COOKIE_NAME}=nope"}
+    assert _guard(_make_request(_LOCAL, headers)).status_code == 403
+
+
+def test_armed_static_is_open_without_token(monkeypatch):
+    monkeypatch.setattr(app, "_api_token", _TOKEN)
+    request = _make_request(_LOCAL, _LOCAL_HOST, path="/static/app.js")
+    assert _guard(request).status_code == 200
+
+
+def test_armed_query_token_authorizes_and_sets_cookie(monkeypatch):
+    # Первичная навигация окна: /?k=<token> проходит и ставит HttpOnly-cookie.
+    monkeypatch.setattr(app, "_api_token", _TOKEN)
+    request = _make_request(
+        _LOCAL,
+        _LOCAL_HOST,
+        path="/",
+        query_string=f"{app.API_TOKEN_QUERY_PARAM}={_TOKEN}".encode("latin-1"),
+    )
+    response = _guard(request)
+    assert response.status_code == 200
+    set_cookie = response.headers.get("set-cookie") or ""
+    assert app.API_TOKEN_COOKIE_NAME in set_cookie
+    assert _TOKEN in set_cookie
+    assert "httponly" in set_cookie.lower()
+
+
+def test_query_token_wins_over_stale_cookie(monkeypatch):
+    # Окно с persistent-хранилищем на старте шлёт СТАРЫЙ cookie прошлой сессии
+    # вместе с новым ?k=. Query должен победить, иначе первая загрузка = 403.
+    monkeypatch.setattr(app, "_api_token", _TOKEN)
+    headers = {**_LOCAL_HOST, "cookie": f"{app.API_TOKEN_COOKIE_NAME}=stale-old-token"}
+    request = _make_request(
+        _LOCAL,
+        headers,
+        path="/",
+        query_string=f"{app.API_TOKEN_QUERY_PARAM}={_TOKEN}".encode("latin-1"),
+    )
+    response = _guard(request)
+    assert response.status_code == 200
+    assert _TOKEN in (response.headers.get("set-cookie") or "")
+
+
+def test_arm_api_token_generates_when_unset(monkeypatch):
+    monkeypatch.setattr(app, "_api_token", "")
+    token = app.arm_api_token()
+    try:
+        assert token and len(token) >= 20
+        assert app.get_api_token() == token
+    finally:
+        app.arm_api_token("")

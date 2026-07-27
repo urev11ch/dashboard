@@ -497,7 +497,12 @@ def show_window_error(window: "webview.Window", message: str) -> None:
         logging.exception("Window destroy failed after navigation error")
 
 
-def load_desktop_window_url(bridge: "DesktopBridge", window: "webview.Window", server: "DesktopServer") -> None:
+def load_desktop_window_url(
+    bridge: "DesktopBridge",
+    window: "webview.Window",
+    server: "DesktopServer",
+    api_token: str = "",
+) -> None:
     logging.info("Waiting for desktop window before starting local UI")
     if not window.events.shown.wait(20):
         logging.error("Desktop window was not shown in time; cannot start local UI")
@@ -527,8 +532,17 @@ def load_desktop_window_url(bridge: "DesktopBridge", window: "webview.Window", s
     except Exception:
         logging.exception("Не удалось центрировать окно при открытии")
 
+    # Первичная навигация несёт токен в query (?k=): ответ / поставит HttpOnly-
+    # cookie, и дальше запросы авторизуются автоматически. В URL токен виден
+    # только внутри окна (frameless, адресной строки нет); значение url-safe.
+    target_url = server.url
+    if api_token:
+        from webapp.app import API_TOKEN_QUERY_PARAM
+
+        target_url = f"{server.url}/?{API_TOKEN_QUERY_PARAM}={api_token}"
     try:
-        window.load_url(server.url)
+        window.load_url(target_url)
+        # В лог путь без токена — чтобы секрет не оседал в desktop.log.
         logging.info("Desktop window navigation requested: %s", server.url)
     except Exception:
         logging.exception("Desktop window navigation failed")
@@ -707,6 +721,15 @@ class DesktopServer:
                 with opener.open(self.url, timeout=0.5) as response:
                     if response.status < 500:
                         return
+            except urllib.error.HTTPError as exc:
+                # Сервер ОТВЕТИЛ статусом (например 403 при взведённом токене
+                # доступа — проба идёт на / без него) — значит, uvicorn поднялся.
+                # Любой ответ < 500 = готов; HTTPError — подкласс URLError, поэтому
+                # ловим его раньше, иначе 4xx считался бы «сервер не готов».
+                if exc.code < 500:
+                    return
+                last_error = exc
+                time.sleep(0.1)
             except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
                 last_error = exc
                 time.sleep(0.1)
@@ -1578,6 +1601,13 @@ def main(argv: list[str] | None = None) -> int:
         web_app = load_web_app()
         logging.info("ASGI app imported successfully")
         sync_autostart_from_settings()
+        # Взводим токен локального доступа: другой пользователь того же ПК (RDP/
+        # общий хост), дотянувшийся до 127.0.0.1:port, без него получит 403.
+        # Токен уходит в первичную навигацию окна (/?k=), ответ ставит cookie.
+        from webapp.app import arm_api_token
+
+        api_token = arm_api_token()
+        logging.info("Локальный токен доступа взведён")
     except Exception as exc:
         logging.exception("ASGI app import failed")
         show_fatal_error(
@@ -1624,7 +1654,7 @@ def main(argv: list[str] | None = None) -> int:
 
         webview.start(
             load_desktop_window_url,
-            args=(bridge, window, server),
+            args=(bridge, window, server, api_token),
             gui=resolve_gui_backend(),
             private_mode=False,
             storage_path=str(resolve_webview_storage_path()),
