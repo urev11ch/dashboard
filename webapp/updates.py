@@ -93,12 +93,6 @@ def _release_tag(payload: dict[str, Any]) -> str:
     return tag[1:] if tag[:1].lower() == "v" else tag
 
 
-def _fetch_latest_release_tag() -> str:
-    """Тег последнего релиза на GitHub (без префикса v) или '' при недоступности/
-    отсутствии релизов."""
-    return _release_tag(_fetch_latest_release())
-
-
 def _pick_installer_asset(payload: dict[str, Any]) -> dict[str, Any] | None:
     """Вложение-установщик из payload релиза: URL, размер и sha256 от GitHub.
 

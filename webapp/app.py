@@ -1,45 +1,27 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import ipaddress
 import json
-import hashlib
-import hmac
-import ftplib
 import logging
 import os
-import pickle
-import posixpath
 import re
-import secrets
-import shutil
-import socket
-import ssl
-import sqlite3
-import subprocess
-import sys
-import tarfile
 import threading
 import time
-import urllib.request
 import uuid
-import zipfile
+# OrderedDict реэкспортируется в неймспейс app для тестов (test_cache_budget
+# патчит app.OrderedDict), хотя сам app.py его не использует напрямую.
 from collections import OrderedDict
 from contextlib import asynccontextmanager
-from urllib.parse import quote, unquote, urlsplit
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
-from typing import Any, Callable
+from urllib.parse import urlsplit
+from pathlib import Path
+from typing import Any
 
 from fastapi import Body, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from runtime_paths import resolve_cache_root, resolve_runtime_root
 import wash_report as core
 from webapp import __version__ as APP_VERSION
 from webapp import config
@@ -78,7 +60,7 @@ from webapp import updates
 # внутренние вызовы и прямые вызовы из тестов остаются как app.<имя>. Тесты,
 # меняющие лимит распаковки, патчат app.archives.ARCHIVE_EXTRACT_MAX_BYTES.
 from webapp import archives
-from webapp.archives import extract_archive_dbs, is_supported_archive, safe_archive_member_path
+from webapp.archives import extract_archive_dbs, safe_archive_member_path
 # Мелкие утилиты ввода-вывода/форматирования вынесены в webapp/io_utils.py.
 from webapp import io_utils
 from webapp.io_utils import (  # noqa: F401

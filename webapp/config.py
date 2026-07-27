@@ -61,9 +61,11 @@ ANALYSIS_CACHE_MAX_ENTRIES = 2048
 # Сколько источников помним для удаления предыдущей версии их кэша.
 CACHE_SOURCE_REGISTRY_LIMIT = 512
 DB_ANALYSIS_CACHE_VERSION = 3
-# v5: сэмплы вынесены из workspace-пикла в отдельные side-файлы по потокам
-# (ws-samples-*), а в RAM подтягиваются лениво — см. make_sample_loader.
-WORKSPACE_ANALYSIS_CACHE_VERSION = 6  # +Segment.last_sample_ts (порог разрыва)
+# Бампать при любом изменении формата workspace-пикла. История:
+# v5 — сэмплы вынесены из пикла в side-файлы по потокам (ws-samples-*), в RAM
+# подтягиваются лениво (см. make_sample_loader); v6 — +Segment.last_sample_ts
+# (порог разрыва цикла меряется по сырому времени последнего сэмпла).
+WORKSPACE_ANALYSIS_CACHE_VERSION = 6
 CHART_PAYLOAD_DISK_CACHE_VERSION = 2
 CHART_PAYLOAD_CACHE_LIMIT = 64
 DB_ANALYSIS_MAX_WORKERS = 4

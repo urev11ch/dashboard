@@ -11,14 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Callable
 
 import wash_report as core
-from webapp.config import ARCHIVE_EXTRACT_MAX_BYTES, SUPPORTED_ARCHIVE_SUFFIXES
-
-
-def is_supported_archive(path: Path) -> bool:
-    if not path.is_file():
-        return False
-    lower_name = path.name.lower()
-    return any(lower_name.endswith(suffix) for suffix in SUPPORTED_ARCHIVE_SUFFIXES)
+from webapp.config import ARCHIVE_EXTRACT_MAX_BYTES
 
 
 def safe_archive_member_path(name: str) -> Path | None:
