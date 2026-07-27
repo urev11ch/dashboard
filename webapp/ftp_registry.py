@@ -31,7 +31,6 @@ from webapp.config import (
     FTP_SOURCE_CONFIG_VERSION,
     FTP_SOURCES_FILENAME,
     FTP_SOURCES_VERSION,
-    PROFILE_DELETE_JOIN_TIMEOUT_SECONDS,
 )
 from webapp.io_utils import atomic_write_json
 from webapp.secrets_store import _keyring_delete, protect_secret, unprotect_secret
@@ -153,6 +152,8 @@ def remove_ftp_profile_dir(conn_id: str) -> None:
     try:
         if not profile_dir.exists() or profile_dir.resolve().parent != datalog_root.resolve():
             return
+        # Ключ лока зеркала — тот же, что берёт писатель (ftp_client.materialize).
+        profile_key = str(profile_dir.resolve())
     except OSError:
         return
 
@@ -161,21 +162,27 @@ def remove_ftp_profile_dir(conn_id: str) -> None:
         profile_dir.rename(trash_dir)
     except OSError:
         # Переименовать не вышло (Windows держит открытый файл) — удаляем на месте,
-        # но всё равно после завершения рабочего потока.
+        # но всё равно после завершения писателя.
         trash_dir = profile_dir
 
-    # Активный рабочий поток анализа живёт в state.py — читаем как атрибут модуля.
-    worker = state_module._workspace_job_thread
+    # Ждём завершения писателя ИМЕННО этого профиля через лок зеркала, а не
+    # «текущий» рабочий поток: тот мог качать другую панель или уже завершиться,
+    # пока зависший старый поток всё ещё пишет в эту папку (та же дыра, что и в
+    # цепочке join). Лок гарантирует, что rmtree не выдернет файлы из-под записи.
+    lock = state_module.mirror_write_lock(profile_key)
 
     def _purge() -> None:
-        if worker is not None and worker.is_alive():
-            worker.join(timeout=PROFILE_DELETE_JOIN_TIMEOUT_SECONDS)
-        shutil.rmtree(trash_dir, ignore_errors=True)
+        with lock:
+            shutil.rmtree(trash_dir, ignore_errors=True)
 
-    if worker is not None and worker.is_alive():
-        threading.Thread(target=_purge, name="wash-profile-cleanup", daemon=True).start()
+    if lock.acquire(blocking=False):
+        # Никто не пишет — удаляем сразу, без лишнего потока.
+        try:
+            shutil.rmtree(trash_dir, ignore_errors=True)
+        finally:
+            lock.release()
     else:
-        shutil.rmtree(trash_dir, ignore_errors=True)
+        threading.Thread(target=_purge, name="wash-profile-cleanup", daemon=True).start()
 
 
 def rename_ftp_connection(conn_id: str, label: str) -> bool:

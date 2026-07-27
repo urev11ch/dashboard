@@ -264,6 +264,48 @@ def test_nlst_treats_data_name_as_file_when_size_denied():
     assert by_name["subdir"] is True         # не-данные + запрет SIZE = каталог
 
 
+def test_mirror_writes_are_serialized_per_profile(tmp_path, monkeypatch):
+    # Гонка зеркала: два потока не должны писать в один профиль одновременно
+    # (даже если старый «завис» и выпал из цепочки join). Лок зеркала — один писатель.
+    import threading
+    import time
+
+    datalog = tmp_path / "datalog"
+    datalog.mkdir()
+    for target in (app, app.config):
+        monkeypatch.setattr(target, "TEMP_ROOT", tmp_path / "temp")
+        monkeypatch.setattr(target, "DATALOG_ROOT", datalog)
+
+    cfg = app.normalize_ftp_connection_settings({"host": "1.1.1.1", "path": "/d"})
+    entry = app.upsert_ftp_connection(cfg)
+    profile = (datalog / entry["id"]).resolve()
+    profile.mkdir()
+
+    active = {"n": 0, "max": 0}
+    guard = threading.Lock()
+
+    def fake_open(config):
+        with guard:
+            active["n"] += 1
+            active["max"] = max(active["max"], active["n"])
+        time.sleep(0.05)  # окно для пересечения, если бы не было лока зеркала
+        with guard:
+            active["n"] -= 1
+        return _FakeFTP({})  # пустой каталог — качать нечего
+
+    monkeypatch.setattr(app.ftp_client, "open_ftp_connection", fake_open)
+
+    threads = [
+        threading.Thread(target=app.materialize_ftp_sources, args=(profile,)) for _ in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert active["max"] == 1  # писатели не пересеклись
+
+
 def test_open_ftp_workspace_returns_303_on_oserror(monkeypatch):
     # Сбой create_ftp_workspace (нет прав/места) → аккуратный state.error + 303,
     # а не неперехваченный 500.

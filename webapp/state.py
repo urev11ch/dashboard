@@ -117,3 +117,22 @@ app_settings_lock = threading.RLock()
 archive_cache_lock = threading.Lock()
 analysis_cache_lock = threading.Lock()
 chart_payload_cache_lock = threading.Lock()
+
+# Эксклюзивный лок на запись зеркала КОНКРЕТНОГО профиля (datalog/<id>). Гарантирует
+# одного писателя даже если старый рабочий поток «завис»: цепочка join имеет дыру
+# (таймаут join → зависший поток выпадает, новый джоб той же панели начинает писать
+# параллельно → битые .db). Лок закрывает это в точке опасности — самой записи.
+# Здесь (в state) — чтобы им пользовались и ftp_client (запись), и ftp_registry
+# (rmtree при удалении панели), не создавая циклический импорт.
+_mirror_write_locks: dict[str, threading.Lock] = {}
+_mirror_write_locks_guard = threading.Lock()
+
+
+def mirror_write_lock(profile_key: str) -> threading.Lock:
+    """Лок на запись зеркала профиля по ключу (обычно str(resolved datalog/<id>))."""
+    with _mirror_write_locks_guard:
+        lock = _mirror_write_locks.get(profile_key)
+        if lock is None:
+            lock = threading.Lock()
+            _mirror_write_locks[profile_key] = lock
+        return lock

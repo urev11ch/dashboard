@@ -34,7 +34,7 @@ from webapp.config import (
     FTP_MTIME_TOLERANCE_SECONDS,
     SUPPORTED_ARCHIVE_SUFFIXES,
 )
-from webapp.state import state, state_lock
+from webapp.state import mirror_write_lock, state, state_lock
 from webapp.archives import safe_archive_member_path
 from webapp.ftp_registry import (
     connection_to_config,
@@ -677,38 +677,43 @@ def materialize_ftp_sources(
     download_dir = root_path
     download_dir.mkdir(parents=True, exist_ok=True)
 
-    try:
-        result = download_ftp_files(
-            config,
-            download_dir,
-            progress_callback=progress_callback,
-            cancel_check=cancel_check,
-        )
-    except core.AnalysisCancelledError:
-        raise
-    except (ValueError, SystemExit, OSError) as exc:
-        message = str(exc) or "FTP недоступен."
-        logging.warning("Синхронизация с FTP не удалась: %s", message)
-        if datalog_has_archives(root_path):
-            core.emit_progress(
-                progress_callback,
-                phase="ftp",
-                message=f"FTP недоступен ({message}); использую ранее скачанные архивы.",
-                item=format_ftp_display_label(config),
+    # Один писатель на зеркало этого профиля. Если старый (уже отменённый, но ещё
+    # живой из-за таймаута join) поток пишет сюда же — дождёмся его освобождения,
+    # иначе два потока портят одни и те же .db. Отменённый писатель выходит по
+    # cancel_check между файлами/чанками и быстро отпускает лок.
+    with mirror_write_lock(str(root_path)):
+        try:
+            result = download_ftp_files(
+                config,
+                download_dir,
+                progress_callback=progress_callback,
+                cancel_check=cancel_check,
             )
-            return FtpSyncResult(ftp_error_message=message)
-        raise SystemExit(
-            f"Не удалось скачать архивы с FTP, и локальных архивов в `datalog` нет: {message}"
-        ) from exc
+        except core.AnalysisCancelledError:
+            raise
+        except (ValueError, SystemExit, OSError) as exc:
+            message = str(exc) or "FTP недоступен."
+            logging.warning("Синхронизация с FTP не удалась: %s", message)
+            if datalog_has_archives(root_path):
+                core.emit_progress(
+                    progress_callback,
+                    phase="ftp",
+                    message=f"FTP недоступен ({message}); использую ранее скачанные архивы.",
+                    item=format_ftp_display_label(config),
+                )
+                return FtpSyncResult(ftp_error_message=message)
+            raise SystemExit(
+                f"Не удалось скачать архивы с FTP, и локальных архивов в `datalog` нет: {message}"
+            ) from exc
 
-    # Автоочистка архивов старше срока хранения (только для FTP-зеркала).
-    # «Последнюю очистку» отмечаем только если реально что-то удалили — иначе
-    # поле показывало бы время каждого подключения, хотя ничего не чистилось.
-    settings = load_app_settings()
-    if settings["archive_retention_enabled"]:
-        cleanup_result = cleanup_old_archives(root_path, settings["archive_retention_days"])
-        if cleanup_result["removed"]:
-            with state_lock:
-                state.last_cleanup_ts = time.time()
+        # Автоочистка архивов старше срока хранения (только для FTP-зеркала).
+        # «Последнюю очистку» отмечаем только если реально что-то удалили — иначе
+        # поле показывало бы время каждого подключения, хотя ничего не чистилось.
+        settings = load_app_settings()
+        if settings["archive_retention_enabled"]:
+            cleanup_result = cleanup_old_archives(root_path, settings["archive_retention_days"])
+            if cleanup_result["removed"]:
+                with state_lock:
+                    state.last_cleanup_ts = time.time()
 
     return result
