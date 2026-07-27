@@ -108,6 +108,19 @@ class AnalysisCancelledError(RuntimeError):
     pass
 
 
+# Единое сообщение отмены на уровне оркестрации источника (обход папки, докачка
+# FTP, распаковка архивов). Обработка отдельной базы отменяется своим текстом.
+SOURCE_CANCELLED_MESSAGE = "Открытие источника было отменено пользователем."
+
+
+def raise_if_cancelled(cancel_check: Callable[[], bool] | None) -> None:
+    """Бросает AnalysisCancelledError, если запрошена отмена. Свёртка повторяемой
+    идиомы `if cancel_check is not None and cancel_check(): raise ...` (была в 9
+    местах ftp_client/analysis/archives)."""
+    if cancel_check is not None and cancel_check():
+        raise AnalysisCancelledError(SOURCE_CANCELLED_MESSAGE)
+
+
 class SampleStreamUnavailable(RuntimeError):
     """Поток сэмплов канала не удалось прочитать: side-файл вытеснен из дискового
     кэша по бюджету, побился или не имеет валидной HMAC-подписи.

@@ -225,15 +225,23 @@ WEINTEK_MAC_PREFIXES = ("00:0c:26",)
 PORTABLE_ENV_VAR = "OPTICIP_PORTABLE"
 APP_DATA_SUBDIRS = ("datalog", "temp")
 
+# Строки, трактуемые как «ложь/выключено» (env-флаги, поле passive из формы).
+FALSE_FLAG_VALUES = frozenset({"", "0", "false", "no", "off"})
+
+
+def parse_bool_flag(value: object, *, default: bool = False) -> bool:
+    """Единая трактовка строкового флага. Пустое/None → default; иначе строка
+    считается ложью только если входит в FALSE_FLAG_VALUES (регистр не важен)."""
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if not text:
+        return default
+    return text not in FALSE_FLAG_VALUES
+
 
 def portable_mode_enabled() -> bool:
-    return str(os.environ.get(PORTABLE_ENV_VAR) or "").strip().lower() not in {
-        "",
-        "0",
-        "false",
-        "no",
-        "off",
-    }
+    return parse_bool_flag(os.environ.get(PORTABLE_ENV_VAR))
 
 
 def resolve_app_data_root() -> Path:

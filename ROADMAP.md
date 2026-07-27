@@ -62,6 +62,13 @@
 Итерация 5 (P2-8 — локальный API-токен):
 - **Аутентификация локального сервера** (`app.py`, `run_wash_desktop.py`). Loopback-guard не различает пользователей машины — на общем/RDP-хосте другой локальный юзер мог читать данные и дёргать действия через `127.0.0.1:port`. Теперь десктоп-лаунчер взводит случайный токен (`arm_api_token`, `secrets.token_urlsafe`), первичная навигация окна идёт на `/?k=<token>`, ответ ставит **HttpOnly-cookie** — дальше `fetch` и `EventSource` (не умеет слать заголовки) авторизуются автоматически как same-origin, правок каждого вызова не потребовалось. Middleware требует токен на всё, кроме `/static` (там не данные). Проверка выключена, когда токен не взведён (тесты/дев). Порядок источников токена: query → cookie → заголовок (persistent-хранилище окна на старте шлёт старый cookie вместе с новым query — query должен побеждать, иначе первая загрузка = 403). `wait_until_ready` научен считать 403 «сервер поднялся». +8 тестов.
 
+Итерация 6 (тех-долг — консолидация дублей на бэке):
+- **`parse_bool_flag`** (`config.py`) + `FALSE_FLAG_VALUES` — единая трактовка строковых флагов; убрало 4 копии набора `{"","0","false","no","off"}` (env-флаги, `passive`).
+- **`ACTIVE_JOB_STATUSES`** (`state.py`) — 5 литералов `{"running","cancelling"}` (роуты + оркестрация) сведены к общей константе.
+- **`raise_if_cancelled` + `SOURCE_CANCELLED_MESSAGE`** (`wash_report.py`) — идиома `if cancel_check and cancel_check(): raise ...` из 9 мест (ftp_client/analysis/archives) свёрнута; сообщение отмены больше не захардкожено 9×.
+- **`read_json_object`** (`io_utils.py`) — 5 копий `try json.loads(read_text) → {}` (settings_store ×4, ftp_registry) сведены; `warn_on_corrupt=True` для файла настроек логирует повреждение (раньше молча терялось — B-E1). `json` убран из осиротевших импортов.
+- +19 тестов (`test_refactor_helpers.py`). Крупные разбиения (`openSettings`, `download_ftp_files`, единый модуль обновлений) остаются ниже.
+
 ### Открыто (крупное — в P0/P2)
 - **HIGH:** неподписанный установщик + доверие только GitHub-digest (P0-1/P0-2).
 - **MED:** остаточный TOCTOU файла установщика (`%LOCALAPPDATA%` без 0700 на Windows — открывать с share-deny-write); глобальный `--ignore-certificate-errors` + приватные IP в WebView (LAN MITM, частично смягчено отсутствием `js_api` у окон панелей).
@@ -75,7 +82,7 @@
 
 ### Открыто (тех-долг из код-ревью — крупные рефакторы, не срочно)
 - **Фронт:** дробление `openSettings` (~620 стр.) на `initSettings*()`; единый модуль потока обновлений (welcome-экран и «Настройки» дублируют логику `check`/`install`, welcome использует литерал `2400` вместо `UPDATE_POLL_MAX_TICKS`); хелперы `persistSetting`, `closeButtonHtml`, `createFtpModal`, `parseDbDateTime` (устраняют повторы разметки/форматирования).
-- **Бэк:** дробление `download_ftp_files` (~200 стр.) и `analyze_db_files_incremental`; вынести read-side `get_diagnostics`/`_SAFE_VERSION_RE` в `views.py`/`updates.py`; общие хелперы `read_json_object` (5 копий try/except + залогировать битый файл настроек), `parse_bool_flag`, `ACTIVE_JOB_STATUSES`, `raise_if_cancelled` + константа сообщения отмены (×9).
+- **Бэк:** дробление `download_ftp_files` (~200 стр.) и `analyze_db_files_incremental`; вынести read-side `get_diagnostics`/`_SAFE_VERSION_RE` в `views.py`/`updates.py`. (Хелперы-дедупы `read_json_object`/`parse_bool_flag`/`ACTIVE_JOB_STATUSES`/`raise_if_cancelled` — **сделаны**, итерация 6.)
 
 ### Проверено и чисто
 XSS (экранирование + Jinja autoescape), path traversal (архивы/FTP/удаление профиля), HMAC перед pickle, SSRF discovery, sqlite (ro + закрытие в finally), ресурсы/локи/кэши, корректность разбивки на модули (нет циклов, общий `state`, точки monkeypatch).

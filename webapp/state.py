@@ -103,6 +103,10 @@ class AppStateSnapshot:
     connected_ftp_id: str
 
 
+# Статусы рабочего джоба анализа, при которых он ещё «живой»: идёт или получил
+# запрос на отмену, но не завершился. Общая точка правды для роутов и сервисов.
+ACTIVE_JOB_STATUSES = frozenset({"running", "cancelling"})
+
 state = AppState()
 state_lock = threading.Lock()
 # Активный рабочий поток анализа источника. Здесь (а не в app.py), чтобы удаление

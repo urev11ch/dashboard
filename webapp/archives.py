@@ -72,8 +72,7 @@ def extract_archive_dbs(
     if zipfile.is_zipfile(archive_path):
         with zipfile.ZipFile(archive_path) as handle:
             for member in handle.infolist():
-                if cancel_check is not None and cancel_check():
-                    raise core.AnalysisCancelledError("Открытие источника было отменено пользователем.")
+                core.raise_if_cancelled(cancel_check)
                 if member.is_dir():
                     continue
                 relative_path = safe_archive_member_path(member.filename)
@@ -91,8 +90,7 @@ def extract_archive_dbs(
     if tarfile.is_tarfile(archive_path):
         with tarfile.open(archive_path) as handle:
             for member in handle.getmembers():
-                if cancel_check is not None and cancel_check():
-                    raise core.AnalysisCancelledError("Открытие источника было отменено пользователем.")
+                core.raise_if_cancelled(cancel_check)
                 if not member.isfile():
                     continue
                 relative_path = safe_archive_member_path(member.name)

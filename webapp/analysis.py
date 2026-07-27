@@ -33,7 +33,7 @@ from webapp.config import (
     SUPPORTED_ARCHIVE_SUFFIXES,
     WORKSPACE_JOB_JOIN_TIMEOUT_SECONDS,
 )
-from webapp.state import ScanSummary, WorkspaceJob, state, state_lock
+from webapp.state import ACTIVE_JOB_STATUSES, ScanSummary, WorkspaceJob, state, state_lock
 from webapp.io_utils import format_file_list
 from webapp.cache import (
     clear_chart_payload_cache,
@@ -126,7 +126,7 @@ def serialize_job(job: WorkspaceJob | None) -> dict[str, Any]:
 
     return {
         "id": job.id,
-        "active": job.status in {"running", "cancelling"},
+        "active": job.status in ACTIVE_JOB_STATUSES,
         "status": job.status,
         "phase": job.phase,
         "message": job.message,
@@ -223,8 +223,7 @@ def discover_db_files(
             for dirname in _dirnames
             if not is_ignored_workspace_dir(current_root_path / dirname, ignored_workspace_dirs)
         ]
-        if cancel_check is not None and cancel_check():
-            raise core.AnalysisCancelledError("Открытие источника было отменено пользователем.")
+        core.raise_if_cancelled(cancel_check)
 
         for filename in filenames:
             scanned_files += 1
@@ -249,8 +248,7 @@ def discover_db_files(
 
     extracted_db_files: list[Path] = []
     for index, archive_path in enumerate(sorted(archive_files), start=1):
-        if cancel_check is not None and cancel_check():
-            raise core.AnalysisCancelledError("Открытие источника было отменено пользователем.")
+        core.raise_if_cancelled(cancel_check)
 
         core.emit_progress(
             progress_callback,
@@ -316,8 +314,7 @@ def analyze_db_files_incremental(
     cached_files = 0
 
     for index, db_path in enumerate(db_files, start=1):
-        if cancel_check is not None and cancel_check():
-            raise core.AnalysisCancelledError("Открытие источника было отменено пользователем.")
+        core.raise_if_cancelled(cancel_check)
 
         cached_chunk = load_cached_db_analysis(db_path)
         if cached_chunk is not None:
@@ -380,8 +377,7 @@ def analyze_db_files_incremental(
             }
             try:
                 for future in as_completed(future_to_job):
-                    if cancel_check is not None and cancel_check():
-                        raise core.AnalysisCancelledError("Открытие источника было отменено пользователем.")
+                    core.raise_if_cancelled(cancel_check)
 
                     index, db_path = future_to_job[future]
                     # Файл мог оказаться битым уже на разборе данных (или исчезнуть
@@ -556,7 +552,7 @@ def start_workspace_job(
     # Активный рабочий поток живёт в state.py (см. там комментарий) — читаем/пишем
     # как атрибут модуля, чтобы ftp_registry видел актуальное значение.
     previous_thread = state_module._workspace_job_thread
-    if state.workspace_job is not None and state.workspace_job.status in {"running", "cancelling"}:
+    if state.workspace_job is not None and state.workspace_job.status in ACTIVE_JOB_STATUSES:
         state.workspace_job.cancel_requested = True
         state.workspace_job.status = "cancelling"
         state.workspace_job.message = "Отменяю предыдущую обработку источника."
@@ -594,7 +590,7 @@ def trigger_ftp_auto_refresh() -> bool:
     обработки. Папочный (folder) источник и отсутствие анализа пропускаются."""
     with state_lock:
         job = state.workspace_job
-        if job is not None and job.status in {"running", "cancelling"}:
+        if job is not None and job.status in ACTIVE_JOB_STATUSES:
             return False
 
         target_root = state.selected_root or state.pending_root

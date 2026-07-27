@@ -7,12 +7,39 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+
+def read_json_object(path: Path, *, warn_on_corrupt: bool = False) -> dict[str, Any]:
+    """Читает JSON-объект из файла. Возвращает dict; при отсутствии файла — {}
+    (нормальный случай, первый запуск). При битом содержимом (не парсится или не
+    объект) тоже {}, но с warn_on_corrupt=True пишет предупреждение в лог — иначе
+    повреждённый файл настроек молча откатывался бы к дефолту без следа."""
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        if warn_on_corrupt:
+            logging.warning("Не удалось прочитать %s — беру значения по умолчанию", path)
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        if warn_on_corrupt:
+            logging.warning("Повреждён JSON в %s — сброс к значениям по умолчанию", path)
+        return {}
+    if not isinstance(payload, dict):
+        if warn_on_corrupt:
+            logging.warning("Ожидался JSON-объект в %s — сброс к значениям по умолчанию", path)
+        return {}
+    return payload
 
 
 def format_source_label(value: str) -> str:

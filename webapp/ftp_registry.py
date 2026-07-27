@@ -11,7 +11,6 @@ TEMP_ROOT/DATALOG_ROOT берём динамически через модуль
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import shutil
 import threading
@@ -32,7 +31,7 @@ from webapp.config import (
     FTP_SOURCES_FILENAME,
     FTP_SOURCES_VERSION,
 )
-from webapp.io_utils import atomic_write_json
+from webapp.io_utils import atomic_write_json, read_json_object
 from webapp.secrets_store import _keyring_delete, protect_secret, unprotect_secret
 
 
@@ -56,12 +55,7 @@ def ftp_connection_id(config: dict[str, Any]) -> str:
 
 
 def load_ftp_sources_registry() -> dict[str, Any]:
-    try:
-        payload = json.loads(ftp_sources_path().read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
-        payload = {}
-    if not isinstance(payload, dict):
-        payload = {}
+    payload = read_json_object(ftp_sources_path())
     connections = payload.get("connections")
     if not isinstance(connections, list):
         connections = []
@@ -325,11 +319,13 @@ def normalize_ftp_connection_settings(raw_payload: Any) -> dict[str, Any]:
     password = str(payload.get("password") or "").replace("\r", "").replace("\n", "")
     path = normalize_ftp_path(payload.get("path") or payload.get("directory"))
 
-    passive = payload.get("passive", True)
-    if isinstance(passive, str):
-        passive = passive.strip().lower() not in {"", "0", "false", "no", "off"}
+    raw_passive = payload.get("passive", True)
+    if isinstance(raw_passive, str):
+        # default=False: пустая строка = «ложь» (как было); отсутствие ключа
+        # даёт True через ветку bool() ниже (.get(..., True)).
+        passive = app_config.parse_bool_flag(raw_passive, default=False)
     else:
-        passive = bool(passive)
+        passive = bool(raw_passive)
 
     # Схема веб-интерфейса EasyWeb (для веб-просмотра /app/dashboard). Из
     # обнаружения приходит http/https; иначе пусто (фронтенд подставит http).

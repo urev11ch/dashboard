@@ -13,7 +13,6 @@ TEMP_ROOT берём динамически как app_config.TEMP_ROOT — те
 """
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -46,7 +45,7 @@ from webapp.config import (
     RESULT_LABEL_MAX_LEN,
     _RESULT_CATEGORY_BY_DEFAULT,
 )
-from webapp.io_utils import atomic_write_json
+from webapp.io_utils import atomic_write_json, read_json_object
 from webapp.state import app_settings_lock
 
 
@@ -82,16 +81,7 @@ def load_object_name_overrides(root_path: Path | None) -> dict[tuple[int, int], 
         return {}
 
     path = object_name_overrides_path(root_path)
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return {}
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-    if not isinstance(payload, dict):
-        return {}
-
+    payload = read_json_object(path)
     raw_objects = payload.get("objects")
     if not isinstance(raw_objects, dict):
         return {}
@@ -195,12 +185,7 @@ def normalize_chart_style_series(raw_series: Any) -> dict[str, dict[str, str]]:
 
 
 def load_chart_style_settings() -> dict[str, dict[str, str]]:
-    try:
-        payload = json.loads(chart_style_settings_path().read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
-        return {}
-    if not isinstance(payload, dict):
-        return {}
+    payload = read_json_object(chart_style_settings_path())
     return normalize_chart_style_series(payload.get("series"))
 
 
@@ -222,12 +207,7 @@ def folder_source_settings_path() -> Path:
 
 
 def load_last_folder_path() -> str:
-    try:
-        payload = json.loads(folder_source_settings_path().read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
-        return ""
-    if not isinstance(payload, dict):
-        return ""
+    payload = read_json_object(folder_source_settings_path())
     value = payload.get("last_path")
     return value.strip() if isinstance(value, str) else ""
 
@@ -258,7 +238,8 @@ def _coerce_bool(value: Any, fallback: bool) -> bool:
     if value is None:
         return fallback
     if isinstance(value, str):
-        return value.strip().lower() not in {"", "0", "false", "no", "off"}
+        # default=False: пустая строка = «ложь» (как было), непустая — по набору.
+        return app_config.parse_bool_flag(value, default=False)
     return bool(value)
 
 
@@ -461,12 +442,8 @@ def apply_concentration_verdict(
 
 
 def load_app_settings() -> dict[str, Any]:
-    try:
-        payload = json.loads(app_settings_path().read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
-        payload = {}
-    if not isinstance(payload, dict):
-        payload = {}
+    # warn_on_corrupt: битый файл настроек логируем, а не молча теряем.
+    payload = read_json_object(app_settings_path(), warn_on_corrupt=True)
     # Поддерживаем как «плоский» объект, так и обёртку {"settings": {...}}.
     source = payload.get("settings") if isinstance(payload.get("settings"), dict) else payload
     return normalize_app_settings(source)

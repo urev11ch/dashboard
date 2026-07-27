@@ -42,6 +42,7 @@ from webapp import discovery
 # app.py и сервисными модулями (updates и т. д.) как один и тот же объект.
 from webapp import state as state_module
 from webapp.state import (  # noqa: F401
+    ACTIVE_JOB_STATUSES,
     AppState,
     AppStateSnapshot,
     ScanSummary,
@@ -299,13 +300,7 @@ ALLOW_REMOTE_ENV_VAR = "OPTICIP_ALLOW_REMOTE"
 
 
 def remote_access_allowed() -> bool:
-    return str(os.environ.get(ALLOW_REMOTE_ENV_VAR) or "").strip().lower() not in {
-        "",
-        "0",
-        "false",
-        "no",
-        "off",
-    }
+    return parse_bool_flag(os.environ.get(ALLOW_REMOTE_ENV_VAR))
 
 
 def _is_loopback_address(value: str | None) -> bool:
@@ -720,7 +715,7 @@ async def workspace_job_status_stream() -> StreamingResponse:
 @app.post("/api/workspace-job/cancel")
 def cancel_workspace_job() -> JSONResponse:
     with state_lock:
-        if state.workspace_job is None or state.workspace_job.status not in {"running", "cancelling"}:
+        if state.workspace_job is None or state.workspace_job.status not in ACTIVE_JOB_STATUSES:
             return JSONResponse({"ok": False, "active": False})
 
         state.workspace_job.cancel_requested = True
@@ -981,7 +976,7 @@ def cleanup_archives_now() -> JSONResponse:
     with state_lock:
         target_root = state.selected_root or state.pending_root
         job = state.workspace_job
-        job_active = job is not None and job.status in {"running", "cancelling"}
+        job_active = job is not None and job.status in ACTIVE_JOB_STATUSES
 
     # Удалять архивы под работающим анализом нельзя: файл исчезает прямо во время
     # чтения и джоб падает. Очистка и так выполняется в конце каждой синхронизации.

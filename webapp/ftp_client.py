@@ -195,8 +195,7 @@ def _ftp_walk_files(
 
     discovered: list[tuple[str, dict[str, Any]]] = []
     for name, is_dir, meta in _ftp_list_entries(connection, remote_dir):
-        if cancel_check is not None and cancel_check():
-            raise core.AnalysisCancelledError("Открытие источника было отменено пользователем.")
+        core.raise_if_cancelled(cancel_check)
         full = posixpath.join(remote_dir, name)
         if is_dir:
             discovered.extend(
@@ -498,8 +497,7 @@ def download_ftp_files(
 
         total = len(remote_files)
         for index, (remote_file, meta) in enumerate(remote_files, start=1):
-            if cancel_check is not None and cancel_check():
-                raise core.AnalysisCancelledError("Открытие источника было отменено пользователем.")
+            core.raise_if_cancelled(cancel_check)
 
             remote_size = meta.get("size")
             if remote_size is None:
@@ -563,10 +561,7 @@ def download_ftp_files(
                     def _write_chunk(chunk: bytes) -> None:
                         # Проверка отмены прямо в потоке данных, чтобы отмена
                         # прерывала и передачу большого файла.
-                        if cancel_check is not None and cancel_check():
-                            raise core.AnalysisCancelledError(
-                                "Открытие источника было отменено пользователем."
-                            )
+                        core.raise_if_cancelled(cancel_check)
                         handle.write(chunk)
 
                     connection.retrbinary(f"RETR {remote_file}", _write_chunk)
