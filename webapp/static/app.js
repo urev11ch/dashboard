@@ -1143,6 +1143,7 @@
     filteredRows: [],
     displayItems: [],
     displayOffsets: [0],
+    displayRowIndices: [],
     displayTotalHeight: 0,
     displayVersion: 0,
     dateBounds: null,
@@ -1933,6 +1934,11 @@
     renderedWindow.start = -1;
     renderedWindow.end = -1;
     renderedWindow.virtualized = false;
+    // Высоты строки/заголовка меряем из DOM заново после инвалидации окна
+    // (resize, смена fluid-режима, опустошение списка) — но НЕ на каждом кадре
+    // скролла. Высоты зависят от вёрстки/медиа-запросов, а не от содержимого,
+    // поэтому между инвалидациями их можно не перемерять (см. FP1).
+    washListMetricsMeasured = false;
   }
 
   function renderWashItemsHtml(startIndex, endIndex) {
@@ -1995,6 +2001,10 @@
   }
 
   let washListMetricsResyncing = false;
+  // Померены ли высоты из DOM для текущей вёрстки. Сбрасывается в
+  // invalidateRenderedWashWindow; пока true — при скролле getBoundingClientRect
+  // не дёргается (нет форс-reflow на каждом кадре).
+  let washListMetricsMeasured = false;
 
   function renderVirtualizedWashList({ resetScroll = false } = {}) {
     if (resetScroll) {
@@ -2070,15 +2080,28 @@
     renderedWindow.end = endIndex;
     renderedWindow.virtualized = true;
 
-    // Первая отрисовка (или смена вёрстки) — уточняем высоты по факту и, если
-    // они разошлись с текущими, пересчитываем смещения и рисуем окно заново.
-    if (!washListMetricsResyncing && syncWashListMetricsFromDom()) {
-      washListMetricsResyncing = true;
-      try {
-        buildWashDisplayItems();
-        renderVirtualizedWashList();
-      } finally {
-        washListMetricsResyncing = false;
+    // Первая отрисовка после инвалидации (или смена вёрстки) — уточняем высоты
+    // по факту и, если они разошлись, пересчитываем смещения и рисуем окно
+    // заново. При обычном скролле (measured=true) блок пропускается целиком,
+    // т.е. getBoundingClientRect не вызывается на каждом кадре (см. FP1). Флаг
+    // ставим только когда в DOM уже есть реальная строка — иначе меряли бы по
+    // пустому/скелетному списку и «залипли» бы на неверной высоте.
+    if (!washListMetricsResyncing && !washListMetricsMeasured) {
+      const hasMeasurableRow = !!washList.querySelector(
+        ".wash-row:not(.wash-row--skeleton)"
+      );
+      if (hasMeasurableRow) {
+        const changed = syncWashListMetricsFromDom();
+        washListMetricsMeasured = true;
+        if (changed) {
+          washListMetricsResyncing = true;
+          try {
+            buildWashDisplayItems();
+            renderVirtualizedWashList();
+          } finally {
+            washListMetricsResyncing = false;
+          }
+        }
       }
     }
   }
@@ -2141,11 +2164,19 @@
 
     const offsets = new Array(items.length + 1);
     offsets[0] = 0;
+    // Индексы строк-моек (без заголовков дней) — для стрелочной навиг: раньше
+    // moveWashSelection пересканировал весь displayItems на КАЖДОЕ нажатие
+    // стрелки; тут собираем один раз в уже существующем проходе по offsets.
+    const rowIndices = [];
     for (let i = 0; i < items.length; i += 1) {
       offsets[i + 1] = offsets[i] + items[i].height;
+      if (items[i].type === "row") {
+        rowIndices.push(i);
+      }
     }
     state.displayItems = items;
     state.displayOffsets = offsets;
+    state.displayRowIndices = rowIndices;
     state.displayTotalHeight = offsets[items.length];
     // Версия набора элементов: по ней кэш отрисованного окна понимает, что
     // список изменился и перерисовка нужна даже при тех же границах.
@@ -4367,13 +4398,8 @@
     if (!items || !items.length) {
       return false;
     }
-    const rowIndices = [];
-    for (let i = 0; i < items.length; i += 1) {
-      if (items[i].type === "row") {
-        rowIndices.push(i);
-      }
-    }
-    if (!rowIndices.length) {
+    const rowIndices = state.displayRowIndices;
+    if (!rowIndices || !rowIndices.length) {
       return false;
     }
 
