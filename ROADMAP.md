@@ -54,6 +54,11 @@
 - **CRLF в FTP-пароле** (`ftp_registry.py`): единственное поле, шедшее в `login()` без app-level фильтра CR/LF (пути/имена уже чистились) → символы вырезаются в `normalize_ftp_connection_settings`.
 - Адверсариальная проверка лока зеркала / `last_sample_ts` v6 / sweep / overrides подтвердила: **регрессий, дедлоков, key-mismatch и pickle-`AttributeError` нет** (сегменты пересобираются из `merged_samples`, старый `Segment` до `build_cycles` не доходит).
 
+Итерация 4 (оптимизация + код-ревью):
+- **Бэкенд-перф:** `evaluate_concentration` — серии по фазам собирались отдельным сканом сэмплов на каждую фазу → один проход (−33–50% на горячем цикле концентрации, гоняется на каждом FTP-рефреше); `build_wash_rows` — `make_cycle_key` считался 2× на строку → готовый ключ прокидывается в `resolve_cycle_default_status`; `page_context` — `resolve_default_folder_path` (чтение+`json.loads` настроек) вызывался 2× на загрузку `/` → один раз; `build_cycle_chart_payload` — проход по сэмплам на каждую серию (4×) → один проход, `round(ts*1000)` раз на сэмпл; `format_ts` — `import datetime` поднят в шапку.
+- **Фронт-перф:** форс-reflow (`getBoundingClientRect` после `innerHTML`) вызывался на каждом кадре скролла → высоты меряются один раз после инвалидации окна (флаг `washListMetricsMeasured`); `moveWashSelection` пересканировал весь `displayItems` на каждую стрелку → индексы строк считаются один раз в `buildWashDisplayItems` (снимает и «O(n)-пересканы» из мелких).
+- **Чистка:** удалён мёртвый код (`is_supported_archive`, `_fetch_latest_release_tag`, ~24 неиспользуемых stdlib-импорта в `app.py`); исправлен рассинхрон комментария `v5`/`CACHE_VERSION=6`.
+
 ### Открыто (крупное — в P0/P2)
 - **HIGH:** неподписанный установщик + доверие только GitHub-digest (P0-1/P0-2).
 - **MED:** локальный uvicorn без аутентификации (P2-8); остаточный TOCTOU файла установщика (`%LOCALAPPDATA%` без 0700 на Windows — открывать с share-deny-write); глобальный `--ignore-certificate-errors` + приватные IP в WebView (LAN MITM, частично смягчено отсутствием `js_api` у окон панелей).
@@ -63,7 +68,11 @@
 - `make_cycle_key` обрезает ts до целых секунд (теоретическая коллизия); одно нечисловое значение метрики выбрасывает весь сэмпл; ложный «провал концентрации» при overshoot заполнения; tz заморожен через границу DST.
 - `extract_archive_dbs_cached`: финальный `rglob` вне лока → LRU может вытеснить `cache_dir`; LRU может вытеснить sample-side-файлы активного анализа; лок удерживается на I/O по каталогу.
 - Неотрроттленные сохранения настроек; `error_reply` рвёт весь FTP-прогон; дубль при миграции старой раскладки; частичные `.db` при срабатывании анти-бомбы.
-- WebView2-флаг через `setdefault`; игнор кода выхода WebView2-бутстрапера; hover-rAF не отменяется при внешнем teardown графика; потеря фокуса строки при виртуальном скролле; неотменяемые in-flight fetch; O(n)-пересканы; повторная простановка автозапуска.
+- WebView2-флаг через `setdefault`; игнор кода выхода WebView2-бутстрапера; hover-rAF не отменяется при внешнем teardown графика; потеря фокуса строки при виртуальном скролле (виртуализация пересоздаёт DOM через `innerHTML`, FP3 — потолок оптимизации); неотменяемые in-flight fetch; повторная простановка автозапуска.
+
+### Открыто (тех-долг из код-ревью — крупные рефакторы, не срочно)
+- **Фронт:** дробление `openSettings` (~620 стр.) на `initSettings*()`; единый модуль потока обновлений (welcome-экран и «Настройки» дублируют логику `check`/`install`, welcome использует литерал `2400` вместо `UPDATE_POLL_MAX_TICKS`); хелперы `persistSetting`, `closeButtonHtml`, `createFtpModal`, `parseDbDateTime` (устраняют повторы разметки/форматирования).
+- **Бэк:** дробление `download_ftp_files` (~200 стр.) и `analyze_db_files_incremental`; вынести read-side `get_diagnostics`/`_SAFE_VERSION_RE` в `views.py`/`updates.py`; общие хелперы `read_json_object` (5 копий try/except + залогировать битый файл настроек), `parse_bool_flag`, `ACTIVE_JOB_STATUSES`, `raise_if_cancelled` + константа сообщения отмены (×9).
 
 ### Проверено и чисто
 XSS (экранирование + Jinja autoescape), path traversal (архивы/FTP/удаление профиля), HMAC перед pickle, SSRF discovery, sqlite (ro + закрытие в finally), ресурсы/локи/кэши, корректность разбивки на модули (нет циклов, общий `state`, точки monkeypatch).
