@@ -42,9 +42,17 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ; ключ DPAPI, автозапуск HKCU) и так per-user — при переезде не теряются.
 ; PrivilegesRequiredOverridesAllowed пусто: не даём поднимать до admin.
 PrivilegesRequired=lowest
-; Обновление поверх работающего приложения иначе упирается в занятый .exe:
-; просим закрыть его до копирования файлов.
-AppMutex={#AppSingleInstanceMutex}
+; Тихое закрытие приложения без окна «закройте все экземпляры».
+; Раньше стоял AppMutex — при работающем приложении Inno показывал диалог с
+; просьбой закрыть его (виден и при /SILENT). Вместо этого используем Restart
+; Manager: CloseApplications=yes сам находит и ТИХО закрывает наш процесс,
+; удерживающий устанавливаемый .exe (для обновления «поверх», per-user → per-user).
+; RestartApplications=no — приложение мы поднимаем сами через /RELAUNCH (см. [Run]),
+; чтобы RM не перезапускал его параллельно. Мьютекс единственного экземпляра при
+; обновлении освобождает само приложение до перезапуска (install_update).
+; ПРОВЕРИТЬ НА WINDOWS: поведение RM/тихого закрытия на Linux не тестируется.
+CloseApplications=yes
+RestartApplications=no
 
 [Languages]
 Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
