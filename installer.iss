@@ -117,46 +117,16 @@ const
 procedure SHChangeNotify(wEventId: Integer; uFlags: Cardinal; dwItem1: Cardinal; dwItem2: Cardinal);
   external 'SHChangeNotify@shell32.dll stdcall';
 
-// Деинсталлятор прежней per-machine (admin, Program Files) установки — её ключ
-// лежит в HKLM. Пусто, если такой установки нет (чистая машина или уже per-user).
-function PerMachineUninstaller(): String;
-var
-  Cmd: String;
-begin
-  Result := '';
-  if RegQueryStringValue(HKLM, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{B7E6F1A2-3C4D-4E5F-9A1B-2C3D4E5F6A7B}_is1', 'QuietUninstallString', Cmd) then
-    Result := Cmd;
-end;
-
-// Одноразовая миграция Program Files → per-user: снимаем прежнюю admin-копию,
-// чтобы не осталось дубля с ярлыками в общем «Пуске». ВАЖНО: делаем это ТОЛЬКО в
-// интерактивном режиме (ручной запуск Setup.exe) — там один запрос UAC ожидаем.
-// При /SILENT (внутриприложенческое авто-обновление) НЕ трогаем: иначе UAC
-// всплыл бы «из ниоткуда». Best-effort: любая осечка не влияет на уже
-// установленную новую копию (вызывается на ssPostInstall, после установки).
-// ПРОВЕРИТЬ НА WINDOWS перед раскаткой на заводские ПК (на Linux не тестируется).
-procedure MigrateFromPerMachine();
-var
-  UninstCmd: String;
-  ResultCode: Integer;
-begin
-  if WizardSilent() then
-    Exit;
-  UninstCmd := PerMachineUninstaller();
-  if UninstCmd = '' then
-    Exit;
-  // QuietUninstallString уже содержит /VERYSILENT. Старый деинсталлятор помечен
-  // requireAdministrator → покажет один UAC; отказ пользователя просто оставит
-  // прежнюю копию (не критично).
-  Exec(ExpandConstant('{cmd}'), '/C ' + UninstCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-end;
-
+// ВОЗМОЖНОСТЬ ОТКАТА (переходный релиз Program Files → per-user):
+// прежнюю admin-копию в Program Files НЕ трогаем — ни при тихой, ни при ручной
+// установке. Она остаётся рабочей точкой отката: если новая per-user версия
+// повела себя не так, оператор запускает старую копию (её ярлык в общем «Пуске»)
+// или переустанавливает предыдущий релиз 1.1.23 (он остаётся на GitHub Releases).
+// Плата — временно два одноимённых ярлыка «Пуска» (общий → Program Files и
+// пользовательский → %LocalAppData%). Когда переход подтверждён, старую копию
+// можно снять вручную («Программы и компоненты»).
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  // Прежнюю per-machine копию снимаем сразу после установки новой per-user (до
-  // [Run] с релончем) — только в интерактивном режиме (см. MigrateFromPerMachine).
-  if CurStep = ssPostInstall then
-    MigrateFromPerMachine();
   // Именно ssDone, а не ssPostInstall: секция [Run] выполняется между ними, а
   // порядок здесь важен — сначала ie4uinit чистит кэш, и только потом имеет
   // смысл просить оболочку перерисовать. На ssPostInstall уведомление ушло бы
