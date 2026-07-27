@@ -107,11 +107,6 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     # него понижается до «Требует проверки». По умолчанию выключено — многие
     # станции не пишут этот шаг, и его отсутствие не должно считаться ошибкой.
     "require_completion_step": False,
-    # Фоновое обновление приложения: тихо проверять/скачивать/ставить новые версии
-    # без кнопок. Установка per-user (см. installer.iss, PrivilegesRequired=lowest)
-    # идёт без UAC; ставим только когда нет активной обработки источника, чтобы не
-    # прервать оператора. Только десктоп-сборка под Windows.
-    "update_auto_enabled": True,
 }
 ARCHIVE_RETENTION_MIN_DAYS = 1
 ARCHIVE_RETENTION_MAX_DAYS = 730

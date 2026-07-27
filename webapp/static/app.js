@@ -2974,10 +2974,6 @@
                 <button type="button" class="ghost" data-check-updates>Проверить</button>
               </div>
               <label class="settings-option">
-                <span class="settings-option-text"><strong>Обновлять автоматически</strong><span class="settings-option-hint">Тихо проверять, скачивать и ставить обновления в фоне, когда нет активной обработки (только приложение Windows)</span></span>
-                <input type="checkbox" data-setting-update-auto ${settings.update_auto_enabled ? "checked" : ""}>
-              </label>
-              <label class="settings-option">
                 <span class="settings-option-text"><strong>Автозапуск с Windows</strong></span>
                 <input type="checkbox" data-setting-autostart ${settings.autostart ? "checked" : ""}>
               </label>
@@ -3230,22 +3226,6 @@
         }
         button.disabled = true;
         runHandler(startUpdateInstall());
-      });
-    }
-
-    const updateAutoToggle = settingsRoot.querySelector("[data-setting-update-auto]");
-    if (updateAutoToggle) {
-      updateAutoToggle.addEventListener("change", async (event) => {
-        const enabled = Boolean(event.currentTarget.checked);
-        try {
-          await saveAppSettings({ update_auto_enabled: enabled });
-          showToast(
-            enabled ? "Автообновление включено" : "Автообновление выключено",
-            "success",
-          );
-        } catch (_error) {
-          showToast("Не удалось изменить настройку автообновления.", "error");
-        }
       });
     }
 

@@ -34,25 +34,10 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-; Per-user установка (без UAC): PrivilegesRequired=lowest → установщик работает от
-; имени пользователя, а константы {autopf}/{autoprograms}/{autodesktop}
-; автоматически превращаются в пользовательские (%LocalAppData%\Programs,
-; пользовательские «Пуск»/рабочий стол). Это даёт ТИХОЕ фоновое обновление без
-; запроса UAC (см. run_wash_desktop.run_auto_update_loop). Данные (datalog/temp,
-; ключ DPAPI, автозапуск HKCU) и так per-user — при переезде не теряются.
-; PrivilegesRequiredOverridesAllowed пусто: не даём поднимать до admin.
-PrivilegesRequired=lowest
-; Тихое закрытие приложения без окна «закройте все экземпляры».
-; Раньше стоял AppMutex — при работающем приложении Inno показывал диалог с
-; просьбой закрыть его (виден и при /SILENT). Вместо этого используем Restart
-; Manager: CloseApplications=yes сам находит и ТИХО закрывает наш процесс,
-; удерживающий устанавливаемый .exe (для обновления «поверх», per-user → per-user).
-; RestartApplications=no — приложение мы поднимаем сами через /RELAUNCH (см. [Run]),
-; чтобы RM не перезапускал его параллельно. Мьютекс единственного экземпляра при
-; обновлении освобождает само приложение до перезапуска (install_update).
-; ПРОВЕРИТЬ НА WINDOWS: поведение RM/тихого закрытия на Linux не тестируется.
-CloseApplications=yes
-RestartApplications=no
+PrivilegesRequired=admin
+; Обновление поверх работающего приложения иначе упирается в занятый .exe:
+; просим закрыть его до копирования файлов.
+AppMutex={#AppSingleInstanceMutex}
 
 [Languages]
 Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
@@ -78,30 +63,46 @@ Name: "{group}\{cm:UninstallProgram,{#AppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
 [Run]
-; При PrivilegesRequired=lowest установщик работает от имени пользователя, поэтому
-; флаг runasoriginaluser больше не нужен (он имел смысл только под админ-токеном).
-; WebView2 при non-elevated ставится per-user; проверка WebView2Installed смотрит
-; и HKCU, так что уже установленный (в т.ч. системный) рантайм пропускается.
 Filename: "{tmp}\MicrosoftEdgeWebview2Setup.exe"; Parameters: "/silent /install"; StatusMsg: "Установка среды Microsoft Edge WebView2..."; Check: not WebView2Installed; Flags: waituntilterminated
 ; Сброс кэша иконок оболочки — половина «очисти» (половина «перерисуй» — это
 ; SHChangeNotify в [Code], см. комментарий там). Без него обновившиеся с 1.0.x
-; продолжают видеть старую иконку в «Пуске» и на рабочем столе. ie4uinit —
-; родная утилита оболочки: перестраивает кэш иконок, НЕ перезапуская Проводник.
-; skipifdoesntexist — подстраховка: отсутствие косметической утилиты не повод
-; ронять установку.
-Filename: "{sys}\ie4uinit.exe"; Parameters: "-show"; Flags: runhidden skipifdoesntexist
-Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
+; продолжают видеть старую иконку в «Пуске» и на рабочем столе.
+;
+; ie4uinit — родная утилита оболочки: перестраивает кэш иконок, НЕ перезапуская
+; Проводник и не удаляя iconcache_*.db руками. Ручной рецепт (taskkill explorer +
+; del iconcache*.db) работает, но закрывает пользователю все окна папок — при
+; тихом автообновлении это выглядело бы как сбой, поэтому здесь он не годится.
+;
+; runasoriginaluser обязателен по той же причине, что и у строк ниже: кэш иконок
+; лежит в профиле пользователя (%LocalAppData%\Microsoft\Windows\Explorer), а
+; установщик работает с админским токеном. Без флага мы перестроили бы кэш
+; администратора, а у оператора осталась бы старая иконка — то есть тихо не
+; сделали бы ничего.
+;
+; skipifdoesntexist — подстраховка: ie4uinit есть во всех поддерживаемых
+; Windows, но отсутствие косметической утилиты не повод ронять установку.
+Filename: "{sys}\ie4uinit.exe"; Parameters: "-show"; Flags: runasoriginaluser runhidden skipifdoesntexist
+; runasoriginaluser обязателен: установщик работает с админским токеном, и без
+; этого флага приложение стартовало бы под администратором — его данные, ключ
+; DPAPI (пароль FTP) и автозапуск HKCU достались бы админу, а не оператору.
+Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent runasoriginaluser
 ; Автообновление из приложения: оно запускает установщик с /SILENT /RELAUNCH=1 и
 ; закрывается. Строка выше при /SILENT пропускается (skipifsilent), поэтому
 ; поднимаем приложение обратно здесь — иначе после обновления окно бы не
-; вернулось и выглядело бы как вылет.
-Filename: "{app}\{#AppExe}"; Flags: nowait; Check: WantsRelaunch
+; вернулось и выглядело бы как вылет. runasoriginaluser по той же причине, что
+; и выше: под админом приложение писало бы данные и DPAPI-ключ не тому юзеру.
+Filename: "{app}\{#AppExe}"; Flags: nowait runasoriginaluser; Check: WantsRelaunch
 
 [UninstallRun]
 ; Автозапуск приложение пишет в HKCU\...\Run текущего пользователя; при удалении
-; просим само приложение снять запись (--remove-autostart). Деинсталлятор при
-; per-user установке и так работает от имени пользователя, поэтому запись HKCU\Run
-; чистится в его контексте штатно.
+; просим само приложение снять запись (--remove-autostart).
+; Флаг runasoriginaluser в [UninstallRun] Inno Setup НЕ поддерживается (доступен
+; только в [Run]) — из-за него компилятор падал с «flag not supported in this
+; section». Поэтому очистка идёт в обычном контексте деинсталлятора: она
+; срабатывает, когда удаление запускает тот же пользователь, что ставил программу
+; (обычный случай). В редком случае удаления под другой учётной записью запись
+; автозапуска останется указывать на удалённый .exe — Windows молча игнорирует
+; такой «мёртвый» автозапуск, вреда нет.
 Filename: "{app}\{#AppExe}"; Parameters: "--remove-autostart"; Flags: waituntilterminated runhidden skipifdoesntexist; RunOnceId: "RemoveAutostart"
 
 [Code]
@@ -125,14 +126,6 @@ const
 procedure SHChangeNotify(wEventId: Integer; uFlags: Cardinal; dwItem1: Cardinal; dwItem2: Cardinal);
   external 'SHChangeNotify@shell32.dll stdcall';
 
-// ВОЗМОЖНОСТЬ ОТКАТА (переходный релиз Program Files → per-user):
-// прежнюю admin-копию в Program Files НЕ трогаем — ни при тихой, ни при ручной
-// установке. Она остаётся рабочей точкой отката: если новая per-user версия
-// повела себя не так, оператор запускает старую копию (её ярлык в общем «Пуске»)
-// или переустанавливает предыдущий релиз 1.1.23 (он остаётся на GitHub Releases).
-// Плата — временно два одноимённых ярлыка «Пуска» (общий → Program Files и
-// пользовательский → %LocalAppData%). Когда переход подтверждён, старую копию
-// можно снять вручную («Программы и компоненты»).
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   // Именно ssDone, а не ssPostInstall: секция [Run] выполняется между ними, а
