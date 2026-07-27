@@ -36,7 +36,7 @@ def test_normalize_non_dict_input():
 
 
 def test_save_load_roundtrip(tmp_path, monkeypatch):
-    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    monkeypatch.setattr(app.config, "TEMP_ROOT", tmp_path)
     styles = {"temperature_return": {"color": "#dc2626", "lineStyle": "dashed"}}
     app.save_chart_style_settings(styles)
 
@@ -50,18 +50,18 @@ def test_save_load_roundtrip(tmp_path, monkeypatch):
 
 
 def test_load_missing_file_returns_empty(tmp_path, monkeypatch):
-    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    monkeypatch.setattr(app.config, "TEMP_ROOT", tmp_path)
     assert app.load_chart_style_settings() == {}
 
 
 def test_load_ignores_corrupt_file(tmp_path, monkeypatch):
-    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    monkeypatch.setattr(app.config, "TEMP_ROOT", tmp_path)
     app.chart_style_settings_path().write_text("{ not json", encoding="utf-8")
     assert app.load_chart_style_settings() == {}
 
 
 def test_get_endpoint_returns_saved_series(tmp_path, monkeypatch):
-    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    monkeypatch.setattr(app.config, "TEMP_ROOT", tmp_path)
     styles = {"flow_supply": {"color": "#059669", "lineStyle": "dotted"}}
     app.save_chart_style_settings(styles)
 

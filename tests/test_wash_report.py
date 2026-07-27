@@ -364,6 +364,45 @@ def test_read_samples_clips_negative_concentration(tmp_path):
     assert samples[0].concentration_return == 0.0
 
 
+def test_read_samples_drops_non_finite_metrics(tmp_path):
+    # NaN/Inf от неисправного канала не должны отравлять min/avg/max и вердикт:
+    # приводим их к None, как это делает график.
+    db_path = tmp_path / "Canal_1_test.db"
+    _make_archive_db(
+        db_path,
+        [
+            (1000.0, 1.0, 60.0, 65.0, 2.0, 10.0, 6, 3, 4),
+            (1001.0, float("nan"), float("inf"), float("-inf"), 2.0, 10.0, 6, 3, 4),
+        ],
+    )
+    samples = core.read_samples(db_path)
+    assert len(samples) == 2
+    assert samples[1].concentration_return is None
+    assert samples[1].temperature_return is None
+    assert samples[1].temperature_supply is None
+
+    metrics = core.new_metrics()
+    for sample in samples:
+        core.add_sample_to_metrics(metrics, sample)
+    assert metrics["temperature_return"].count == 1
+    assert metrics["temperature_return"].maximum == 60.0  # не inf
+
+
+def test_read_samples_skips_non_finite_timestamp(tmp_path):
+    # NaN во времени ломает сортировку/bisect — строка пропускается как битая.
+    db_path = tmp_path / "Canal_1_test.db"
+    _make_archive_db(
+        db_path,
+        [
+            (1000.0, 1.0, 60.0, 65.0, 2.0, 10.0, 6, 3, 4),
+            (float("nan"), 1.1, 61.0, 66.0, 2.1, 10.1, 6, 3, 4),
+            (1002.0, 1.2, 62.0, 67.0, 2.2, 10.2, 6, 3, 4),
+        ],
+    )
+    samples = core.read_samples(db_path)
+    assert [sample.ts for sample in samples] == [1000.0, 1002.0]
+
+
 def test_preflight_db_file_reports_broken_file(tmp_path):
     # Битый/обрезанный файл не должен ронять разбор источника: вызывающий код
     # ловит SystemExit и пропускает файл.

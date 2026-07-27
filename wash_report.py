@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -579,10 +580,19 @@ def source_key(path: Path | str) -> str:
     return str(Path(path).expanduser().resolve())
 
 def optional_metric(value: object) -> float | None:
-    """NULL из архива не превращаем в 0.0 — иначе он попадает в min/avg."""
+    """NULL из архива не превращаем в 0.0 — иначе он попадает в min/avg.
+
+    NaN/Inf от неисправного канала тоже отбрасываем (как None): иначе они
+    отравляют min/avg/max в StatsBundle и вердикт по концентрации (любое
+    сравнение с NaN даёт False → фаза «не достигнута» → ложный брак), а при
+    сериализации ответа с allow_nan=False роняют эндпоинт в 500. График уже
+    фильтрует их через math.isfinite — приводим статистику к тому же поведению."""
     if value is None:
         return None
-    return float(value)
+    numeric = float(value)
+    if not math.isfinite(numeric):
+        return None
+    return numeric
 
 def concentration_metric(value: object) -> float | None:
     """Датчик концентрации на нуле шумит в минус. Клипаем один раз, на разборе
@@ -655,8 +665,13 @@ def read_samples(
                     # Битую строку (нечисловые значения) пропускаем, файл
                     # продолжаем анализировать дальше.
                     try:
+                        ts = float(row[0])
+                        if not math.isfinite(ts):
+                            # NaN/Inf во времени ломает сортировку и bisect —
+                            # строка бесполезна, пропускаем как битую.
+                            raise ValueError("non-finite timestamp")
                         sample = Sample(
-                            ts=float(row[0]),
+                            ts=ts,
                             concentration_return=concentration_metric(row[1]),
                             temperature_return=optional_metric(row[2]),
                             temperature_supply=optional_metric(row[3]),

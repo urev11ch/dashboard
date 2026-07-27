@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hashlib
+import hmac
+import ipaddress
 import logging
 import os
 import socket
@@ -10,6 +13,7 @@ import threading
 import time
 import traceback
 import urllib.error
+import urllib.parse
 import urllib.request
 import webbrowser
 from contextlib import closing, nullcontext
@@ -596,6 +600,13 @@ class DesktopServer:
     def __init__(self, web_app, host: str = HOST) -> None:
         self.web_app = web_app
         self.host = host
+        # start() крутится в webview-потоке и может до 60 c висеть в
+        # wait_until_ready. Если за это время закрыть окно, stop() уронит
+        # стартующий uvicorn — раньше start() принимал это за перехват порта и
+        # поднимал НОВЫЙ сервер уже после запрошенного завершения. Флаг под локом
+        # закрывает эту гонку: запрошенный stop запрещает повторный запуск.
+        self._lifecycle_lock = threading.Lock()
+        self._stop_requested = False
         self._prepare(find_free_port())
 
     def _prepare(self, port: int) -> None:
@@ -637,33 +648,48 @@ class DesktopServer:
 
     def start(self) -> None:
         for attempt in range(1, self.START_ATTEMPTS + 1):
-            self.thread.start()
+            with self._lifecycle_lock:
+                if self._stop_requested:
+                    return
+                self.thread.start()
             try:
                 self.wait_until_ready()
                 return
             except RuntimeError:
-                # Повторяем только если поток умер (вероятно, порт перехвачен);
-                # живой, но не отвечающий сервер новый порт не вылечит.
-                if self.thread.is_alive() or attempt >= self.START_ATTEMPTS:
-                    raise
-                logging.warning(
-                    "Local UI server failed on port %s (attempt %s/%s); retrying on a new port",
-                    self.port,
-                    attempt,
-                    self.START_ATTEMPTS,
-                    exc_info=True,
-                )
-                self._prepare(find_free_port())
+                with self._lifecycle_lock:
+                    # Окно закрыли во время старта: сервер уже гасят, второй
+                    # поднимать нельзя.
+                    if self._stop_requested:
+                        return
+                    # Повторяем только если поток умер (вероятно, порт перехвачен);
+                    # живой, но не отвечающий сервер новый порт не вылечит.
+                    if self.thread.is_alive() or attempt >= self.START_ATTEMPTS:
+                        raise
+                    logging.warning(
+                        "Local UI server failed on port %s (attempt %s/%s); retrying on a new port",
+                        self.port,
+                        attempt,
+                        self.START_ATTEMPTS,
+                        exc_info=True,
+                    )
+                    self._prepare(find_free_port())
 
     def stop(self) -> None:
-        self.server.should_exit = True
+        # Захватываем актуальные server/thread под локом: start() мог только что
+        # пересоздать их в _prepare(). Флаг _stop_requested ставим первым — он
+        # запрещает start() поднимать сервер заново после этого момента.
+        with self._lifecycle_lock:
+            self._stop_requested = True
+            server = self.server
+            thread = self.thread
+        server.should_exit = True
         # Поток мог не стартовать вовсе (окно не показалось до старта сервера):
         # join() по непущенному потоку бросил бы RuntimeError. is_alive()==False
         # означает «не запускался или уже завершился» — join не нужен.
-        if not self.thread.is_alive():
+        if not thread.is_alive():
             return
-        self.thread.join(timeout=5)
-        if self.thread.is_alive():
+        thread.join(timeout=5)
+        if thread.is_alive():
             logging.warning("Local UI server thread did not stop within 5 seconds")
 
     def wait_until_ready(self, timeout: float = 60.0) -> None:
@@ -685,6 +711,49 @@ class DesktopServer:
                 last_error = exc
                 time.sleep(0.1)
         raise RuntimeError(f"Не удалось запустить локальный UI по адресу {self.url}") from last_error
+
+
+def _saved_panel_hosts() -> set[str]:
+    """Хосты сохранённых панелей — на случай кастомного DNS-имени, которое не
+    является IP-литералом из локального диапазона."""
+    try:
+        from webapp.app import list_ftp_sources_public
+
+        return {
+            str(src.get("host") or "").strip().lower()
+            for src in list_ftp_sources_public()
+            if src.get("host")
+        }
+    except Exception:  # noqa: BLE001 — недоступность реестра не должна ронять мост
+        logging.exception("Не удалось прочитать реестр панелей для проверки URL")
+        return set()
+
+
+def is_local_panel_url(url: str) -> bool:
+    """Разрешаем открывать во встроенном WebView (где отключена проверка TLS —
+    --ignore-certificate-errors) только адреса локальной сети или сохранённых
+    панелей. Иначе JS в окне мог бы увести незащищённый движок на произвольный
+    https и словить MITM/инъекцию (см. комментарий у --ignore-certificate-errors)."""
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = parsed.hostname
+    if not host:
+        return False
+    host = host.strip().lower()
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        # Не IP-литерал: пускаем только если это хост сохранённой панели.
+        # DNS-имя не резолвим (резолв можно подделать) — доверяем лишь реестру.
+        return host in _saved_panel_hosts()
+    if ip.is_loopback or ip.is_private or ip.is_link_local:
+        return True
+    # Публичный IP-литерал допустим, только если это сохранённая панель.
+    return host in _saved_panel_hosts()
 
 
 class DesktopBridge:
@@ -954,10 +1023,39 @@ class DesktopBridge:
                     return {"ok": False, "error": "Обновление не скачано."}
                 installer = Path(job.path)
                 version = job.version
+                expected_sha256 = job.sha256
 
             if not installer.is_file():
                 logging.error("Файл обновления пропал: %s", installer)
                 return {"ok": False, "error": "Файл обновления не найден."}
+
+            # Пересчитываем sha256 файла на диске непосредственно перед запуском.
+            # Между проверкой при скачивании и этим моментом файл мог быть подменён
+            # (каталог кэша на Windows пишется правами пользователя, имя файла
+            # предсказуемо) — а запускаем мы его с повышением прав через UAC. Без
+            # повторной сверки это окно TOCTOU = локальное повышение привилегий.
+            if not expected_sha256:
+                logging.error("У готового обновления нет сохранённого sha256.")
+                return {"ok": False, "error": "Обновление не проверено, установка отменена."}
+            try:
+                actual_digest = hashlib.sha256()
+                with open(installer, "rb") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        actual_digest.update(chunk)
+                actual_sha256 = actual_digest.hexdigest()
+            except OSError as error:
+                logging.exception("Не удалось прочитать установщик для проверки")
+                return {"ok": False, "error": f"Не удалось проверить установщик: {error}"}
+            if not hmac.compare_digest(actual_sha256, expected_sha256):
+                logging.error(
+                    "sha256 установщика перед запуском не совпал: ожидали %s, получили %s",
+                    expected_sha256,
+                    actual_sha256,
+                )
+                return {
+                    "ok": False,
+                    "error": "Установщик изменился после загрузки — запуск отменён.",
+                }
 
             logging.info("Запускаю установщик обновления %s: %s", version, installer)
             proc = subprocess.Popen(  # noqa: S603 — путь наш, из проверенного состояния
@@ -1004,7 +1102,8 @@ class DesktopBridge:
         """Открывает URL в системном браузере (запасной путь веб-просмотра панели,
         если встроенный iframe не отрисовался). Только http/https."""
         url = str((payload or {}).get("url") or "").strip()
-        if not (url.startswith("http://") or url.startswith("https://")):
+        if not is_local_panel_url(url):
+            logging.warning("Отклонён внешний URL веб-просмотра панели: %s", url)
             return {"ok": False}
         try:
             webbrowser.open(url)
@@ -1022,7 +1121,8 @@ class DesktopBridge:
         payload = payload or {}
         url = str(payload.get("url") or "").strip()
         title = str(payload.get("title") or "WebView")
-        if not (url.startswith("http://") or url.startswith("https://")):
+        if not is_local_panel_url(url):
+            logging.warning("Отклонён URL для окна WebView панели: %s", url)
             return {"ok": False}
 
         # Уже открыто окно для этого URL — разворачиваем и не создаём дубль.
@@ -1432,10 +1532,13 @@ def handle_maintenance_args(argv: list[str]) -> int | None:
 def main(argv: list[str] | None = None) -> int:
     configure_logging()
 
-    # Веб-просмотр панели встраивает EasyWeb через <iframe>. Панели Weintek часто
-    # отдают веб по https с самоподписанным сертификатом — WebView2 иначе блокирует
-    # такой iframe. Разрешаем игнорировать ошибки сертификата (контент только из
-    # локальной сети; сам UI — localhost http). Задать нужно ДО старта WebView2.
+    # Веб-просмотр панели открывает EasyWeb отдельным окном WebView2. Панели
+    # Weintek часто отдают веб по https с самоподписанным сертификатом — WebView2
+    # иначе его блокирует. Разрешаем игнорировать ошибки сертификата. Флаг
+    # действует на весь движок, поэтому поверхность сужена на входе: в WebView
+    # пускаются только адреса локальной сети / сохранённых панелей
+    # (is_local_panel_url), а сам UI — localhost http. Задать нужно ДО старта
+    # WebView2.
     os.environ.setdefault(
         "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--ignore-certificate-errors"
     )

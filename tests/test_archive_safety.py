@@ -42,6 +42,24 @@ def test_extract_zip_skips_traversal_members(tmp_path):
     assert list(tmp_path.rglob("evil*.db")) == []
 
 
+def test_extract_zip_enforces_size_budget(tmp_path, monkeypatch):
+    # Бомба: один .db больше бюджета распаковки — архив валится ValueError,
+    # недописанный файл не остаётся на диске.
+    monkeypatch.setattr(app.archives, "ARCHIVE_EXTRACT_MAX_BYTES", 1024)
+    archive = tmp_path / "bomb.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as handle:
+        handle.writestr("huge.db", b"\x00" * (4 * 1024))  # 4 КБ > 1 КБ бюджета
+
+    target = tmp_path / "out"
+    target.mkdir()
+    import pytest
+
+    with pytest.raises(ValueError):
+        app.extract_archive_dbs(archive, target)
+    # Недописанный файл убран.
+    assert list(target.rglob("*.db")) == []
+
+
 def test_ftp_relative_target_sanitizes_windows_names():
     # Обычное имя раскладывается относительно корня.
     assert app._ftp_relative_target("/datalog", "/datalog/sub/a.db") == Path("sub", "a.db")

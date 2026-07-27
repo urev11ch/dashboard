@@ -8,7 +8,7 @@ import webapp.app as app
 
 # ---- настройки --------------------------------------------------------------
 def test_defaults_when_missing(tmp_path, monkeypatch):
-    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    monkeypatch.setattr(app.config, "TEMP_ROOT", tmp_path)
     assert app.load_app_settings() == {
         "ftp_auto_refresh_enabled": True,
         "ftp_auto_refresh_minutes": 5,
@@ -25,7 +25,7 @@ def test_defaults_when_missing(tmp_path, monkeypatch):
 
 
 def test_save_load_roundtrip(tmp_path, monkeypatch):
-    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    monkeypatch.setattr(app.config, "TEMP_ROOT", tmp_path)
     saved = app.save_app_settings(
         {"ftp_auto_refresh_enabled": False, "ftp_auto_refresh_minutes": 12}
     )
@@ -45,7 +45,7 @@ def test_save_load_roundtrip(tmp_path, monkeypatch):
 
 
 def test_update_app_settings_deep_merges_nested(tmp_path, monkeypatch):
-    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    monkeypatch.setattr(app.config, "TEMP_ROOT", tmp_path)
     app.save_app_settings(
         {"concentration_norms": {"alkali": 1.5, "acid": 2.5}}
     )
@@ -83,7 +83,7 @@ def test_concentration_verdict_noop_when_ok_or_absent():
 
 
 def test_concentration_settings_normalized(tmp_path, monkeypatch):
-    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    monkeypatch.setattr(app.config, "TEMP_ROOT", tmp_path)
     saved = app.save_app_settings(
         {
             "concentration_eval_enabled": "on",
@@ -110,7 +110,7 @@ def test_concentration_settings_normalized(tmp_path, monkeypatch):
 
 
 def test_minutes_are_clamped(tmp_path, monkeypatch):
-    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    monkeypatch.setattr(app.config, "TEMP_ROOT", tmp_path)
     assert app.save_app_settings({"ftp_auto_refresh_minutes": 0})["ftp_auto_refresh_minutes"] == 1
     assert (
         app.save_app_settings({"ftp_auto_refresh_minutes": 99999})["ftp_auto_refresh_minutes"]
@@ -119,31 +119,31 @@ def test_minutes_are_clamped(tmp_path, monkeypatch):
 
 
 def test_invalid_minutes_fall_back(tmp_path, monkeypatch):
-    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    monkeypatch.setattr(app.config, "TEMP_ROOT", tmp_path)
     assert app.save_app_settings({"ftp_auto_refresh_minutes": "abc"})["ftp_auto_refresh_minutes"] == 5
 
 
 def test_enabled_accepts_stringy_values(tmp_path, monkeypatch):
-    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    monkeypatch.setattr(app.config, "TEMP_ROOT", tmp_path)
     assert app.normalize_app_settings({"ftp_auto_refresh_enabled": "off"})["ftp_auto_refresh_enabled"] is False
     assert app.normalize_app_settings({"ftp_auto_refresh_enabled": "yes"})["ftp_auto_refresh_enabled"] is True
 
 
 def test_load_ignores_corrupt_file(tmp_path, monkeypatch):
-    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    monkeypatch.setattr(app.config, "TEMP_ROOT", tmp_path)
     app.app_settings_path().write_text("{ broken", encoding="utf-8")
     assert app.load_app_settings()["ftp_auto_refresh_minutes"] == 5
 
 
 # ---- путь по умолчанию ------------------------------------------------------
 def test_default_folder_path_defaults_empty(tmp_path, monkeypatch):
-    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    monkeypatch.setattr(app.config, "TEMP_ROOT", tmp_path)
     assert app.load_app_settings()["default_folder_path"] == ""
     assert app.resolve_default_folder_path() == str(app.DATALOG_ROOT)
 
 
 def test_default_folder_path_used_when_set(tmp_path, monkeypatch):
-    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    monkeypatch.setattr(app.config, "TEMP_ROOT", tmp_path)
     app.save_app_settings({"default_folder_path": "  /data/x  "})
     assert app.load_app_settings()["default_folder_path"] == "/data/x"
     assert app.resolve_default_folder_path() == "/data/x"
@@ -152,7 +152,7 @@ def test_default_folder_path_used_when_set(tmp_path, monkeypatch):
 
 
 def test_settings_route_merges_partial(tmp_path, monkeypatch):
-    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    monkeypatch.setattr(app.config, "TEMP_ROOT", tmp_path)
     app.update_app_settings_route({"settings": {"default_folder_path": "/data/x"}})
     app.update_app_settings_route({"settings": {"ftp_auto_refresh_minutes": 9}})
     result = app.load_app_settings()
@@ -166,17 +166,17 @@ def test_concurrent_settings_updates_do_not_lose_changes(tmp_path, monkeypatch):
     import threading
     import time as _time
 
-    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    monkeypatch.setattr(app.config, "TEMP_ROOT", tmp_path)
     app.save_app_settings({})
 
-    real_load = app.load_app_settings
+    real_load = app.settings_store.load_app_settings
 
     def slow_load():
         settings = real_load()
         _time.sleep(0.02)  # расширяем окно гонки между чтением и записью
         return settings
 
-    monkeypatch.setattr(app, "load_app_settings", slow_load)
+    monkeypatch.setattr(app.settings_store, "load_app_settings", slow_load)
 
     updates = [
         {"ftp_auto_refresh_minutes": 7},
@@ -193,7 +193,7 @@ def test_concurrent_settings_updates_do_not_lose_changes(tmp_path, monkeypatch):
     for thread in threads:
         thread.join(timeout=10)
 
-    monkeypatch.setattr(app, "load_app_settings", real_load)
+    monkeypatch.setattr(app.settings_store, "load_app_settings", real_load)
     result = app.load_app_settings()
     # Ни одно из обновлений не потеряно.
     assert result["ftp_auto_refresh_minutes"] == 7
@@ -204,7 +204,7 @@ def test_concurrent_settings_updates_do_not_lose_changes(tmp_path, monkeypatch):
 
 # ---- подписи результата мойки -----------------------------------------------
 def test_result_labels_default_empty_and_resolve_to_default(tmp_path, monkeypatch):
-    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    monkeypatch.setattr(app.config, "TEMP_ROOT", tmp_path)
     labels = app.load_app_settings()["result_labels"]
     assert labels == {c: "" for c in app.RESULT_LABEL_CATEGORIES}
     # пустая настройка -> стандартная подпись
@@ -212,7 +212,7 @@ def test_result_labels_default_empty_and_resolve_to_default(tmp_path, monkeypatc
 
 
 def test_result_labels_custom_override(tmp_path, monkeypatch):
-    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    monkeypatch.setattr(app.config, "TEMP_ROOT", tmp_path)
     app.save_app_settings({"result_labels": {"completed": "OK", "check": "Проверить"}})
     labels = app.load_app_settings()["result_labels"]
     assert app.resolve_result_label("Завершено штатно", labels) == "OK"
@@ -233,7 +233,7 @@ def test_result_kind_mapping():
 
 
 def test_result_labels_length_capped(tmp_path, monkeypatch):
-    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    monkeypatch.setattr(app.config, "TEMP_ROOT", tmp_path)
     long_value = "я" * 500
     saved = app.save_app_settings({"result_labels": {"check": long_value}})
     assert len(saved["result_labels"]["check"]) == app.RESULT_LABEL_MAX_LEN
@@ -241,16 +241,16 @@ def test_result_labels_length_capped(tmp_path, monkeypatch):
 
 # ---- сравнение версий (проверка обновлений) ---------------------------------
 def test_is_newer_version():
-    assert app._is_newer_version("1.0.1", "1.0.0") is True
-    assert app._is_newer_version("v2.0", "1.9.9") is True
-    assert app._is_newer_version("1.0.0", "1.0.0") is False
-    assert app._is_newer_version("0.9", "1.0.0") is False
-    assert app._is_newer_version("", "1.0.0") is False
+    assert app.updates._is_newer_version("1.0.1", "1.0.0") is True
+    assert app.updates._is_newer_version("v2.0", "1.9.9") is True
+    assert app.updates._is_newer_version("1.0.0", "1.0.0") is False
+    assert app.updates._is_newer_version("0.9", "1.0.0") is False
+    assert app.updates._is_newer_version("", "1.0.0") is False
 
 
 # ---- хранение архивов (ретеншн) ---------------------------------------------
 def test_archive_retention_days_clamped(tmp_path, monkeypatch):
-    monkeypatch.setattr(app, "TEMP_ROOT", tmp_path)
+    monkeypatch.setattr(app.config, "TEMP_ROOT", tmp_path)
     assert app.save_app_settings({"archive_retention_days": 0})["archive_retention_days"] == 1
     assert app.save_app_settings({"archive_retention_days": 99999})["archive_retention_days"] == 730
     assert app.save_app_settings({"archive_retention_days": "abc"})["archive_retention_days"] == 365
@@ -309,12 +309,16 @@ def test_chart_style_defaults():
 # ---- триггер автообновления -------------------------------------------------
 @pytest.fixture(autouse=True)
 def _reset_state():
-    saved = app.state
-    app.state = app.AppState()
+    # Сбрасываем ОБЩИЙ объект состояния на месте, а не переприсваиваем app.state:
+    # модули (analysis и др.) держат ссылку на webapp.state.state, и подмена
+    # только на фасаде app их бы не затронула — trigger читал бы старое состояние.
+    saved = dict(app.state.__dict__)
+    app.state.__dict__.update(app.AppState().__dict__)
     try:
         yield
     finally:
-        app.state = saved
+        app.state.__dict__.clear()
+        app.state.__dict__.update(saved)
 
 
 def test_trigger_skips_without_workspace():
@@ -323,7 +327,7 @@ def test_trigger_skips_without_workspace():
 
 def test_trigger_skips_folder_source(tmp_path, monkeypatch):
     calls = []
-    monkeypatch.setattr(app, "start_workspace_job", lambda *a, **k: calls.append((a, k)))
+    monkeypatch.setattr(app.analysis, "start_workspace_job", lambda *a, **k: calls.append((a, k)))
     app.state.analysis = object()
     app.state.selected_root = tmp_path  # обычная папка, не FTP-профиль
     assert app.trigger_ftp_auto_refresh() is False
@@ -331,7 +335,7 @@ def test_trigger_skips_folder_source(tmp_path, monkeypatch):
 
 
 def test_trigger_skips_when_job_running(monkeypatch):
-    monkeypatch.setattr(app, "start_workspace_job", lambda *a, **k: pytest.fail("не должно запускаться"))
+    monkeypatch.setattr(app.analysis, "start_workspace_job", lambda *a, **k: pytest.fail("не должно запускаться"))
     app.state.analysis = object()
     app.state.selected_root = app.DATALOG_ROOT / "panel1"
     app.state.workspace_job = app.WorkspaceJob(id="x", status="running")
@@ -346,7 +350,7 @@ def test_trigger_starts_background_for_ftp_profile(monkeypatch):
         captured["display_target"] = display_target
         captured["background"] = background
 
-    monkeypatch.setattr(app, "start_workspace_job", fake_start)
+    monkeypatch.setattr(app.analysis, "start_workspace_job", fake_start)
     app.state.analysis = object()
     app.state.selected_root = app.DATALOG_ROOT / "panel1"
     app.state.selected_display_root = "FTP · Цех 1"

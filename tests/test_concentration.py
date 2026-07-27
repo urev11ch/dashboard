@@ -141,10 +141,10 @@ def test_concentration_verdicts_cache_reuse(monkeypatch):
         calls["n"] += 1
         return {"kind": "ok"}
 
-    monkeypatch.setattr(app, "evaluate_cycle_concentration", fake_eval)
+    monkeypatch.setattr(app.views, "evaluate_cycle_concentration", fake_eval)
     monkeypatch.setattr(app.core, "make_cycle_key", lambda c: c)
-    app._conc_verdicts_cache["key"] = None
-    app._conc_verdicts_cache["verdicts"] = {}
+    app.views._conc_verdicts_cache["key"] = None
+    app.views._conc_verdicts_cache["verdicts"] = {}
 
     analysis = types.SimpleNamespace(sorted_cycles=["a", "b"])
     base = {

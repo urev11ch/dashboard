@@ -87,8 +87,8 @@ def test_touch_marks_entry_as_recently_used(tmp_path):
 
 
 def test_stale_workspace_cache_replaces_previous_version(tmp_path, monkeypatch):
-    monkeypatch.setattr(app, "ANALYSIS_CACHE_ROOT", tmp_path)
-    monkeypatch.setattr(app, "workspace_cache_keys_by_source", app.OrderedDict())
+    monkeypatch.setattr(app.config, "ANALYSIS_CACHE_ROOT", tmp_path)
+    monkeypatch.setattr(app.cache, "workspace_cache_keys_by_source", app.OrderedDict())
     source = "/data/panel"
 
     old_key = "a" * 40
@@ -112,8 +112,8 @@ def test_stale_workspace_cache_replaces_previous_version(tmp_path, monkeypatch):
 
 
 def test_stale_db_cache_replaces_previous_version(tmp_path, monkeypatch):
-    monkeypatch.setattr(app, "ANALYSIS_CACHE_ROOT", tmp_path)
-    monkeypatch.setattr(app, "db_cache_keys_by_source", app.OrderedDict())
+    monkeypatch.setattr(app.config, "ANALYSIS_CACHE_ROOT", tmp_path)
+    monkeypatch.setattr(app.cache, "db_cache_keys_by_source", app.OrderedDict())
     db_path = tmp_path / "Canal_1.db"
 
     old_entry = app.db_analysis_cache_path("1" * 40)
@@ -130,7 +130,7 @@ def test_stale_db_cache_replaces_previous_version(tmp_path, monkeypatch):
 
 def test_cache_source_registry_is_bounded(monkeypatch):
     registry = app.OrderedDict()
-    monkeypatch.setattr(app, "CACHE_SOURCE_REGISTRY_LIMIT", 3)
+    monkeypatch.setattr(app.config, "CACHE_SOURCE_REGISTRY_LIMIT", 3)
 
     for index in range(10):
         app.remember_cache_key(registry, f"/src/{index}", f"key-{index}")
@@ -210,8 +210,8 @@ def _make_wash_db(path):
 def test_workspace_samples_offloaded_and_lazy_loaded(tmp_path, monkeypatch):
     # Сэмплы выносятся из RAM в side-файлы и подтягиваются лениво, отдавая те же
     # точки, что и резидентный анализ.
-    monkeypatch.setattr(app, "ANALYSIS_CACHE_ROOT", tmp_path)
-    app._sample_stream_cache.clear()
+    monkeypatch.setattr(app.config, "ANALYSIS_CACHE_ROOT", tmp_path)
+    app.cache._sample_stream_cache.clear()
 
     db_path = tmp_path / "Canal_1_20260101.db"
     _make_wash_db(db_path)
@@ -277,8 +277,8 @@ def test_missing_sample_stream_raises_instead_of_empty(tmp_path, monkeypatch):
     # Пропавший side-файл — это «судить не по чему», а не «поток пуст». Раньше
     # загрузчик молча отдавал [], и мойка с концентрацией ниже нормы уходила в
     # вердикт «Завершено штатно» — тихая потеря брака.
-    monkeypatch.setattr(app, "ANALYSIS_CACHE_ROOT", tmp_path)
-    app._sample_stream_cache.clear()
+    monkeypatch.setattr(app.config, "ANALYSIS_CACHE_ROOT", tmp_path)
+    app.cache._sample_stream_cache.clear()
     analysis = _cached_analysis_with_cycles(tmp_path)
     cycle = analysis.sorted_cycles[0]
 
@@ -286,7 +286,7 @@ def test_missing_sample_stream_raises_instead_of_empty(tmp_path, monkeypatch):
     assert removed, "ожидали side-файлы сэмплов на диске"
     for path in removed:
         path.unlink()
-    app._sample_stream_cache.clear()
+    app.cache._sample_stream_cache.clear()
 
     with pytest.raises(core.SampleStreamUnavailable):
         core.analysis_samples_for_cycle(analysis, cycle)
@@ -295,13 +295,13 @@ def test_missing_sample_stream_raises_instead_of_empty(tmp_path, monkeypatch):
 def test_missing_sample_stream_marks_wash_for_check(tmp_path, monkeypatch):
     # Сквозная проверка того же: недоступные сэмплы доходят до вердикта мойки,
     # а не растворяются в «оценивать нечего» (kind=None).
-    monkeypatch.setattr(app, "ANALYSIS_CACHE_ROOT", tmp_path)
-    app._sample_stream_cache.clear()
+    monkeypatch.setattr(app.config, "ANALYSIS_CACHE_ROOT", tmp_path)
+    app.cache._sample_stream_cache.clear()
     analysis = _cached_analysis_with_cycles(tmp_path)
     cycle = analysis.sorted_cycles[0]
     for path in tmp_path.glob("ws-samples-*.pkl"):
         path.unlink()
-    app._sample_stream_cache.clear()
+    app.cache._sample_stream_cache.clear()
 
     settings = {
         "concentration_eval_enabled": True,
@@ -320,15 +320,15 @@ def test_missing_sample_stream_marks_wash_for_check(tmp_path, monkeypatch):
 def test_unavailable_sample_stream_is_not_cached(tmp_path, monkeypatch):
     # Отрицательный результат кэшировать нельзя: файл может вернуться (переанализ),
     # а закэшированная пустота пережила бы его и врала бы до перезапуска.
-    monkeypatch.setattr(app, "ANALYSIS_CACHE_ROOT", tmp_path)
-    app._sample_stream_cache.clear()
+    monkeypatch.setattr(app.config, "ANALYSIS_CACHE_ROOT", tmp_path)
+    app.cache._sample_stream_cache.clear()
     analysis = _cached_analysis_with_cycles(tmp_path)
     cycle = analysis.sorted_cycles[0]
 
     saved = {path: path.read_bytes() for path in tmp_path.glob("ws-samples-*.pkl")}
     for path in saved:
         path.unlink()
-    app._sample_stream_cache.clear()
+    app.cache._sample_stream_cache.clear()
     with pytest.raises(core.SampleStreamUnavailable):
         core.analysis_samples_for_cycle(analysis, cycle)
 

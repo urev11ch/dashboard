@@ -243,7 +243,10 @@
       form.className = "ftp-connect-form";
       for (const [name, value] of [
         ["host", panel.host],
-        ["port", String(panel.port)],
+        // panel.port может отсутствовать (панель опознана по MAC без ответа на
+        // :21) — иначе в форму попадала строка "undefined". Discovery сканирует
+        // порт 21, он же дефолт FTP.
+        ["port", String(panel.port || 21)],
         ["path", "/datalog"],
         ["passive", "on"],
         ["web_scheme", panel.web_scheme || ""],
@@ -2538,7 +2541,32 @@
     return typeof window.pywebview?.api?.save_graph_pdf === "function";
   }
 
-  async function saveGraphPdf(detail, button) {
+  // printRoot — единственный общий узел печатного документа. Любой экспорт
+  // (PDF строки журнала, PDF/печать из модалки) перезаписывает его целиком, а в
+  // finally очищает. Без общей блокировки два параллельных экспорта (клик по PDF
+  // строки A, затем B; или строка + модалка) затирали документ друг друга —
+  // получался PDF не той мойки либо пустой. Блокировка одна на весь printRoot,
+  // а не по кнопке.
+  let printJobInFlight = false;
+
+  async function runExclusivePrintJob(job) {
+    if (printJobInFlight) {
+      showToast("Экспорт уже выполняется, дождитесь завершения.", "info");
+      return { skipped: true };
+    }
+    printJobInFlight = true;
+    try {
+      return await job();
+    } finally {
+      printJobInFlight = false;
+    }
+  }
+
+  function saveGraphPdf(detail, button) {
+    return runExclusivePrintJob(() => saveGraphPdfInner(detail, button));
+  }
+
+  async function saveGraphPdfInner(detail, button) {
     let cleanupDetachedDocument = true;
     const originalLabel = button?.textContent || "Сохранить как PDF";
 
@@ -2550,7 +2578,7 @@
     try {
       if (!hasDesktopPdfApi()) {
         cleanupDetachedDocument = false;
-        await printReportDocument(detail, "pdf");
+        await printReportDocumentInner(detail, "pdf");
         return;
       }
 
@@ -2564,7 +2592,7 @@
 
       if (response?.unsupported) {
         cleanupDetachedDocument = false;
-        await printReportDocument(detail, "pdf");
+        await printReportDocumentInner(detail, "pdf");
         return;
       }
 
@@ -2589,7 +2617,11 @@
     }
   }
 
-  async function printReportDocument(detail, intent = "print") {
+  function printReportDocument(detail, intent = "print") {
+    return runExclusivePrintJob(() => printReportDocumentInner(detail, intent));
+  }
+
+  async function printReportDocumentInner(detail, intent = "print") {
     await prepareDetachedPrintDocument(detail);
 
     const originalTitle = document.title;

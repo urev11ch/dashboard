@@ -22,11 +22,11 @@ class _Analysis:
 @pytest.fixture
 def isolated_analysis(tmp_path, monkeypatch):
     """Анализ без дискового кэша и без обращения к реальным SQLite-файлам."""
-    monkeypatch.setattr(app, "prune_analysis_cache", lambda: None)
-    monkeypatch.setattr(app, "load_cached_db_analysis", lambda path: None)
-    monkeypatch.setattr(app, "save_cached_db_analysis", lambda path, chunk: None)
-    monkeypatch.setattr(app, "load_cached_workspace_analysis", lambda key: None)
-    monkeypatch.setattr(app, "save_cached_workspace_analysis", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.analysis, "prune_analysis_cache", lambda: None)
+    monkeypatch.setattr(app.analysis, "load_cached_db_analysis", lambda path: None)
+    monkeypatch.setattr(app.analysis, "save_cached_db_analysis", lambda path, chunk: None)
+    monkeypatch.setattr(app.analysis, "load_cached_workspace_analysis", lambda key: None)
+    monkeypatch.setattr(app.analysis, "save_cached_workspace_analysis", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         app.core, "analyze_single_db_file", lambda db_path, **kwargs: _Chunk(db_path)
     )

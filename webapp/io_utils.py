@@ -1,0 +1,62 @@
+"""Мелкие утилиты ввода-вывода и форматирования без прикладной логики.
+
+Атомарная запись файлов, форматирование меток времени и коротких списков имён.
+Выделено из webapp/app.py; модуль-«лист» (только stdlib), его импортируют
+и app.py, и сервисные модули.
+"""
+from __future__ import annotations
+
+import json
+import os
+import time
+import uuid
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+
+def format_source_label(value: str) -> str:
+    return Path(value).name
+
+
+def format_file_list(names: list[str], limit: int = 3) -> str:
+    """Короткий перечень имён файлов для сообщения пользователю."""
+    shown = ", ".join(f"`{name}`" for name in names[:limit])
+    remainder = len(names) - limit
+    return f"{shown} и ещё {remainder}" if remainder > 0 else shown
+
+
+# Имя `.tmp` без уникального суффикса ломает атомарную запись, если запущено два
+# экземпляра приложения (общие temp/ и кэш): один перезапишет чужой временный
+# файл. Поэтому у каждой записи свой суффикс.
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    temp_path = path.with_name(f"{path.name}.tmp-{uuid.uuid4().hex}")
+    try:
+        with temp_path.open("wb") as handle:
+            handle.write(data)
+        os.replace(temp_path, path)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    atomic_write_bytes(path, text.encode("utf-8"))
+
+
+def atomic_write_json(path: Path, payload: Any) -> None:
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def local_tz_offset_min() -> int:
+    """Смещение зоны сервера в минутах (с учётом летнего времени). Клиент считает
+    границы суток по нему: `start_day` формируется в зоне сервера, а не браузера."""
+    offset = datetime.now().astimezone().utcoffset()
+    return int(offset.total_seconds() // 60) if offset is not None else 0
+
+
+def format_day_key(timestamp: float) -> str:
+    try:
+        return time.strftime("%Y-%m-%d", time.localtime(timestamp))
+    except (OverflowError, OSError, ValueError):
+        return ""

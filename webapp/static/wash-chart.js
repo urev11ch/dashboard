@@ -127,11 +127,16 @@
 
   async function pushServerSeriesStyles(styles) {
     try {
-      await fetch(SERIES_STYLE_ENDPOINT, {
+      const response = await fetch(SERIES_STYLE_ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ series: styles }),
       });
+      // Проверяем статус: 4xx/5xx раньше молча считались успехом, и стиль
+      // терялся при перезагрузке без единого следа в логе.
+      if (!response.ok) {
+        console.warn("Не удалось сохранить стиль серии на сервере:", response.status);
+      }
     } catch (_error) {
       // Игнорируем сбой запроса — стили применены в текущей сессии, повторная
       // попытка произойдёт при следующем изменении.
@@ -581,6 +586,12 @@
       return false;
     }
     const styleState = buildSeriesStyleState(payload.series);
+    // Троттлинг hover через rAF живёт на уровне mount, а не render(): полный
+    // ре-рендер (смена цвета/стиля) заменяет overlay через innerHTML="", поэтому
+    // отложенный кадр предыдущего рендера нужно отменить — иначе он отработает
+    // по уже отсоединённым узлам (мёртвая работа).
+    let hoverFrame = 0;
+    let pendingPointerEvent = null;
 
     function persistSeriesStyleState() {
       // Сохраняем только явные отклонения от дефолтов payload, иначе дефолты
@@ -604,6 +615,13 @@
     }
 
     function render() {
+      // Отменяем отложенный hover-кадр прошлого рендера до пересборки DOM.
+      if (hoverFrame) {
+        window.cancelAnimationFrame(hoverFrame);
+        hoverFrame = 0;
+      }
+      pendingPointerEvent = null;
+
       const styledPayload = applySeriesStyleState(payload, styleState);
       const panels = describePanels(styledPayload);
       if (!panels.length) {
@@ -1212,16 +1230,15 @@
 
       // Троттлинг hover через requestAnimationFrame: pointermove приходит чаще,
       // чем кадры, а updateHover читает layout (getBoundingClientRect/offsetWidth).
-      let pointerFrame = 0;
-      let pendingPointerEvent = null;
-
+      // hoverFrame/pendingPointerEvent объявлены на уровне mount — их отменяет и
+      // ре-рендер (см. начало render()), а не только pointerleave.
       const onPointerMove = (event) => {
         pendingPointerEvent = event;
-        if (pointerFrame) {
+        if (hoverFrame) {
           return;
         }
-        pointerFrame = window.requestAnimationFrame(() => {
-          pointerFrame = 0;
+        hoverFrame = window.requestAnimationFrame(() => {
+          hoverFrame = 0;
           if (pendingPointerEvent) {
             updateHover(pendingPointerEvent);
             pendingPointerEvent = null;
@@ -1231,9 +1248,9 @@
 
       const onPointerLeave = () => {
         pendingPointerEvent = null;
-        if (pointerFrame) {
-          window.cancelAnimationFrame(pointerFrame);
-          pointerFrame = 0;
+        if (hoverFrame) {
+          window.cancelAnimationFrame(hoverFrame);
+          hoverFrame = 0;
         }
         hoverLine.setAttribute("opacity", 0);
         hoverDots.forEach((dot) => dot.setAttribute("opacity", 0));

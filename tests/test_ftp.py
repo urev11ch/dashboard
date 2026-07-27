@@ -72,8 +72,8 @@ def test_secret_roundtrip_via_keyring(monkeypatch):
         vault[secret_id] = value
         return True
 
-    monkeypatch.setattr(app, "_keyring_store", fake_store)
-    monkeypatch.setattr(app, "_keyring_fetch", lambda secret_id: vault.get(secret_id, ""))
+    monkeypatch.setattr(app.secrets_store, "_keyring_store", fake_store)
+    monkeypatch.setattr(app.secrets_store, "_keyring_fetch", lambda secret_id: vault.get(secret_id, ""))
 
     token = app.protect_secret("s3cret", secret_id="conn123")
     assert token == "keyring:conn123"     # в токене только ссылка, не пароль
@@ -83,7 +83,7 @@ def test_secret_roundtrip_via_keyring(monkeypatch):
 
 def test_secret_falls_back_to_b64_without_keyring(monkeypatch):
     # Нет системного хранилища (headless/CI) — обратимый base64-фолбэк.
-    monkeypatch.setattr(app, "_keyring_store", lambda secret_id, value: False)
+    monkeypatch.setattr(app.secrets_store, "_keyring_store", lambda secret_id, value: False)
     token = app.protect_secret("s3cret", secret_id="conn123")
     assert token.startswith("b64:") and token != "s3cret"
     assert app.unprotect_secret(token) == "s3cret"
@@ -218,7 +218,7 @@ def test_download_ftp_incremental(tmp_path, monkeypatch):
         "b.db": {"data": b"bbbb", "modify": "20240101120000"},
     }
     fake = _FakeFTP(files)
-    monkeypatch.setattr(app, "open_ftp_connection", lambda config: fake)
+    monkeypatch.setattr(app.ftp_client, "open_ftp_connection", lambda config: fake)
 
     # Первый прогон — качаем всё.
     first = app.download_ftp_files(_FTP_CONFIG, tmp_path)
@@ -252,7 +252,7 @@ class _BrokenFTP(_FakeFTP):
 def test_download_interrupted_leaves_no_truncated_db(tmp_path, monkeypatch):
     files = {"a.db": {"data": b"full-data", "modify": "20240101120000"}}
     fake = _BrokenFTP(files)
-    monkeypatch.setattr(app, "open_ftp_connection", lambda config: fake)
+    monkeypatch.setattr(app.ftp_client, "open_ftp_connection", lambda config: fake)
 
     with pytest.raises(SystemExit):
         app.download_ftp_files(_FTP_CONFIG, tmp_path)
@@ -264,7 +264,7 @@ def test_download_interrupted_leaves_no_truncated_db(tmp_path, monkeypatch):
 def test_download_updates_existing_month_folder_without_duplicates(tmp_path, monkeypatch):
     files = {"a.db": {"data": b"aaa", "modify": "20240101120000"}}
     fake = _FakeFTP(files)
-    monkeypatch.setattr(app, "open_ftp_connection", lambda config: fake)
+    monkeypatch.setattr(app.ftp_client, "open_ftp_connection", lambda config: fake)
 
     app.download_ftp_files(_FTP_CONFIG, tmp_path)
     assert (tmp_path / "2024-01" / "a.db").exists()
@@ -284,6 +284,9 @@ def test_delete_ftp_connection_guards_profile_dir(tmp_path, monkeypatch):
     datalog.mkdir()
     monkeypatch.setattr(app, "TEMP_ROOT", tmp_path / "temp")
     monkeypatch.setattr(app, "DATALOG_ROOT", datalog)
+    # Реестр (ftp_registry) читает каталоги через config — патчим и там.
+    monkeypatch.setattr(app.config, "TEMP_ROOT", tmp_path / "temp")
+    monkeypatch.setattr(app.config, "DATALOG_ROOT", datalog)
 
     cfg = app.normalize_ftp_connection_settings({"host": "1.1.1.1", "path": "/d"})
     entry = app.upsert_ftp_connection(cfg)
@@ -340,7 +343,7 @@ def test_download_continues_after_single_file_error(tmp_path, monkeypatch):
         "c.db": {"data": b"ccccc", "modify": "20240101120000"},
     }
     fake = _PartlyFailingFTP(files, {"b.db"}, ftplib.error_perm("550 Permission denied"))
-    monkeypatch.setattr(app, "open_ftp_connection", lambda config: fake)
+    monkeypatch.setattr(app.ftp_client, "open_ftp_connection", lambda config: fake)
 
     result = app.download_ftp_files(_FTP_CONFIG, tmp_path)
 
@@ -358,12 +361,12 @@ def test_download_continues_after_single_file_error(tmp_path, monkeypatch):
 def test_download_retries_failed_file_on_next_sync(tmp_path, monkeypatch):
     files = {"a.db": {"data": b"aaa", "modify": "20240101120000"}}
     failing = _PartlyFailingFTP(files, {"a.db"}, ftplib.error_temp("450 File busy"))
-    monkeypatch.setattr(app, "open_ftp_connection", lambda config: failing)
+    monkeypatch.setattr(app.ftp_client, "open_ftp_connection", lambda config: failing)
     assert app.download_ftp_files(_FTP_CONFIG, tmp_path).failed_files == ["a.db"]
 
     # На следующем проходе файл качается заново (локальной копии нет).
     healthy = _FakeFTP(files)
-    monkeypatch.setattr(app, "open_ftp_connection", lambda config: healthy)
+    monkeypatch.setattr(app.ftp_client, "open_ftp_connection", lambda config: healthy)
     result = app.download_ftp_files(_FTP_CONFIG, tmp_path)
     assert healthy.retr_calls == ["a.db"]
     assert result.failed_files == [] and result.downloaded == 1
@@ -376,7 +379,7 @@ def test_download_aborts_on_connection_loss(tmp_path, monkeypatch):
         "b.db": {"data": b"bbbb", "modify": "20240101120000"},
     }
     fake = _PartlyFailingFTP(files, {"a.db"}, OSError("connection reset"))
-    monkeypatch.setattr(app, "open_ftp_connection", lambda config: fake)
+    monkeypatch.setattr(app.ftp_client, "open_ftp_connection", lambda config: fake)
 
     with pytest.raises(SystemExit):
         app.download_ftp_files(_FTP_CONFIG, tmp_path)
@@ -403,7 +406,7 @@ def test_part_file_name_is_unique(tmp_path, monkeypatch):
             super().retrbinary(cmd, callback)
 
     files = {"a.db": {"data": b"aaa", "modify": "20240101120000"}}
-    monkeypatch.setattr(app, "open_ftp_connection", lambda config: _CapturingFTP(files))
+    monkeypatch.setattr(app.ftp_client, "open_ftp_connection", lambda config: _CapturingFTP(files))
     app.download_ftp_files(_FTP_CONFIG, tmp_path)
 
     assert len(seen) == 1
@@ -419,6 +422,9 @@ def test_materialize_reports_ftp_failure_instead_of_hiding_it(tmp_path, monkeypa
     datalog.mkdir()
     monkeypatch.setattr(app, "TEMP_ROOT", tmp_path / "temp")
     monkeypatch.setattr(app, "DATALOG_ROOT", datalog)
+    # Реестр (ftp_registry) читает каталоги через config — патчим и там.
+    monkeypatch.setattr(app.config, "TEMP_ROOT", tmp_path / "temp")
+    monkeypatch.setattr(app.config, "DATALOG_ROOT", datalog)
 
     cfg = app.normalize_ftp_connection_settings({"host": "1.1.1.1", "path": "/d"})
     entry = app.upsert_ftp_connection(cfg)
@@ -429,7 +435,7 @@ def test_materialize_reports_ftp_failure_instead_of_hiding_it(tmp_path, monkeypa
     def _boom(config):
         raise ValueError("FTP недоступен")
 
-    monkeypatch.setattr(app, "open_ftp_connection", _boom)
+    monkeypatch.setattr(app.ftp_client, "open_ftp_connection", _boom)
     result = app.materialize_ftp_sources(profile)
     assert "FTP недоступен" in result.ftp_error_message
 
@@ -446,7 +452,7 @@ def test_legacy_day_folders_are_reused(tmp_path, monkeypatch):
 
     files = {"a.db": {"data": b"aaa-grown", "modify": "20240215120000"}}
     fake = _FakeFTP(files)
-    monkeypatch.setattr(app, "open_ftp_connection", lambda config: fake)
+    monkeypatch.setattr(app.ftp_client, "open_ftp_connection", lambda config: fake)
 
     app.download_ftp_files(_FTP_CONFIG, tmp_path)
     assert fake.retr_calls == ["a.db"]
@@ -457,7 +463,7 @@ def test_legacy_day_folders_are_reused(tmp_path, monkeypatch):
 def test_download_ftp_redownload_on_newer_mtime(tmp_path, monkeypatch):
     files = {"a.db": {"data": b"same", "modify": "20240101120000"}}
     fake = _FakeFTP(files)
-    monkeypatch.setattr(app, "open_ftp_connection", lambda config: fake)
+    monkeypatch.setattr(app.ftp_client, "open_ftp_connection", lambda config: fake)
 
     app.download_ftp_files(_FTP_CONFIG, tmp_path)
     fake.retr_calls.clear()

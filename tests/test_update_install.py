@@ -26,7 +26,7 @@ def _release(assets):
 
 
 def test_picks_installer_asset():
-    picked = app._pick_installer_asset(_release([_asset()]))
+    picked = app.updates._pick_installer_asset(_release([_asset()]))
     assert picked == {
         "url": f"{app.UPDATE_ASSET_URL_PREFIX}v9.9.9/{app.UPDATE_ASSET_NAME}",
         "size": 1024,
@@ -36,7 +36,7 @@ def test_picks_installer_asset():
 
 def test_ignores_other_assets():
     other = _asset(name="OptiCIP-Dashboard.exe")
-    assert app._pick_installer_asset(_release([other])) is None
+    assert app.updates._pick_installer_asset(_release([other])) is None
 
 
 @pytest.mark.parametrize(
@@ -50,7 +50,7 @@ def test_ignores_other_assets():
 def test_rejects_foreign_download_url(url):
     # URL приходит из ответа GitHub, но доверять ему на слово нельзя: скачанное
     # запускается с админскими правами.
-    assert app._pick_installer_asset(_release([_asset(browser_download_url=url)])) is None
+    assert app.updates._pick_installer_asset(_release([_asset(browser_download_url=url)])) is None
 
 
 @pytest.mark.parametrize(
@@ -59,22 +59,22 @@ def test_rejects_foreign_download_url(url):
 )
 def test_rejects_asset_without_valid_sha256(digest):
     # Без пригодной контрольной суммы проверить нечего — обновление недоступно.
-    assert app._pick_installer_asset(_release([_asset(digest=digest)])) is None
+    assert app.updates._pick_installer_asset(_release([_asset(digest=digest)])) is None
 
 
 @pytest.mark.parametrize("size", [0, -1, None, "1024"])
 def test_rejects_bad_size(size):
-    assert app._pick_installer_asset(_release([_asset(size=size)])) is None
+    assert app.updates._pick_installer_asset(_release([_asset(size=size)])) is None
 
 
 def test_empty_release_payload():
-    assert app._pick_installer_asset({}) is None
-    assert app._release_tag({}) == ""
+    assert app.updates._pick_installer_asset({}) is None
+    assert app.updates._release_tag({}) == ""
 
 
 def test_release_tag_strips_v_prefix():
-    assert app._release_tag({"tag_name": "v1.2.3"}) == "1.2.3"
-    assert app._release_tag({"tag_name": "1.2.3"}) == "1.2.3"
+    assert app.updates._release_tag({"tag_name": "v1.2.3"}) == "1.2.3"
+    assert app.updates._release_tag({"tag_name": "1.2.3"}) == "1.2.3"
 
 
 def test_download_verifies_checksum(tmp_path, monkeypatch):
@@ -98,15 +98,15 @@ def test_download_verifies_checksum(tmp_path, monkeypatch):
         def __exit__(self, *_):
             return False
 
-    monkeypatch.setattr(app.urllib.request, "urlopen", lambda *a, **k: FakeResponse())
-    monkeypatch.setattr(app, "_update_dir", lambda: tmp_path)
+    monkeypatch.setattr(app.updates.urllib.request, "urlopen", lambda *a, **k: FakeResponse())
+    monkeypatch.setattr(app.updates, "_update_dir", lambda: tmp_path)
 
     job = app.UpdateJob(id="job-1", version="9.9.9", total=len(payload))
     with app.state_lock:
         app.state.update_job = job
 
     # Ожидаем ЧУЖУЮ сумму — как если бы файл подменили в пути.
-    app.download_update_worker("job-1", {"url": "https://example.com/setup.exe", "size": len(payload), "sha256": "b" * 64}, "9.9.9")
+    app.updates.download_update_worker("job-1", {"url": "https://example.com/setup.exe", "size": len(payload), "sha256": "b" * 64}, "9.9.9")
     assert app.state.update_job.status == "error"
     assert "сумма" in (app.state.update_job.error or "").lower()
     assert app.state.update_job.path == ""
@@ -117,9 +117,11 @@ def test_download_verifies_checksum(tmp_path, monkeypatch):
     job2 = app.UpdateJob(id="job-2", version="9.9.9", total=len(payload))
     with app.state_lock:
         app.state.update_job = job2
-    app.download_update_worker("job-2", {"url": "https://example.com/setup.exe", "size": len(payload), "sha256": real_sha}, "9.9.9")
+    app.updates.download_update_worker("job-2", {"url": "https://example.com/setup.exe", "size": len(payload), "sha256": real_sha}, "9.9.9")
     assert app.state.update_job.status == "ready"
     assert app.state.update_job.path
+    # sha256 сохраняется в задаче — мост пересверяет его перед запуском (TOCTOU).
+    assert app.state.update_job.sha256 == real_sha
 
 
 def test_download_removes_stale_installers(tmp_path, monkeypatch):
@@ -143,15 +145,15 @@ def test_download_removes_stale_installers(tmp_path, monkeypatch):
         def __exit__(self, *_):
             return False
 
-    monkeypatch.setattr(app.urllib.request, "urlopen", lambda *a, **k: FakeResponse())
-    monkeypatch.setattr(app, "_update_dir", lambda: tmp_path)
+    monkeypatch.setattr(app.updates.urllib.request, "urlopen", lambda *a, **k: FakeResponse())
+    monkeypatch.setattr(app.updates, "_update_dir", lambda: tmp_path)
 
     stale = tmp_path / "OptiCIP-Dashboard-Setup-1.0.0.exe"
     stale.write_bytes(b"old")
 
     with app.state_lock:
         app.state.update_job = app.UpdateJob(id="job-3", version="9.9.9", total=len(payload))
-    app.download_update_worker(
+    app.updates.download_update_worker(
         "job-3", {"url": "https://example.com/setup.exe", "size": len(payload), "sha256": real_sha}, "9.9.9"
     )
 
@@ -171,13 +173,13 @@ def test_worker_prologue_failure_does_not_hang_job(tmp_path, monkeypatch):
     def boom() -> None:
         raise OSError("нет места на устройстве")
 
-    monkeypatch.setattr(app, "_update_dir", boom)
+    monkeypatch.setattr(app.updates, "_update_dir", boom)
 
     job = app.UpdateJob(id="job-prologue", version="9.9.9")
     with app.state_lock:
         app.state.update_job = job
 
-    app.download_update_worker(
+    app.updates.download_update_worker(
         "job-prologue",
         {"url": "https://example.com/setup.exe", "size": 1, "sha256": "a" * 64},
         "9.9.9",
@@ -205,16 +207,16 @@ def test_only_plain_version_reaches_filename(tag, valid):
 def test_prerelease_does_not_outrank_release():
     # re.findall(r"\d+") выгребал все числа: «1.1.8-rc.2» → (1,1,8,2) считалось
     # новее релиза «1.1.8», то есть rc обгонял релиз.
-    assert app._is_newer_version("1.1.8-rc.2", "1.1.8") is False
+    assert app.updates._is_newer_version("1.1.8-rc.2", "1.1.8") is False
     # Префикс v в теге при этом обязан по-прежнему пониматься.
-    assert app._is_newer_version("v2.0", "1.9.9") is True
+    assert app.updates._is_newer_version("v2.0", "1.9.9") is True
 
 
 def test_running_job_is_not_restarted(monkeypatch):
     # Второй POST при живом скачивании обязан присоединиться к той же задаче и
     # даже не ходить в сеть — иначе стартовал бы второй воркер на тот же файл.
     calls = []
-    monkeypatch.setattr(app, "_fetch_latest_release", lambda: calls.append(1) or {})
+    monkeypatch.setattr(app.updates, "_fetch_latest_release", lambda: calls.append(1) or {})
     job = app.UpdateJob(id="busy", version="9.9.9")
     with app.state_lock:
         app.state.update_job = job
@@ -235,7 +237,7 @@ def test_failed_start_releases_reserved_slot(monkeypatch):
     задача навсегда осталась бы в running и guard запретил бы повтор до
     перезапуска приложения — то самое залипание, от которого и чинили.
     """
-    monkeypatch.setattr(app, "_fetch_latest_release", dict)  # {} → релиз не получен
+    monkeypatch.setattr(app.updates, "_fetch_latest_release", dict)  # {} → релиз не получен
     with app.state_lock:
         app.state.update_job = None
 
@@ -253,8 +255,8 @@ def test_ready_installer_is_reused_without_redownload(tmp_path, monkeypatch):
     with app.state_lock:
         app.state.update_job = ready
 
-    monkeypatch.setattr(app, "_fetch_latest_release", lambda: _release([_asset()]))
-    monkeypatch.setattr(app, "_is_newer_version", lambda latest, current: True)
+    monkeypatch.setattr(app.updates, "_fetch_latest_release", lambda: _release([_asset()]))
+    monkeypatch.setattr(app.updates, "_is_newer_version", lambda latest, current: True)
 
     def fail_if_started(*args, **kwargs):
         raise AssertionError("перекачка не нужна: установщик уже проверен")
