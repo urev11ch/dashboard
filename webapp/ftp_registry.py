@@ -319,7 +319,10 @@ def normalize_ftp_connection_settings(raw_payload: Any) -> dict[str, Any]:
     # Имя пользователя не редактируется: у Weintek выгрузка истории всегда идёт
     # под `uploadhis` (см. FTP_HISTORY_USERNAME). Значение из формы/URL игнорируем.
     username = FTP_HISTORY_USERNAME
-    password = str(payload.get("password") or "")
+    # CR/LF в пароле убираем на уровне приложения: ftplib.putline их и так
+    # отбивает, но так исключаем инъекцию команд в поток управления FTP заранее
+    # (belt-and-suspenders к фильтрации имён путей/файлов).
+    password = str(payload.get("password") or "").replace("\r", "").replace("\n", "")
     path = normalize_ftp_path(payload.get("path") or payload.get("directory"))
 
     passive = payload.get("passive", True)

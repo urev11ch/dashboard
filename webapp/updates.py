@@ -24,6 +24,7 @@ from webapp.config import (
     GITHUB_REPO,
     UPDATE_ASSET_NAME,
     UPDATE_ASSET_URL_PREFIX,
+    RELEASE_JSON_MAX_BYTES,
     UPDATE_DOWNLOAD_TIMEOUT_SECONDS,
     UPDATE_MAX_BYTES,
 )
@@ -75,7 +76,13 @@ def _fetch_latest_release() -> dict[str, Any]:
     )
     try:
         with urllib.request.urlopen(request, timeout=5) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+            # Читаем с потолком: тело от GitHub — TLS-проверенное, но не даём
+            # враждебному/битому ответу раздуть память (бинарь капается отдельно
+            # через UPDATE_MAX_BYTES; здесь у JSON своего лимита не было).
+            raw = response.read(RELEASE_JSON_MAX_BYTES + 1)
+            if len(raw) > RELEASE_JSON_MAX_BYTES:
+                return {}
+            payload = json.loads(raw.decode("utf-8"))
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}

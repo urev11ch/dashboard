@@ -49,6 +49,11 @@
 - **Гонка переименования объектов**: `build_wash_rows` резолвит имя из снимка overrides, а не из мутируемого `cycle.object_name` (нет полу-применённого переименования в списке).
 - **Гонка зеркала (MED-HIGH):** per-profile лок записи (`state.mirror_write_lock`) — один писатель на `datalog/<id>` даже при таймауте `join` (зависший поток больше не пишет параллельно с новым джобом → нет битых `.db`). `remove_ftp_profile_dir` тоже ждёт этот лок (а не «текущий» поток) перед rmtree.
 
+Итерация 3 (hardening по итогам прохода по безопасности + адверсариальной проверки свежих правок):
+- **JSON релиза GitHub без лимита** (`updates.py`): тело `releases/latest` читалось без потолка (бинарь-то капался `UPDATE_MAX_BYTES`) → добавлен `RELEASE_JSON_MAX_BYTES = 4 МБ`.
+- **CRLF в FTP-пароле** (`ftp_registry.py`): единственное поле, шедшее в `login()` без app-level фильтра CR/LF (пути/имена уже чистились) → символы вырезаются в `normalize_ftp_connection_settings`.
+- Адверсариальная проверка лока зеркала / `last_sample_ts` v6 / sweep / overrides подтвердила: **регрессий, дедлоков, key-mismatch и pickle-`AttributeError` нет** (сегменты пересобираются из `merged_samples`, старый `Segment` до `build_cycles` не доходит).
+
 ### Открыто (крупное — в P0/P2)
 - **HIGH:** неподписанный установщик + доверие только GitHub-digest (P0-1/P0-2).
 - **MED:** локальный uvicorn без аутентификации (P2-8); остаточный TOCTOU файла установщика (`%LOCALAPPDATA%` без 0700 на Windows — открывать с share-deny-write); глобальный `--ignore-certificate-errors` + приватные IP в WebView (LAN MITM, частично смягчено отсутствием `js_api` у окон панелей).

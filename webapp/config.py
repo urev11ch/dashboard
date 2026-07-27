@@ -126,6 +126,10 @@ UPDATE_ASSET_URL_PREFIX = f"https://github.com/{GITHUB_REPO}/releases/download/"
 # Больше установщика (~22 МБ) быть не должно; ограничение отсекает бесконечный
 # ответ, который иначе забил бы диск.
 UPDATE_MAX_BYTES = 256 * 1024 * 1024
+# Потолок на тело JSON релиза (releases/latest). Реальный ответ — единицы КБ;
+# 4 МБ с запасом на много вложений, но отсекает раздувание памяти враждебным/
+# битым ответом (бинарь капается отдельно через UPDATE_MAX_BYTES).
+RELEASE_JSON_MAX_BYTES = 4 * 1024 * 1024
 UPDATE_DOWNLOAD_TIMEOUT_SECONDS = 300.0
 # Как часто фоновый цикл просыпается, чтобы сверить, не пора ли обновлять FTP.
 FTP_AUTO_REFRESH_POLL_SECONDS = 20.0
