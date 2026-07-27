@@ -356,16 +356,23 @@ def normalize_app_settings(raw: Any) -> dict[str, Any]:
 
 
 def resolve_cycle_default_status(
-    analysis: core.AnalysisResult, cycle: core.Cycle, *, require_completion_step: bool
+    analysis: core.AnalysisResult,
+    cycle: core.Cycle,
+    *,
+    require_completion_step: bool,
+    cycle_key: str | None = None,
 ) -> str:
     """Базовый статус мойки с учётом тумблера «требовать шаг окончания».
     Применяется на чтении (как и оценка концентрации), поэтому смена настройки
     действует сразу, без переанализа. При включённом требовании берём готовый
     индекс ядра (посчитан с require_completion_step=True); при выключенном —
-    пересчитываем из операций без требования финального шага."""
+    пересчитываем из операций без требования финального шага.
+
+    `cycle_key` можно передать готовым, если вызывающий уже его посчитал
+    (build_wash_rows) — иначе make_cycle_key считался бы дважды на строку."""
     if require_completion_step:
         return analysis.cycle_results_by_key.get(
-            core.make_cycle_key(cycle),
+            cycle_key if cycle_key is not None else core.make_cycle_key(cycle),
             core.cycle_result_label_from_operations(
                 cycle.operations, require_completion_step=True
             ),

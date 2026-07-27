@@ -144,7 +144,10 @@ def build_wash_rows(
         cycle_key = core.make_cycle_key(cycle)
         date_time = core.format_ts(cycle.start_ts)
         default_status = resolve_cycle_default_status(
-            analysis, cycle, require_completion_step=settings["require_completion_step"]
+            analysis,
+            cycle,
+            require_completion_step=settings["require_completion_step"],
+            cycle_key=cycle_key,
         )
         concentration = conc_verdicts.get(cycle_key)
         status, result_kind = apply_concentration_verdict(
@@ -414,6 +417,10 @@ def page_context(request: Request, snapshot: AppStateSnapshot) -> dict[str, Any]
     pending_root = snapshot.pending_root
     workspace_payload = build_workspace_payload(snapshot)
     workspace_input_value = resolve_workspace_input_value(selected_root, pending_root)
+    # Путь по умолчанию читает файл настроек (load_app_settings) — считаем один раз
+    # и переиспользуем для подсказки и дефолта поля «Папка» (раньше два вызова →
+    # двойное чтение+json.loads на каждую загрузку /).
+    default_folder_path = resolve_default_folder_path()
 
     # Подключённая панель («Подключиться» → зелёная строка + WebView/Графики/
     # Отключить). Состояние сессионное (state.connected_ftp_id), не привязано к
@@ -450,8 +457,8 @@ def page_context(request: Request, snapshot: AppStateSnapshot) -> dict[str, Any]
         "project_root": str(PROJECT_ROOT),
         "workspace_input_value": workspace_input_value,
         # Подсказка в поле «Папка» = путь по умолчанию (настройка или datalog).
-        "workspace_path_placeholder": resolve_default_folder_path(),
-        "workspace_default_path": resolve_default_folder_path(),
+        "workspace_path_placeholder": default_folder_path,
+        "workspace_default_path": default_folder_path,
         "ftp_form_defaults": dict(DEFAULT_FTP_FORM_VALUES),
         "ftp_sources": ftp_sources,
         "force_menu": force_menu,

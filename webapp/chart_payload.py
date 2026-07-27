@@ -130,11 +130,16 @@ def build_cycle_chart_payload(
             "segments": [],
         }
 
-    series_payload = []
-    for config in SERIES_CONFIG:
-        points = []
-        for sample in cycle_samples:
-            value = getattr(sample, config["id"])
+    # Один проход по сэмплам вместо прохода на каждую серию: сэмплы перебираются
+    # раз, а метка времени (round(ts*1000)) считается раз на сэмпл, а не по разу
+    # на каждую из серий. Точки раскладываются по сериям параллельно.
+    series_specs = list(SERIES_CONFIG)
+    field_ids = [config["id"] for config in series_specs]
+    series_points: list[list[list[float]]] = [[] for _ in series_specs]
+    for sample in cycle_samples:
+        ts_ms = round(sample.ts * 1000)
+        for spec_index, field_id in enumerate(field_ids):
+            value = getattr(sample, field_id)
             if value is None or not math.isfinite(value):
                 # NULL в архиве (обрыв связи) — точку на кривую не кладём.
                 # Нефинитное (NaN/Inf от неисправного канала) — тоже: JSONResponse
@@ -143,9 +148,10 @@ def build_cycle_chart_payload(
                 continue
             # Значения не правим: концентрация клипается один раз, на разборе
             # строки архива (иначе статистика и кривая расходятся).
-            points.append([round(sample.ts * 1000), value])
-        points = _downsample_points(points)
+            series_points[spec_index].append([ts_ms, value])
 
+    series_payload = []
+    for spec_index, config in enumerate(series_specs):
         series_payload.append(
             {
                 "id": config["id"],
@@ -154,7 +160,7 @@ def build_cycle_chart_payload(
                 "color": config["color"],
                 "panel": config["panel"],
                 "line_style": config.get("line_style", "solid"),
-                "points": points,
+                "points": _downsample_points(series_points[spec_index]),
             }
         )
 

@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 from bisect import bisect_left, bisect_right
+from datetime import datetime
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -574,8 +575,6 @@ def name_for_process(process_id: int) -> str:
     return PROCESS_NAMES.get(process_id, f"Операция {process_id}")
 
 def format_ts(timestamp: float) -> str:
-    from datetime import datetime
-
     try:
         return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
     except (OverflowError, OSError, ValueError):
@@ -1044,19 +1043,6 @@ def cycle_result_label_from_operations(
         return "Требует проверки, были паузы"
     return "Требует проверки"
 
-def _phase_concentration_series(samples: Sequence[Sample], process_id: int) -> list[float]:
-    """Ряд концентраций возврата за фазу мойки, в порядке времени.
-
-    Кондуктометр стоит на возврате, поэтому в начале фазы (пока раствор идёт по
-    контуру) концентрация ещё нарастает, а в конце — спадает при вытеснении.
-    Ряд нужен целиком, чтобы отделить эти переходные края от рабочей «полки»."""
-    return [
-        sample.concentration_return
-        for sample in samples
-        if sample.process == process_id and sample.concentration_return is not None
-    ]
-
-
 def _evaluate_phase_concentration(
     series: Sequence[float], norm: float, threshold: float
 ) -> dict[str, Any]:
@@ -1109,6 +1095,21 @@ def evaluate_concentration(
     tolerance = max(0.0, min(100.0, tolerance))
     factor = 1.0 - tolerance / 100.0
 
+    # Один проход по сэмплам: раскладываем концентрации возврата по process фаз
+    # сразу. Раньше ряд по каждой фазе собирался отдельным сканом сэмплов
+    # (щёлочь+кислота = 2 прохода на цикл) — на горячем пути (пересчёт на каждый
+    # FTP-рефреш) это лишнее. Кондуктометр стоит на возврате, поэтому ряд нужен
+    # целиком: в начале фазы концентрация нарастает, в конце спадает при
+    # вытеснении, и рабочую «полку» надо отделить от этих краёв (см.
+    # _evaluate_phase_concentration).
+    series_by_process: dict[int, list[float]] = {
+        process_id: [] for _, process_id, _ in CONCENTRATION_PHASES
+    }
+    for sample in samples:
+        bucket = series_by_process.get(sample.process)
+        if bucket is not None and sample.concentration_return is not None:
+            bucket.append(sample.concentration_return)
+
     phases: list[dict[str, Any]] = []
     any_low = False
     any_evaluated = False
@@ -1118,7 +1119,7 @@ def evaluate_concentration(
             norm = float(norm) if norm is not None else None
         except (TypeError, ValueError):
             norm = None
-        series = _phase_concentration_series(samples, process_id)
+        series = series_by_process.get(process_id, [])
 
         if norm is None or norm <= 0 or not series:
             phases.append(
