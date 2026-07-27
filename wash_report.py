@@ -171,7 +171,12 @@ class Segment:
     process_id: int
     process_name: str
     start_ts: float
+    # end_ts «дотянут» до метки следующего сэмпла/±period ради длительности и
+    # отрисовки без щелей; для теста разрыва между операциями это НЕЛЬЗЯ — иначе
+    # эффективный порог склейки = max_gap + period (см. build_cycles). Поэтому
+    # храним и сырое время последнего своего сэмпла.
     end_ts: float
+    last_sample_ts: float
     sample_count: int
     concentration_return: StatsBundle
     temperature_return: StatsBundle
@@ -783,6 +788,7 @@ def build_segments(
                 process_name=name_for_process(first.process),
                 start_ts=first.ts,
                 end_ts=end_ts,
+                last_sample_ts=last.ts,
                 sample_count=len(run),
                 concentration_return=metrics["concentration_return"],
                 temperature_return=metrics["temperature_return"],
@@ -882,7 +888,11 @@ def build_cycles(segments: Sequence[Segment], max_gap_seconds: float) -> list[Cy
             and segment.object_id == previous.object_id
             and segment.program_id == previous.program_id
         )
-        close_enough = segment.start_ts - previous.end_ts <= max_gap_seconds
+        # Разрыв меряем по СЫРОМУ времени последнего сэмпла прошлой операции, а не
+        # по дотянутому end_ts — иначе порог склейки раздувается на период
+        # логирования (реальный офлайн-разрыв 18 c при max_gap=15 ложно склеивал
+        # две мойки в одну).
+        close_enough = segment.start_ts - previous.last_sample_ts <= max_gap_seconds
 
         if same_route and close_enough:
             current_segments.append(segment)

@@ -68,6 +68,29 @@ def test_deduplicate_cycles_keeps_unique_and_fullest():
     assert wash_a.sample_count == 150  # most complete copy kept
 
 
+def test_offline_gap_just_over_max_gap_splits_cycle():
+    # Разрыв 18 c при max_gap=15, period=5: раньше эффективный порог склейки был
+    # max_gap+period=20 → две мойки ложно склеивались в одну. Теперь разрыв
+    # меряется по сырому времени последнего сэмпла → корректный split.
+    samples = [
+        _sample(1000, 4, process=6), _sample(1005, 4, process=6), _sample(1010, 4, process=6),
+        _sample(1028, 4, process=8), _sample(1033, 4, process=8), _sample(1038, 4, process=8),
+    ]
+    segments = core.build_segments(samples, "/a/c.db", 1, max_gap_seconds=15.0)
+    assert core.build_segments and len(segments) == 2
+    assert len(core.build_cycles(segments, 15.0)) == 2  # не склеены
+
+
+def test_gap_within_max_gap_still_glues_cycle():
+    # Разрыв 12 c (< max_gap=15) — соседние операции остаются одной мойкой.
+    samples = [
+        _sample(1000, 4, process=6), _sample(1005, 4, process=6), _sample(1010, 4, process=6),
+        _sample(1022, 4, process=8), _sample(1027, 4, process=8), _sample(1032, 4, process=8),
+    ]
+    segments = core.build_segments(samples, "/a/c.db", 1, max_gap_seconds=15.0)
+    assert len(core.build_cycles(segments, 15.0)) == 1
+
+
 def test_deduplicate_cycles_distinct_starts_not_merged():
     cycles = [
         _cycle("a", 1, 3, 3, 1000.0, 1500.0, 10),

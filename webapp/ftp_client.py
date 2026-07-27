@@ -162,12 +162,17 @@ def _ftp_list_entries(
         if name in {"", ".", ".."} or "\r" in raw_name or "\n" in raw_name:
             continue  # CR/LF = инъекция FTP-команд (см. выше)
         full = raw_name if raw_name.startswith("/") else posixpath.join(remote_dir, name)
-        is_dir = False
-        meta = {}
+        meta: dict[str, Any] = {}
+        # Имя, похожее на данные (.db/архив), — это ФАЙЛ, даже если SIZE запрещён
+        # правами: иначе его приняли бы за каталог, рекурсия в него упала бы, и
+        # файл молча пропал бы из зеркала.
+        looks_like_data = _is_archive_or_db_name(name)
         try:
             size_value = connection.size(full)
+            is_dir = False
         except (ftplib.error_perm, ftplib.error_temp):
-            is_dir = True
+            # SIZE запрещён/неприменим: каталог — только если имя не выглядит данными.
+            is_dir = not looks_like_data
             size_value = None
         except OSError:
             is_dir = False
@@ -254,6 +259,31 @@ def iter_tree_files(root_path: Path) -> Any:
             except OSError:
                 continue
             yield candidate, (relative_root / filename).as_posix(), stat_result
+
+
+# Осиротевшие `.part-<uuid>` старше этого возраста считаем брошенными (краш/питание
+# во время докачки). Порог с большим запасом над временем скачивания одной базы:
+# активная докачка обновляет mtime, поэтому свежую времянку не заденем.
+STALE_PART_FILE_AGE_SECONDS = 30 * 60
+
+
+def sweep_stale_part_files(root_path: Path) -> int:
+    """Удаляет брошенные `.part-<uuid>` в зеркале. Их не видит ретеншн (не .db/не
+    архив), и они вечно держат месячные папки «непустыми» (rmdir не срабатывает).
+    Возвращает число удалённых."""
+    cutoff = time.time() - STALE_PART_FILE_AGE_SECONDS
+    removed = 0
+    for candidate, _rel, stat_result in iter_tree_files(root_path):
+        if ".part-" not in candidate.name or stat_result.st_mtime >= cutoff:
+            continue
+        try:
+            candidate.unlink()
+            removed += 1
+        except OSError:
+            continue
+    if removed:
+        logging.info("Убрано брошенных .part-времянок: %d (%s)", removed, root_path)
+    return removed
 
 
 def build_local_archive_index(root_path: Path) -> dict[Any, dict[str, Any]]:
@@ -420,6 +450,8 @@ def download_ftp_files(
         total=0,
         item=format_ftp_display_label(config),
     )
+    # Убираем брошенные при прошлом крахе .part-времянки до обхода зеркала.
+    sweep_stale_part_files(target_dir)
     connection = open_ftp_connection(config)
     # Все файлы панели, которые сейчас представлены локально (скачанные + пропущенные).
     result = FtpSyncResult()

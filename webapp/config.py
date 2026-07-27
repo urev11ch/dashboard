@@ -63,7 +63,7 @@ CACHE_SOURCE_REGISTRY_LIMIT = 512
 DB_ANALYSIS_CACHE_VERSION = 3
 # v5: сэмплы вынесены из workspace-пикла в отдельные side-файлы по потокам
 # (ws-samples-*), а в RAM подтягиваются лениво — см. make_sample_loader.
-WORKSPACE_ANALYSIS_CACHE_VERSION = 5
+WORKSPACE_ANALYSIS_CACHE_VERSION = 6  # +Segment.last_sample_ts (порог разрыва)
 CHART_PAYLOAD_DISK_CACHE_VERSION = 2
 CHART_PAYLOAD_CACHE_LIMIT = 64
 DB_ANALYSIS_MAX_WORKERS = 4

@@ -222,6 +222,48 @@ def test_ftp_list_entries_skips_crlf_names():
     assert not any(("\r" in n or "\n" in n) for n in names)
 
 
+def test_sweep_stale_part_files(tmp_path):
+    import os
+    import time
+
+    old_part = tmp_path / "2024-01" / "a.db.part-deadbeef"
+    old_part.parent.mkdir(parents=True)
+    old_part.write_bytes(b"x")
+    fresh_part = tmp_path / "b.db.part-cafef00d"
+    fresh_part.write_bytes(b"y")
+    keep_db = tmp_path / "keep.db"
+    keep_db.write_bytes(b"z")
+
+    stale = time.time() - app.ftp_client.STALE_PART_FILE_AGE_SECONDS - 60
+    os.utime(old_part, (stale, stale))
+
+    removed = app.ftp_client.sweep_stale_part_files(tmp_path)
+    assert removed == 1
+    assert not old_part.exists()      # брошенная времянка убрана
+    assert fresh_part.exists()        # свежую (активную докачку) не трогаем
+    assert keep_db.exists()           # реальные .db не трогаем
+
+
+class _NlstOnlyFTP:
+    """FTP без MLSD (форсирует NLST) и с запретом SIZE на файлах."""
+
+    def mlsd(self, path):
+        raise ftplib.error_perm("500 MLSD not understood")
+
+    def nlst(self, path):
+        return ["Canal_1.db", "subdir"]
+
+    def size(self, path):
+        raise ftplib.error_perm("550 SIZE not allowed")
+
+
+def test_nlst_treats_data_name_as_file_when_size_denied():
+    # .db с запретом SIZE не должен приниматься за каталог и теряться из зеркала.
+    by_name = {name: is_dir for name, is_dir, _meta in app._ftp_list_entries(_NlstOnlyFTP(), "/datalog")}
+    assert by_name["Canal_1.db"] is False   # данные = файл
+    assert by_name["subdir"] is True         # не-данные + запрет SIZE = каталог
+
+
 def test_open_ftp_workspace_returns_303_on_oserror(monkeypatch):
     # Сбой create_ftp_workspace (нет прав/места) → аккуратный state.error + 303,
     # а не неперехваченный 500.

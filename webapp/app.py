@@ -611,7 +611,9 @@ def workspace_data() -> JSONResponse:
         snapshot = capture_state_snapshot()
 
     payload = build_workspace_payload(snapshot)
-    payload["wash_rows"] = build_wash_rows_cached(snapshot.analysis, snapshot.analysis_revision)
+    payload["wash_rows"] = build_wash_rows_cached(
+        snapshot.analysis, snapshot.analysis_revision, snapshot.object_name_overrides
+    )
     payload["object_rows"] = build_object_rows(snapshot.object_name_overrides, snapshot.analysis)
     return JSONResponse(payload)
 

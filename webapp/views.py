@@ -127,10 +127,17 @@ def build_wash_rows(
     analysis: core.AnalysisResult,
     settings: dict[str, Any],
     conc_verdicts: dict[str, dict[str, Any] | None],
+    overrides: dict[tuple[int, int], str],
 ) -> list[dict[str, Any]]:
     """Форматирует строки списка моек. Вердикты концентрации приходят готовыми
     (conc_verdicts), поэтому сэмплы с диска здесь НЕ читаются — сборка дешёвая и
-    не зависит от концентрационных настроек (только от меток/тумблера/анализа)."""
+    не зависит от концентрационных настроек (только от меток/тумблера/анализа).
+
+    Имя объекта берём из СНИМКА overrides (resolve_object_name), а не из
+    cycle.object_name: последнее приложение переименовывает элементы анализа на
+    месте под state_lock, а эта сборка идёт вне лока — из мутируемого поля можно
+    было бы увидеть полу-применённое переименование в одном ответе. Значение
+    идентично (cycle.object_name = resolve_object_name(...)), но снимок консистентен."""
     result_labels = settings["result_labels"]
     rows: list[dict[str, Any]] = []
     for cycle in analysis.sorted_cycles:
@@ -144,6 +151,7 @@ def build_wash_rows(
             default_status, result_labels, concentration
         )
         source_name = format_source_label(cycle.source_db)
+        object_name = resolve_object_name(cycle.channel, cycle.object_id, overrides)
         rows.append(
             {
                 "key": cycle_key,
@@ -152,7 +160,7 @@ def build_wash_rows(
                 "end_ts": cycle.end_ts,
                 "start_day": format_day_key(cycle.start_ts),
                 "object_id": cycle.object_id,
-                "object": cycle.object_name,
+                "object": object_name,
                 "program": cycle.program_name,
                 "status": status,
                 "result_kind": result_kind,
@@ -163,7 +171,7 @@ def build_wash_rows(
                 "source_name": source_name,
                 "search_blob": " ".join(
                     [
-                        cycle.object_name,
+                        object_name,
                         cycle.program_name,
                         date_time,
                         source_name,
@@ -238,8 +246,11 @@ def app_settings_mtime_ns() -> int | None:
 def build_wash_rows_cached(
     analysis: core.AnalysisResult | None,
     analysis_revision: int,
+    overrides: dict[tuple[int, int], str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Строки списка моек с кэшем; вызывать вне state_lock."""
+    """Строки списка моек с кэшем; вызывать вне state_lock. overrides — из того же
+    снимка, что и analysis_revision (они меняются вместе под локом), поэтому кэш
+    по revision остаётся корректным."""
     if analysis is None:
         return []
 
@@ -255,7 +266,7 @@ def build_wash_rows_cached(
     # Вердикты концентрации — из своего кэша (сэмплы читаются только при смене
     # анализа/концентрационных настроек, а не на каждое сохранение настроек).
     conc_verdicts = concentration_verdicts_cached(analysis, analysis_revision, settings)
-    rows = build_wash_rows(analysis, settings, conc_verdicts)
+    rows = build_wash_rows(analysis, settings, conc_verdicts, overrides or {})
     with _wash_rows_cache_lock:
         _wash_rows_cache["revision"] = analysis_revision
         _wash_rows_cache["settings_mtime"] = settings_mtime
