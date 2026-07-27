@@ -123,7 +123,9 @@ def _ftp_list_entries(
     entries: list[tuple[str, bool, dict[str, Any]]] = []
     try:
         for name, facts in connection.mlsd(remote_dir):
-            if name in {"", ".", ".."}:
+            # CR/LF в имени = инъекция FTP-команд (имя попадает в RETR/MDTM).
+            # Панель таких имён не отдаёт; битый/вредоносный ответ отсекаем.
+            if name in {"", ".", ".."} or "\r" in name or "\n" in name:
                 continue
             entry_type = str(facts.get("type") or "").lower()
             if entry_type in {"dir", "cdir", "pdir"}:
@@ -157,8 +159,8 @@ def _ftp_list_entries(
 
     for raw_name in names:
         name = PurePosixPath(raw_name).name
-        if name in {"", ".", ".."}:
-            continue
+        if name in {"", ".", ".."} or "\r" in raw_name or "\n" in raw_name:
+            continue  # CR/LF = инъекция FTP-команд (см. выше)
         full = raw_name if raw_name.startswith("/") else posixpath.join(remote_dir, name)
         is_dir = False
         meta = {}

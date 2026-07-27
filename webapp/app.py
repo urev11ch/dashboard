@@ -458,10 +458,10 @@ def open_ftp_workspace(
             connection = find_ftp_connection(saved_id)
             if connection is None:
                 raise ValueError("Сохранённое подключение не найдено.")
-            config = connection_to_config(connection)
+            ftp_config = connection_to_config(connection)
             connection_label = connection.get("label") or ""
         else:
-            config = normalize_ftp_connection_settings(
+            ftp_config = normalize_ftp_connection_settings(
                 {
                     "host": host,
                     "port": port,
@@ -471,12 +471,15 @@ def open_ftp_workspace(
                 }
             )
             connection_label = label
-    except ValueError as exc:
+        # create_ftp_workspace делает mkdir + запись реестра — тоже под этим
+        # обработчиком: сбой прав/диска иначе даёт неперехваченный 500 вместо
+        # аккуратного state.error + 303, как у остальных ошибок источника.
+        workspace_dir, display_label = create_ftp_workspace(ftp_config, label=connection_label)
+    except (ValueError, OSError) as exc:
         with state_lock:
             state.error = str(exc)
         return RedirectResponse(url="/", status_code=303)
 
-    workspace_dir, display_label = create_ftp_workspace(config, label=connection_label)
     with state_lock:
         start_workspace_job(workspace_dir, display_target=display_label)
     return RedirectResponse(url="/", status_code=303)
@@ -496,7 +499,7 @@ def add_ftp_source(
     панель»). Панель появляется в списке сохранённых; подключение — отдельным
     шагом (веб-просмотр / графики)."""
     try:
-        config = normalize_ftp_connection_settings(
+        ftp_config = normalize_ftp_connection_settings(
             {
                 "host": host,
                 "port": port,
@@ -510,7 +513,7 @@ def add_ftp_source(
         with state_lock:
             state.error = str(exc)
         return RedirectResponse(url="/", status_code=303)
-    upsert_ftp_connection(config, label=label)
+    upsert_ftp_connection(ftp_config, label=label)
     return RedirectResponse(url="/", status_code=303)
 
 

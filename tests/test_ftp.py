@@ -209,6 +209,34 @@ class _FakeFTP:
         pass
 
 
+def test_ftp_list_entries_skips_crlf_names():
+    # Имя с CR/LF = попытка инъекции FTP-команд (имя идёт в RETR/MDTM).
+    ftp = _FakeFTP(
+        {
+            "good.db": {"data": b"x", "modify": None},
+            "evil\r\nDELE important.db": {"data": b"y", "modify": None},
+        }
+    )
+    names = [name for name, _is_dir, _meta in app._ftp_list_entries(ftp, "/datalog")]
+    assert "good.db" in names
+    assert not any(("\r" in n or "\n" in n) for n in names)
+
+
+def test_open_ftp_workspace_returns_303_on_oserror(monkeypatch):
+    # Сбой create_ftp_workspace (нет прав/места) → аккуратный state.error + 303,
+    # а не неперехваченный 500.
+    def _boom(*args, **kwargs):
+        raise OSError("нет места на диске")
+
+    monkeypatch.setattr(app, "create_ftp_workspace", _boom)
+    monkeypatch.setattr(app, "start_workspace_job", lambda *a, **k: None)
+    resp = app.open_ftp_workspace(
+        source_id="", host="1.1.1.1", port="21", password="", path="/d", passive=""
+    )
+    assert resp.status_code == 303
+    assert "нет места" in (app.state.error or "")
+
+
 _FTP_CONFIG = {"host": "h", "port": 21, "username": "u", "password": "p", "path": "/datalog"}
 
 

@@ -236,7 +236,10 @@ async def _probe_ftp_host(host: str, semaphore: asyncio.Semaphore) -> dict[str, 
             return None
         try:
             _banner_code, banner = await _ftp_read_reply(reader)
-        except (OSError, asyncio.TimeoutError):
+        # LimitOverrunError/ValueError — слишком длинная строка приветствия рвёт
+        # readline; иначе исключение всплывает через gather в discover_ftp_panels
+        # и роут отдаёт 500 из-за одного «шумного» хоста в подсети.
+        except (OSError, asyncio.TimeoutError, asyncio.LimitOverrunError, ValueError):
             banner = ""
         finally:
             try:

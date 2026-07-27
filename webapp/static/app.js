@@ -3637,6 +3637,11 @@
       return;
     }
     state.updateBusy = true;
+    // Токен открытой панели настроек: если её закрыли во время опроса,
+    // прекращаем поллер (иначе он тикал бы 2 раза/с невидимо до ~20 мин).
+    // Серверное скачивание при этом НЕ прерываем — оно продолжится и подхватится
+    // повторным «Установить» (бэкенд вернёт готовую задачу).
+    const settingsOpenAtStart = settingsOpenId;
     try {
       const response = await fetchWithTimeout("/api/update/download", { method: "POST" });
       if (!response.ok) {
@@ -3646,22 +3651,24 @@
       state.updateJob = (await response.json()).job;
       renderUpdatePanel();
 
-      // Опрос до завершения. Таймер снимаем на beforeunload (см. ниже) —
-      // иначе он тикал бы уже после закрытия окна.
+      // Опрос до завершения. Таймер снимаем на beforeunload и при закрытии
+      // настроек (см. ниже).
       let ticks = 0;
       while (true) {
         await new Promise((resolve) => {
           state.updateTimer = window.setTimeout(resolve, 500);
         });
+        if (settingsOpenId !== settingsOpenAtStart) {
+          return;  // настройки закрыли — поллер и авто-установку прекращаем
+        }
         const job = await pollUpdateJob();
         if (!job || job.status !== "running") {
           break;
         }
         ticks += 1;
-        // Потолок ≈20 минут (500 мс × 2400). Установщик — десятки мегабайт, на
-        // тонком канале скачивание идёт долго, но залипший в "running" бэкенд
-        // иначе держал бы 2 запроса в секунду вечно, даже при закрытых
-        // настройках: цикл живёт в промисе, а не в панели.
+        // Потолок ≈20 минут (500 мс × 2400): установщик — десятки мегабайт, на
+        // тонком канале качается долго, но залипший в "running" бэкенд не должен
+        // опрашиваться вечно.
         if (ticks >= UPDATE_POLL_MAX_TICKS) {
           throw new Error("Скачивание не завершилось за отведённое время.");
         }
