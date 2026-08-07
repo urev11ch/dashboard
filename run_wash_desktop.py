@@ -1455,6 +1455,7 @@ def request_background_shutdown() -> threading.Thread | None:
     в atexit-хуке, и без отмены процесс висит после закрытия окна."""
     try:
         from webapp import app as webapp_module
+        from webapp.state import ACTIVE_JOB_STATUSES
     except Exception:
         logging.exception("Не удалось получить webapp.app для остановки фоновых задач")
         return None
@@ -1464,7 +1465,7 @@ def request_background_shutdown() -> threading.Thread | None:
         state = getattr(webapp_module, "state", None)
         with lock if lock is not None else nullcontext():
             job = getattr(state, "workspace_job", None) if state is not None else None
-            if job is not None and getattr(job, "status", "") in {"running", "cancelling"}:
+            if job is not None and getattr(job, "status", "") in ACTIVE_JOB_STATUSES:
                 job.cancel_requested = True
                 job.status = "cancelling"
                 logging.info("Отменяю фоновую загрузку рабочей области при выходе")

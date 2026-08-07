@@ -226,7 +226,9 @@ PORTABLE_ENV_VAR = "OPTICIP_PORTABLE"
 APP_DATA_SUBDIRS = ("datalog", "temp")
 
 # Строки, трактуемые как «ложь/выключено» (env-флаги, поле passive из формы).
-FALSE_FLAG_VALUES = frozenset({"", "0", "false", "no", "off"})
+# Пустую строку сюда НЕ включаем: parse_bool_flag отдаёт default ещё до проверки
+# по этому множеству, так что "" здесь было бы недостижимо.
+FALSE_FLAG_VALUES = frozenset({"0", "false", "no", "off"})
 
 
 def parse_bool_flag(value: object, *, default: bool = False) -> bool:

@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from webapp.io_utils import read_json_object
+
 OBJECT_NAMES_FILENAME = "wash_object_names.json"
 REQUIRED_DATA_COLUMNS = {
     "time@timestamp",
@@ -523,20 +525,10 @@ def parse_object_name_override_key(raw_key: str) -> tuple[int, int] | None:
     return channel, object_id
 
 def load_object_name_overrides_from_file(path: Path) -> dict[tuple[int, int], str]:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return {}
-    except (OSError, json.JSONDecodeError) as error:
-        # Битый файл переименований молча терял бы ВСЕ пользовательские имена
-        # объектов — оставляем след в логе, чтобы причину было видно.
-        logger.warning(
-            "Не удалось прочитать файл имён объектов %s: %s", path, error
-        )
-        return {}
-
-    if not isinstance(payload, dict):
-        return {}
+    # Общий помощник инкапсулирует чтение JSON-объекта: нет файла → {} (обычный
+    # первый запуск), битый/не-объект → {} с предупреждением в лог, чтобы потеря
+    # ВСЕХ пользовательских имён объектов не прошла молча.
+    payload = read_json_object(path, warn_on_corrupt=True)
 
     raw_objects = payload.get("objects")
     if not isinstance(raw_objects, dict):
