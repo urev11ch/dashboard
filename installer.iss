@@ -34,7 +34,14 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-PrivilegesRequired=admin
+; Установка в профиль пользователя ({localappdata}\Programs через {autopf}) —
+; именно ради этого стоит lowest: установка в Program Files требует прав
+; администратора, а значит Windows спрашивала бы разрешение при КАЖДОМ
+; обновлении. Приложению админские права не нужны: все свои данные
+; (настройки, datalog, кэши, ключ DPAPI) оно и раньше держало в
+; %LOCALAPPDATA%\OptiCIP Dashboard, а автозапуск писало в HKCU — смена каталога
+; установки ничего из этого не теряет.
+PrivilegesRequired=lowest
 ; Обновление поверх работающего приложения иначе упирается в занятый .exe:
 ; просим закрыть его до копирования файлов.
 AppMutex={#AppSingleInstanceMutex}
@@ -73,18 +80,20 @@ Filename: "{tmp}\MicrosoftEdgeWebview2Setup.exe"; Parameters: "/silent /install"
 ; del iconcache*.db) работает, но закрывает пользователю все окна папок — при
 ; тихом автообновлении это выглядело бы как сбой, поэтому здесь он не годится.
 ;
-; runasoriginaluser обязателен по той же причине, что и у строк ниже: кэш иконок
-; лежит в профиле пользователя (%LocalAppData%\Microsoft\Windows\Explorer), а
-; установщик работает с админским токеном. Без флага мы перестроили бы кэш
-; администратора, а у оператора осталась бы старая иконка — то есть тихо не
-; сделали бы ничего.
+; runasoriginaluser с PrivilegesRequired=lowest — уже не обязателен (установщик
+; и так работает от имени пользователя, флаг просто ничего не делает), но
+; оставлен намеренно: он снова станет значимым, если установку когда-нибудь
+; вернут под администратора. Кэш иконок лежит в профиле пользователя
+; (%LocalAppData%\Microsoft\Windows\Explorer), и из-под админского токена мы
+; перестроили бы чужой кэш.
 ;
 ; skipifdoesntexist — подстраховка: ie4uinit есть во всех поддерживаемых
 ; Windows, но отсутствие косметической утилиты не повод ронять установку.
 Filename: "{sys}\ie4uinit.exe"; Parameters: "-show"; Flags: runasoriginaluser runhidden skipifdoesntexist
-; runasoriginaluser обязателен: установщик работает с админским токеном, и без
-; этого флага приложение стартовало бы под администратором — его данные, ключ
-; DPAPI (пароль FTP) и автозапуск HKCU достались бы админу, а не оператору.
+; runasoriginaluser: под lowest — no-op (установщик уже работает от пользователя),
+; оставлен на случай возврата к админской установке. Тогда без него приложение
+; стартовало бы под администратором, и его данные, ключ DPAPI (пароль FTP) и
+; автозапуск HKCU достались бы админу, а не оператору.
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent runasoriginaluser
 ; Автообновление из приложения: оно запускает установщик с /SILENT /RELAUNCH=1 и
 ; закрывается. Строка выше при /SILENT пропускается (skipifsilent), поэтому
@@ -122,6 +131,9 @@ Filename: "{app}\{#AppExe}"; Parameters: "--remove-autostart"; Flags: waituntilt
 const
   SHCNE_ASSOCCHANGED = $08000000;
   SHCNF_IDLIST = $00000000;
+  // Ключ деинсталляции прежней (админской) установки в Program Files — см.
+  // PrepareToInstall ниже.
+  LegacyUninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{B7E6F1A2-3C4D-4E5F-9A1B-2C3D4E5F6A7B}_is1';
 
 procedure SHChangeNotify(wEventId: Integer; uFlags: Cardinal; dwItem1: Cardinal; dwItem2: Cardinal);
   external 'SHChangeNotify@shell32.dll stdcall';
@@ -134,6 +146,69 @@ begin
   // до очистки и пропало впустую.
   if CurStep = ssDone then
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, 0, 0);
+end;
+
+// ---- миграция с прежней админской установки --------------------------------
+// До 1.1.31 приложение ставилось в Program Files с правами администратора.
+// Ключ деинсталляции той установки лежит в HKLM, а наш per-user установщик
+// смотрит в HKCU — сам он старую копию не увидит и просто поставит вторую.
+// Это плохо: в «Программах и компонентах» остаётся мёртвая запись, в «Пуске» —
+// два ярлыка, а автозапуск (его пишет приложение в HKCU) мог бы указывать на
+// старый .exe, и после перезагрузки поднималась бы прежняя версия.
+//
+// Поэтому перед установкой пробуем тихо снести старую копию. Это единственное
+// место, где Windows ещё раз спросит разрешение — удаление из Program Files
+// без прав администратора невозможно. Одно разрешение один раз, дальше
+// обновления идут молча.
+//
+// Отказ пользователя не считается ошибкой: ставим новую копию рядом, старая
+// останется лежать. Ронять установку из-за этого нельзя — обновление должно
+// доехать в любом случае.
+function ReadLegacyUninstaller(): String;
+var
+  Value: String;
+begin
+  Result := '';
+  if RegQueryStringValue(HKLM64, LegacyUninstallKey, 'UninstallString', Value) and (Value <> '') then
+    Result := Value
+  else if RegQueryStringValue(HKLM32, LegacyUninstallKey, 'UninstallString', Value) and (Value <> '') then
+    Result := Value;
+  // UninstallString приходит в кавычках — ShellExec ждёт чистый путь.
+  Result := RemoveQuotes(Result);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Uninstaller: String;
+  ResultCode: Integer;
+  Waited: Integer;
+begin
+  Result := '';
+  Uninstaller := ReadLegacyUninstaller();
+  if (Uninstaller = '') or (not FileExists(Uninstaller)) then
+    exit;
+
+  Log('Найдена прежняя установка в Program Files: ' + Uninstaller);
+  // 'runas' — деинсталлятору нужны права администратора; это и есть тот самый
+  // единственный запрос UAC при переходе на per-user установку.
+  if not ShellExec('runas', Uninstaller, '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART', '',
+                   SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    Log('Удалить прежнюю установку не удалось (отказ UAC или ошибка запуска) — ставим рядом.');
+    exit;
+  end;
+
+  // Деинсталлятор Inno копирует себя во временный каталог и завершает исходный
+  // процесс сразу, поэтому ewWaitUntilTerminated возвращается раньше, чем файлы
+  // действительно удалены. Ждём исчезновения ключа, но недолго: наша установка
+  // не должна зависнуть из-за чужого деинсталлятора.
+  Waited := 0;
+  while (Waited < 30000) and (ReadLegacyUninstaller() <> '') do
+  begin
+    Sleep(500);
+    Waited := Waited + 500;
+  end;
+  Log('Прежняя установка удалена: ' + IntToStr(ResultCode));
 end;
 
 // /RELAUNCH=1 передаёт только автообновление из приложения (см. [Run]).
