@@ -4010,3 +4010,120 @@ body.modal-export-mode .chart-print-document {
 .welcome-ftp-add[open] > summary {
   margin-bottom: 8px;
 }
+
+/* ---- Просмотр содержимого базы ------------------------------------------ */
+.db-browser-panel {
+  width: min(1280px, calc(100vw - 32px));
+}
+
+.db-browser-body {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  min-height: 0;
+}
+
+.db-browser-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.db-browser-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: rgba(40, 58, 96, 0.7);
+}
+
+.db-browser-file select {
+  max-width: 460px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(40, 58, 96, 0.18);
+  background: rgba(255, 255, 255, 0.9);
+  font: inherit;
+  color: rgba(24, 36, 60, 0.92);
+}
+
+.db-browser-tables {
+  flex-wrap: wrap;
+}
+
+.db-browser-count {
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+}
+
+.db-browser-hint {
+  font-size: 13px;
+  color: rgba(40, 58, 96, 0.55);
+}
+
+/* Таблица шире окна — скроллим её, а не страницу. */
+.db-browser-grid {
+  overflow: auto;
+  min-height: 0;
+  border: 1px solid rgba(40, 58, 96, 0.12);
+  border-radius: var(--radius-panel);
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.db-browser-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.db-browser-table th,
+.db-browser-table td {
+  padding: 5px 10px;
+  text-align: left;
+  border-bottom: 1px solid rgba(40, 58, 96, 0.08);
+}
+
+.db-browser-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: rgba(240, 244, 250, 0.98);
+  font-weight: 600;
+  color: rgba(24, 36, 60, 0.85);
+}
+
+.db-browser-table tbody tr:hover td {
+  background: rgba(64, 120, 220, 0.06);
+}
+
+.db-browser-rownum {
+  color: rgba(40, 58, 96, 0.45);
+  text-align: right;
+}
+
+.db-browser-null {
+  color: rgba(40, 58, 96, 0.35);
+  font-style: italic;
+}
+
+.db-browser-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.db-browser-position {
+  font-size: 13px;
+  color: rgba(40, 58, 96, 0.7);
+  font-variant-numeric: tabular-nums;
+}
+
+.db-browser-colname {
+  display: block;
+  font-weight: 400;
+  font-size: 11px;
+  color: rgba(40, 58, 96, 0.45);
+}

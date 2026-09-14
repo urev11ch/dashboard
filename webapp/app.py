@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import secrets
+import sqlite3
 import threading
 import time
 import uuid
@@ -63,6 +64,8 @@ from webapp import updates
 # меняющие лимит распаковки, патчат app.archives.ARCHIVE_EXTRACT_MAX_BYTES.
 from webapp import archives
 from webapp.archives import extract_archive_dbs, safe_archive_member_path
+# Просмотр сырого содержимого `.db` (список таблиц, страницы строк).
+from webapp import db_browser
 # Мелкие утилиты ввода-вывода/форматирования вынесены в webapp/io_utils.py.
 from webapp import io_utils
 from webapp.io_utils import (  # noqa: F401
@@ -722,6 +725,75 @@ def cancel_workspace_job() -> JSONResponse:
         state.workspace_job.status = "cancelling"
         state.workspace_job.message = "Отменяю открытие папки."
     return JSONResponse({"ok": True, "active": True})
+
+
+# ---- просмотр содержимого баз ------------------------------------------------
+# Читаем только файлы текущего анализа: путь приходит из браузера, а белый список
+# не даёт превратить приложение в читалку произвольных sqlite-файлов на машине.
+def browsable_db_files() -> list[Path]:
+    with state_lock:
+        analysis = state.analysis
+    if analysis is None:
+        return []
+    return list(analysis.db_files)
+
+
+@app.get("/api/db-browser/files")
+def db_browser_files() -> JSONResponse:
+    with state_lock:
+        analysis = state.analysis
+    if analysis is None:
+        return JSONResponse({"files": []})
+
+    files: list[dict[str, Any]] = []
+    for db_path in analysis.db_files:
+        try:
+            size = db_path.stat().st_size
+        except OSError:
+            # Файл мог исчезнуть после анализа — показываем, но без размера.
+            size = None
+        # Подпись потока берём из пути: analysis.channels_by_db знает только
+        # ключевой (самый ранний) архив потока, остальные файлы остались бы без имени.
+        files.append(
+            {
+                "path": str(db_path),
+                "name": db_path.name,
+                "size": size,
+                "stream": core.resolve_stream(db_path)[1],
+            }
+        )
+    return JSONResponse({"files": files})
+
+
+@app.get("/api/db-browser/tables")
+def db_browser_tables(path: str = "") -> JSONResponse:
+    try:
+        db_path = db_browser.resolve_browsable_db(path, browsable_db_files())
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    try:
+        tables = db_browser.list_tables(db_path)
+    except (sqlite3.DatabaseError, OSError) as error:
+        raise HTTPException(status_code=400, detail=f"Не удалось прочитать базу: {error}") from error
+    return JSONResponse({"path": str(db_path), "name": db_path.name, "tables": tables})
+
+
+@app.get("/api/db-browser/rows")
+def db_browser_rows(
+    path: str = "",
+    table: str = "",
+    offset: int = 0,
+    limit: int = db_browser.ROWS_PAGE_DEFAULT,
+) -> JSONResponse:
+    try:
+        db_path = db_browser.resolve_browsable_db(path, browsable_db_files())
+        payload = db_browser.read_rows(db_path, table, offset=offset, limit=limit)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except (sqlite3.DatabaseError, OSError) as error:
+        raise HTTPException(status_code=400, detail=f"Не удалось прочитать таблицу: {error}") from error
+    return JSONResponse(payload)
 
 
 # Эндпоинты с синхронной записью на диск объявлены обычными `def`: Starlette
