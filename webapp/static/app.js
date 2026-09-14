@@ -3974,9 +3974,11 @@
     tables: [],
     table: "",
     offset: 0,
-    limit: 100,
+    limit: 250,
     loading: false,
   };
+  // Размер страницы: потолок на сервере — ROWS_PAGE_MAX (500).
+  const DB_PAGE_SIZES = [100, 250, 500];
 
   function isTimestampColumn(name) {
     return /timestamp|time@/i.test(String(name || ""));
@@ -4093,7 +4095,14 @@
     const to = payload ? Math.min(total, dbBrowser.offset + payload.rows.length) : 0;
     const atStart = dbBrowser.offset <= 0;
     const atEnd = !payload || dbBrowser.offset + dbBrowser.limit >= total;
+    const sizes = DB_PAGE_SIZES.map(
+      (size) => `<option value="${size}"${size === dbBrowser.limit ? " selected" : ""}>${size}</option>`
+    ).join("");
     return `
+      <label class="db-browser-page-size">
+        <span>Строк</span>
+        <select data-db-page-size>${sizes}</select>
+      </label>
       <button type="button" class="ghost" data-db-page="first" ${atStart ? "disabled" : ""}>В начало</button>
       <button type="button" class="ghost" data-db-page="prev" ${atStart ? "disabled" : ""}>Назад</button>
       <span class="db-browser-position">${from}–${to} из ${total}</span>
@@ -4188,31 +4197,21 @@
     dbBrowserRoot.innerHTML = `
       <div class="object-editor-backdrop" data-close-db-browser></div>
       <section class="object-editor-panel db-browser-panel" role="dialog" aria-modal="true" aria-label="Содержимое базы данных">
-        <header class="object-editor-header">
-          <div>
-            <h2>Содержимое базы</h2>
-            <p class="object-editor-copy">Таблицы архива панели как есть.</p>
-          </div>
-          <div class="object-editor-header-actions">
-            <button type="button" class="chart-modal-icon-button chart-modal-icon-button--danger" data-close-db-browser aria-label="Закрыть просмотр базы" title="Закрыть">
-              <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-                <path d="M5 5L15 15"></path>
-                <path d="M15 5L5 15"></path>
-              </svg>
-            </button>
-          </div>
+        <header class="object-editor-header db-browser-header">
+          <h2>Содержимое базы</h2>
+          <label class="db-browser-file">
+            <select data-db-file aria-label="База данных"></select>
+          </label>
+          <div class="toolbar-sort-grid db-browser-tables" data-db-tables></div>
+          <button type="button" class="chart-modal-icon-button chart-modal-icon-button--danger" data-close-db-browser aria-label="Закрыть просмотр базы" title="Закрыть">
+            <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <path d="M5 5L15 15"></path>
+              <path d="M15 5L5 15"></path>
+            </svg>
+          </button>
         </header>
-        <div class="db-browser-body">
-          <div class="db-browser-controls">
-            <label class="db-browser-file">
-              <span>База</span>
-              <select data-db-file></select>
-            </label>
-            <div class="toolbar-sort-grid db-browser-tables" data-db-tables></div>
-          </div>
-          <div class="db-browser-grid" data-db-grid>
-            <div class="technical-empty">Загрузка…</div>
-          </div>
+        <div class="db-browser-grid" data-db-grid>
+          <div class="technical-empty">Загрузка…</div>
         </div>
         <footer class="object-editor-footer db-browser-footer" data-db-footer></footer>
       </section>
@@ -4245,6 +4244,18 @@
 
     const footer = dbBrowserRoot.querySelector("[data-db-footer]");
     if (footer) {
+      footer.addEventListener("change", (event) => {
+        const select = event.target.closest("[data-db-page-size]");
+        if (!select) {
+          return;
+        }
+        // Держим в поле зрения первую строку текущей страницы, чтобы смена
+        // размера не выбрасывала пользователя в другое место таблицы.
+        const nextLimit = Number(select.value) || dbBrowser.limit;
+        dbBrowser.offset = Math.floor(dbBrowser.offset / nextLimit) * nextLimit;
+        dbBrowser.limit = nextLimit;
+        refreshDbBrowserRows();
+      });
       footer.addEventListener("click", (event) => {
         const button = event.target.closest("[data-db-page]");
         if (!button || dbBrowser.loading) {

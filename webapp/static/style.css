@@ -4012,22 +4012,49 @@ body.modal-export-mode .chart-print-document {
 }
 
 /* ---- Просмотр содержимого базы ------------------------------------------ */
+/* Окно во весь экран и минимум обвязки: тут важно число видимых строк, а не поля. */
 .db-browser-panel {
-  width: min(1280px, calc(100vw - 32px));
+  width: min(1600px, calc(100vw - 24px));
+  height: calc(100vh - 24px);
+  padding: 10px 12px;
+  gap: 8px;
 }
 
-.db-browser-body {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 12px;
-  min-height: 0;
+body.desktop-shell .db-browser-panel {
+  height: calc(100vh - 24px - var(--titlebar-h));
 }
 
-.db-browser-controls {
-  display: flex;
-  flex-wrap: wrap;
+/* Заголовок, выбор базы и таблицы — одной строкой. */
+.db-browser-header {
   align-items: center;
   gap: 12px;
+}
+
+.db-browser-header h2 {
+  margin-top: 0;
+  font-size: 17px;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+
+/* Чипы таблиц — одной строкой: сетка .toolbar-sort-grid ломала бы их в столбик
+   и съедала бы три ряда высоты, то есть ~8 видимых строк данных. */
+.db-browser-header .db-browser-tables {
+  display: flex;
+  flex-wrap: nowrap;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 6px;
+  overflow-x: auto;
+}
+
+.db-browser-header .toolbar-sort-option {
+  flex: 0 0 auto;
+}
+
+.db-browser-header .toolbar-sort-option {
+  padding: 4px 10px;
+  font-size: 11px;
 }
 
 .db-browser-file {
@@ -4036,16 +4063,6 @@ body.modal-export-mode .chart-print-document {
   gap: 8px;
   font-size: 13px;
   color: rgba(40, 58, 96, 0.7);
-}
-
-.db-browser-file select {
-  max-width: 460px;
-  padding: 6px 10px;
-  border-radius: 10px;
-  border: 1px solid rgba(40, 58, 96, 0.18);
-  background: rgba(255, 255, 255, 0.9);
-  font: inherit;
-  color: rgba(24, 36, 60, 0.92);
 }
 
 .db-browser-tables {
@@ -4074,16 +4091,21 @@ body.modal-export-mode .chart-print-document {
 .db-browser-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12.5px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
 .db-browser-table th,
 .db-browser-table td {
-  padding: 5px 10px;
+  padding: 1px 9px;
+  line-height: 1.35;
   text-align: left;
-  border-bottom: 1px solid rgba(40, 58, 96, 0.08);
+  border-bottom: 1px solid rgba(40, 58, 96, 0.06);
+}
+
+.db-browser-table thead th {
+  padding: 5px 9px;
 }
 
 .db-browser-table thead th {
@@ -4112,7 +4134,32 @@ body.modal-export-mode .chart-print-document {
 .db-browser-footer {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+}
+
+.db-browser-footer .ghost {
+  padding: 5px 12px;
+  font-size: 12px;
+}
+
+.db-browser-page-size {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: auto;
+  font-size: 12px;
+  color: rgba(40, 58, 96, 0.6);
+}
+
+.db-browser-page-size select,
+.db-browser-file select {
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(40, 58, 96, 0.18);
+  background: rgba(255, 255, 255, 0.9);
+  font: inherit;
+  font-size: 12px;
+  color: rgba(24, 36, 60, 0.92);
 }
 
 .db-browser-position {

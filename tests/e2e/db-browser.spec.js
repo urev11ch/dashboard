@@ -31,9 +31,11 @@ test("листание страниц меняет строки", async ({ page 
   await expect(page.locator(".db-browser-table tbody tr").first()).toBeVisible();
 
   await expect(page.locator(".db-browser-position")).toHaveText(/^1–/);
+  // Шаг листания = выбранному размеру страницы, а не зашитой сотне.
+  const pageSize = Number(await page.locator("[data-db-page-size]").inputValue());
   const firstBefore = await page.locator(".db-browser-table tbody tr").first().textContent();
   await page.locator('[data-db-page="next"]').click();
-  await expect(page.locator(".db-browser-position")).toHaveText(/^101–/);
+  await expect(page.locator(".db-browser-position")).toHaveText(new RegExp(`^${pageSize + 1}–`));
   const firstAfter = await page.locator(".db-browser-table tbody tr").first().textContent();
   expect(firstAfter).not.toBe(firstBefore);
 });
@@ -44,4 +46,14 @@ test("Escape закрывает окно", async ({ page }) => {
   await expect(page.locator(".db-browser-panel")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.locator(".db-browser-panel")).toHaveCount(0);
+});
+
+test("смена размера страницы меняет число строк", async ({ page }) => {
+  await openWashList(page);
+  await page.locator("#openDbBrowser").click();
+  await expect(page.locator(".db-browser-table tbody tr").first()).toBeVisible();
+
+  await page.locator("[data-db-page-size]").selectOption("100");
+  await expect(page.locator(".db-browser-position")).toHaveText(/^1–100/);
+  await expect(page.locator(".db-browser-table tbody tr")).toHaveCount(100);
 });
