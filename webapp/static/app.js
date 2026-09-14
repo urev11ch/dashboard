@@ -388,6 +388,108 @@
     });
   }
 
+  // ---- Автообновление при запуске ----------------------------------------
+  // Полный цикл без единого нажатия: проверка → скачивание → тихая установка →
+  // перезапуск. Самодостаточно (как кнопка на экране выбора источника): код
+  // работает ДО гейта `if (!washList) return`, где state/showToast ещё в TDZ,
+  // поэтому только fetch и собственный баннер.
+  //
+  // Почему только при старте, а не по таймеру: установка закрывает приложение,
+  // и прервать оператора посреди смены — хуже, чем обновиться минутой позже.
+  // Один запрос UAC остаётся: установщик пишет в Program Files. Убрать его
+  // можно лишь per-user установкой (P0-3 в ROADMAP).
+  function initAutoUpdate() {
+    const AUTO_UPDATE_POLL_MAX_TICKS = 2400; // ≈20 минут по 500 мс
+
+    const showBanner = (text) => {
+      let banner = document.querySelector("[data-auto-update-banner]");
+      if (!banner) {
+        banner = document.createElement("div");
+        banner.className = "auto-update-banner";
+        banner.setAttribute("data-auto-update-banner", "");
+        banner.setAttribute("role", "status");
+        document.body.append(banner);
+      }
+      banner.textContent = text;
+    };
+
+    const hideBanner = () => {
+      document.querySelector("[data-auto-update-banner]")?.remove();
+    };
+
+    async function getJson(resource, options) {
+      const response = await fetchWithTimeout(resource, {
+        headers: { Accept: "application/json" },
+        timeout: 15000,
+        ...options,
+      });
+      if (!response.ok) {
+        throw new Error(`request-failed:${resource}`);
+      }
+      return response.json();
+    }
+
+    async function run() {
+      // Мост pywebview ставит установщик и закрывает окно; в браузере автообновление
+      // невозможно в принципе.
+      if (typeof window.pywebview?.api?.install_update !== "function") {
+        return;
+      }
+
+      try {
+        const payload = await getJson("/api/settings");
+        const settings = payload && typeof payload.settings === "object" ? payload.settings : {};
+        if (settings.auto_update_enabled === false) {
+          return;
+        }
+
+        const info = await getJson("/api/update-check");
+        if (!info || !info.update_available || !info.installable) {
+          return;
+        }
+
+        showBanner(`Обновление ${info.latest}: скачиваю…`);
+        await getJson("/api/update/download", { method: "POST", timeout: 20000 });
+
+        let ticks = 0;
+        let job = null;
+        while (true) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          job = await getJson("/api/update/job");
+          if (!job || job.status !== "running") {
+            break;
+          }
+          if (job.total > 0) {
+            const pct = Math.min(100, Math.round((job.downloaded / job.total) * 100));
+            showBanner(`Обновление ${info.latest}: скачиваю… ${pct}%`);
+          }
+          if (++ticks >= AUTO_UPDATE_POLL_MAX_TICKS) {
+            throw new Error("Скачивание не завершилось за отведённое время.");
+          }
+        }
+        if (!job || job.status !== "ready") {
+          throw new Error(job?.error || "Не удалось скачать обновление.");
+        }
+
+        showBanner(`Обновление ${info.latest}: устанавливаю, приложение перезапустится…`);
+        const result = await window.pywebview.api.install_update();
+        if (!result?.ok) {
+          // Сюда же приходит отказ от UAC: приложение остаётся работать, и это
+          // нормальный исход — молча убираем баннер, не пугая оператора ошибкой.
+          throw new Error(result?.error || "Установка не запущена.");
+        }
+      } catch (_error) {
+        hideBanner();
+      }
+    }
+
+    if (window.pywebview && window.pywebview.api) {
+      run();
+    } else {
+      window.addEventListener("pywebviewready", run, { once: true });
+    }
+  }
+
   // Умная кнопка обновления на экране выбора источника. САМОДОСТАТОЧНА: экран
   // рендерится ДО гейта `if (!hasWorkspace) return`, где state/toastRoot/
   // checkForUpdates ещё в TDZ — только fetch + свои элементы. Режим «check» —
@@ -768,6 +870,7 @@
   initWashWebViewButton();
   initWelcomeUpdateButton();
   initDesktopTitlebar();
+  initAutoUpdate();
 
   const workspaceJobRoot = document.querySelector("[data-workspace-job]");
   const workspaceJobMessage = workspaceJobRoot?.querySelector("[data-workspace-job-message]");
@@ -3058,6 +3161,10 @@
                 <button type="button" class="ghost" data-check-updates>Проверить</button>
               </div>
               <label class="settings-option">
+                <span class="settings-option-text"><strong>Обновляться автоматически</strong><span class="settings-option-hint">При запуске приложение само скачает и установит новую версию и перезапустится. Windows один раз спросит разрешение на установку.</span></span>
+                <input type="checkbox" data-setting-auto-update ${settings.auto_update_enabled ? "checked" : ""}>
+              </label>
+              <label class="settings-option">
                 <span class="settings-option-text"><strong>Автозапуск с Windows</strong></span>
                 <input type="checkbox" data-setting-autostart ${settings.autostart ? "checked" : ""}>
               </label>
@@ -3310,6 +3417,22 @@
         }
         button.disabled = true;
         runHandler(startUpdateInstall());
+      });
+    }
+
+    const autoUpdateToggle = settingsRoot.querySelector("[data-setting-auto-update]");
+    if (autoUpdateToggle) {
+      autoUpdateToggle.addEventListener("change", async (event) => {
+        const enabled = Boolean(event.currentTarget.checked);
+        try {
+          await saveAppSettings({ auto_update_enabled: enabled });
+          showToast(
+            enabled ? "Обновления будут ставиться автоматически" : "Автообновление выключено",
+            "success"
+          );
+        } catch (_error) {
+          showToast("Не удалось сохранить настройку обновлений.", "error");
+        }
       });
     }
 

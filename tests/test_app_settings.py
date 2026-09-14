@@ -21,6 +21,7 @@ def test_defaults_when_missing(tmp_path, monkeypatch):
         "concentration_norms": {"alkali": None, "acid": None},
         "concentration_tolerance_percent": 10.0,
         "require_completion_step": False,
+        "auto_update_enabled": True,
     }
 
 
@@ -41,6 +42,7 @@ def test_save_load_roundtrip(tmp_path, monkeypatch):
         "concentration_norms": {"alkali": None, "acid": None},
         "concentration_tolerance_percent": 10.0,
         "require_completion_step": False,
+        "auto_update_enabled": True,
     }
 
 
@@ -359,3 +361,12 @@ def test_trigger_starts_background_for_ftp_profile(monkeypatch):
     assert captured["background"] is True
     assert captured["display_target"] == "FTP · Цех 1"
     assert captured["candidate"] == (app.DATALOG_ROOT / "panel1").resolve()
+
+
+def test_auto_update_is_enabled_by_default_and_can_be_turned_off():
+    # Обновление ставится при запуске без нажатий; тумблер нужен как аварийный
+    # выход — установка закрывает приложение, и оператору может быть не вовремя.
+    assert app.normalize_app_settings({})["auto_update_enabled"] is True
+    assert app.normalize_app_settings({"auto_update_enabled": False})["auto_update_enabled"] is False
+    assert app.normalize_app_settings({"auto_update_enabled": "0"})["auto_update_enabled"] is False
+    assert app.normalize_app_settings({"auto_update_enabled": "yes"})["auto_update_enabled"] is True

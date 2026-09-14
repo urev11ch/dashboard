@@ -333,6 +333,10 @@ def normalize_app_settings(raw: Any) -> dict[str, Any]:
             data.get("require_completion_step"),
             DEFAULT_APP_SETTINGS["require_completion_step"],
         ),
+        "auto_update_enabled": _coerce_bool(
+            data.get("auto_update_enabled"),
+            DEFAULT_APP_SETTINGS["auto_update_enabled"],
+        ),
     }
 
 

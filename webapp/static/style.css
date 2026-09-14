@@ -4174,3 +4174,23 @@ body.desktop-shell .db-browser-panel {
   font-size: 11px;
   color: rgba(40, 58, 96, 0.45);
 }
+
+/* Баннер автообновления: сообщает о происходящем, ничего не спрашивает. */
+.auto-update-banner {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 90;
+  max-width: min(520px, calc(100vw - 32px));
+  padding: 9px 16px;
+  border-radius: 999px;
+  background: rgba(24, 36, 60, 0.92);
+  color: rgba(255, 255, 255, 0.95);
+  font-size: 13px;
+  box-shadow: var(--shadow);
+}
+
+body.desktop-shell .auto-update-banner {
+  bottom: 22px;
+}
