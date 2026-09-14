@@ -139,6 +139,8 @@ def build_wash_rows(
     было бы увидеть полу-применённое переименование в одном ответе. Значение
     идентично (cycle.object_name = resolve_object_name(...)), но снимок консистентен."""
     result_labels = settings["result_labels"]
+    # Кэши прошлых версий пикла поля не знают — отсюда getattr с пустым словарём.
+    channel_labels = getattr(analysis, "channel_labels", None) or {}
     rows: list[dict[str, Any]] = []
     for cycle in analysis.sorted_cycles:
         cycle_key = core.make_cycle_key(cycle)
@@ -155,6 +157,7 @@ def build_wash_rows(
         )
         source_name = format_source_label(cycle.source_db)
         object_name = resolve_object_name(cycle.channel, cycle.object_id, overrides)
+        channel_label = channel_labels.get(cycle.channel) or f"Канал {cycle.channel}"
         rows.append(
             {
                 "key": cycle_key,
@@ -169,6 +172,7 @@ def build_wash_rows(
                 "result_kind": result_kind,
                 "concentration_kind": concentration["kind"] if concentration else None,
                 "channel": cycle.channel,
+                "channel_label": channel_label,
                 "duration": core.format_duration(cycle.duration_seconds),
                 "duration_seconds": cycle.duration_seconds,
                 "source_name": source_name,
@@ -179,7 +183,7 @@ def build_wash_rows(
                         date_time,
                         source_name,
                         status,
-                        f"Канал {cycle.channel}",
+                        channel_label,
                     ]
                 ).lower(),
             }
@@ -286,6 +290,7 @@ def build_object_rows(
     # данных — чтобы их можно было назвать (и тем самым создать json), даже если
     # файла имён ещё нет.
     keys: set[tuple[int, int]] = set(overrides)
+    channel_labels = getattr(analysis, "channel_labels", None) or {}
     if analysis is not None:
         for overview in analysis.overviews:
             if overview.object_id > 0:
@@ -300,6 +305,7 @@ def build_object_rows(
         rows.append(
             {
                 "channel": channel,
+                "channel_label": channel_labels.get(channel) or f"Канал {channel}",
                 "object_id": object_id,
                 "object_name": object_name,
                 "base_object_name": base_name,

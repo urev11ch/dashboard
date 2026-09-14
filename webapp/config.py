@@ -60,12 +60,17 @@ ANALYSIS_CACHE_MAX_BYTES = 1024**3
 ANALYSIS_CACHE_MAX_ENTRIES = 2048
 # Сколько источников помним для удаления предыдущей версии их кэша.
 CACHE_SOURCE_REGISTRY_LIMIT = 512
-DB_ANALYSIS_CACHE_VERSION = 3
+# Бампать при изменении формата пофайлового пикла ИЛИ способа вычисления полей,
+# которые в нём лежат. v4 — номер канала берётся из core.resolve_stream (имя файла
+# больше не обязано быть `Canal_N`), старые чанки хранят номер прежней схемы.
+DB_ANALYSIS_CACHE_VERSION = 4
 # Бампать при любом изменении формата workspace-пикла. История:
 # v5 — сэмплы вынесены из пикла в side-файлы по потокам (ws-samples-*), в RAM
 # подтягиваются лениво (см. make_sample_loader); v6 — +Segment.last_sample_ts
-# (порог разрыва цикла меряется по сырому времени последнего сэмпла).
-WORKSPACE_ANALYSIS_CACHE_VERSION = 6
+# (порог разрыва цикла меряется по сырому времени последнего сэмпла); v7 —
+# +AnalysisResult.channel_labels и потоки с произвольными именами файлов
+# (раньше не-`Canal_N` архивы просто отбрасывались, состав моек в кэше был неполным).
+WORKSPACE_ANALYSIS_CACHE_VERSION = 7
 CHART_PAYLOAD_DISK_CACHE_VERSION = 2
 CHART_PAYLOAD_CACHE_LIMIT = 64
 DB_ANALYSIS_MAX_WORKERS = 4

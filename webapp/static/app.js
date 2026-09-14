@@ -1138,6 +1138,7 @@
   const UPDATE_POLL_MAX_TICKS = 2400;
   const state = {
     washRows: [],
+    channelLabels: new Map(),
     washRowIndexesByObjectKey: new Map(),
     objectRows: [],
     filteredRows: [],
@@ -1416,7 +1417,7 @@
       row.date_time,
       row.source_name,
       row.status,
-      `Канал ${row.channel}`,
+      row.channel_label || `Канал ${row.channel}`,
     ]
       .join(" ")
       .toLowerCase();
@@ -1438,6 +1439,40 @@
 
   function replaceObjectRows(rows) {
     state.objectRows = sortObjectRows((Array.isArray(rows) ? rows : []).map((row) => ({ ...row })));
+    rememberChannelLabels(state.objectRows);
+  }
+
+  // Подписи потоков: имя лога на панели («CIP», «Мойка ЦЕХ2») или «Канал N» для
+  // файлов вида Canal_1_*.db. Держим отдельной картой, чтобы не сканировать
+  // тысячи строк журнала на каждую отрисовку.
+  function rememberChannelLabels(rows) {
+    (Array.isArray(rows) ? rows : []).forEach((row) => {
+      const channel = Number(row && row.channel);
+      const label = String((row && row.channel_label) || "").trim();
+      if (Number.isInteger(channel) && channel >= 1 && label) {
+        state.channelLabels.set(channel, label);
+      }
+    });
+  }
+
+  function channelLabelFor(channel) {
+    const value = Number(channel);
+    return state.channelLabels.get(value) || `Канал ${channel}`;
+  }
+
+  // Список потоков считаем по конкретному набору строк, а не по карте подписей:
+  // карта живёт между сменами источника и может помнить исчезнувшие логи.
+  function channelsFromRows(rows) {
+    const channels = [
+      ...new Set(
+        (Array.isArray(rows) ? rows : [])
+          .map((row) => Number(row && row.channel))
+          .filter((channel) => Number.isInteger(channel) && channel >= 1)
+      ),
+    ];
+    return channels.sort((a, b) =>
+      channelLabelFor(a).localeCompare(channelLabelFor(b), "ru", { numeric: true })
+    );
   }
 
   function buildWashObjectKey(channel, objectId) {
@@ -1465,6 +1500,7 @@
       return nextRow;
     });
     state.dateBounds = null;
+    rememberChannelLabels(state.washRows);
     rebuildWashRowIndexes();
   }
 
@@ -1614,7 +1650,13 @@
 
   function renderObjectEditorChannelChoices(selectedValue = 1) {
     const selectedChannel = Number(selectedValue || 1);
-    return Array.from({ length: 5 }, (_, index) => index + 1)
+    // Потоки берём из найденных данных: имена файлов на панелях произвольные,
+    // фиксированной сетки «каналы 1..5» больше нет.
+    const channels = channelsFromRows(state.objectRows);
+    if (!channels.length) {
+      channels.push(selectedChannel >= 1 ? selectedChannel : 1);
+    }
+    return channels
       .map(
         (channel) => `
           <button
@@ -1624,7 +1666,7 @@
             data-choice-value="${channel}"
             aria-pressed="${channel === selectedChannel ? "true" : "false"}"
           >
-            ${channel}
+            ${escapeHtml(channelLabelFor(channel))}
           </button>
         `
       )
@@ -1805,9 +1847,7 @@
       return;
     }
 
-    const channels = [...new Set(state.washRows.map((item) => Number(item.channel)))]
-      .filter((channel) => Number.isInteger(channel) && channel >= 1 && channel <= 5)
-      .sort((a, b) => a - b);
+    const channels = channelsFromRows(state.washRows);
 
     if (channelFilter.value && !channels.includes(Number(channelFilter.value))) {
       channelFilter.value = "";
@@ -1817,7 +1857,9 @@
       '<button type="button" class="toolbar-channel-option" data-channel-value="">Все</button>',
       ...channels.map(
         (channel) =>
-          `<button type="button" class="toolbar-channel-option" data-channel-value="${channel}">Канал ${channel}</button>`
+          `<button type="button" class="toolbar-channel-option" data-channel-value="${channel}">${escapeHtml(
+            channelLabelFor(channel)
+          )}</button>`
       ),
     ];
     channelOptionsRoot.innerHTML = buttons.join("");
@@ -3743,7 +3785,9 @@
             <input type="hidden" name="object_id" value="${escapeHtml(row.object_id)}">
             <div class="object-editor-row-meta">
               <div class="object-editor-row-identity">
-                <span class="object-editor-token">Канал ${escapeHtml(row.channel)}</span>
+                <span class="object-editor-token">${escapeHtml(
+                  row.channel_label || channelLabelFor(row.channel)
+                )}</span>
                 <span class="object-editor-token">Объект ${escapeHtml(row.object_id)}</span>
               </div>
             </div>
@@ -3822,11 +3866,11 @@
     const objectId = Number(dialog.querySelector('input[name="object_id"]')?.value || 0);
     const objectName = normalizeObjectName(dialog.querySelector('input[name="object_name"]')?.value || "");
 
-    if (channel < 1 || channel > 5) {
+    if (!Number.isInteger(channel) || channel < 1) {
       return {
         blocked: true,
         severity: "error",
-        message: "Выбери канал от 1 до 5.",
+        message: "Выбери поток.",
       };
     }
 
@@ -3843,7 +3887,7 @@
       return {
         blocked: true,
         severity: "error",
-        message: `Для канала ${channel} и object id ${objectId} уже есть запись «${existingRow.object_name}».`,
+        message: `Для потока «${channelLabelFor(channel)}» и object id ${objectId} уже есть запись «${existingRow.object_name}».`,
       };
     }
 
@@ -3869,7 +3913,7 @@
         blocked: false,
         severity: "warning",
         message:
-          `Такое название уже используется у канала ${duplicateNameRow.channel}, object id ${duplicateNameRow.object_id}. ` +
+          `Такое название уже используется в потоке «${channelLabelFor(duplicateNameRow.channel)}», object id ${duplicateNameRow.object_id}. ` +
           "Проверь, что дублирование действительно нужно.",
       };
     }
@@ -3923,7 +3967,7 @@
         <header class="object-editor-header">
           <div>
             <h2>Редактор объектов</h2>
-            <p class="object-editor-copy">Названия объектов по каналам.</p>
+            <p class="object-editor-copy">Названия объектов по потокам.</p>
           </div>
           <div class="object-editor-header-actions">
             <button type="button" class="chart-modal-icon-button chart-modal-icon-button--danger" data-close-object-editor aria-label="Закрыть редактор объектов" title="Закрыть">
@@ -3948,7 +3992,7 @@
               <input type="hidden" name="channel" value="1">
               <input type="hidden" name="object_id" value="1">
               <label class="object-editor-label object-editor-label--grow">
-                <span>Канал</span>
+                <span>Поток</span>
                 <div class="object-editor-choice-grid object-editor-choice-grid--channels">
                   ${renderObjectEditorChannelChoices(1)}
                 </div>

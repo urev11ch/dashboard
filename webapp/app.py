@@ -737,8 +737,10 @@ def update_object_name(payload: dict[str, Any] = Body(...)) -> JSONResponse:
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="Не удалось определить объект для переименования.") from exc
 
-    if channel < 1 or channel > 5 or object_id < 1:
-        raise HTTPException(status_code=400, detail="Укажите канал от 1 до 5 и object id от 1 и выше.")
+    # Верхней границы у канала больше нет: у потоков с произвольным именем файла
+    # номер — стабильный хеш имени (core.stream_channel_id), а не 1..4 панели.
+    if channel < 1 or object_id < 1:
+        raise HTTPException(status_code=400, detail="Укажите канал и object id от 1 и выше.")
 
     raw_name = str(payload.get("name") or "")
     normalized_name = " ".join(raw_name.split())

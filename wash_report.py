@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -10,7 +11,7 @@ import sqlite3
 from bisect import bisect_left, bisect_right
 from datetime import datetime
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -256,6 +257,9 @@ class AnalysisResult:
     segments_by_cycle_key: dict[str, list[Segment]]
     sample_ranges_by_cycle_key: dict[str, tuple[int, int]]
     cycle_results_by_key: dict[str, str]
+    # Подпись потока по номеру канала: имя лога на панели («CIP», «Мойка ЦЕХ2»)
+    # или прежнее «Канал N» для файлов вида Canal_1_*.db.
+    channel_labels: dict[int, str] = field(default_factory=dict)
     analysis_cache_key: str = ""
     # Ленивый загрузчик потока сэмплов по ключу потока. Если задан, а samples_by_db
     # для потока пуст — сэмплы подтягиваются с диска по запросу (график/оценка
@@ -438,14 +442,84 @@ def analysis_samples_for_cycle(analysis: AnalysisResult, cycle: Cycle) -> list[S
         and sample.program == cycle.program_id
     ]
 
+# Дата в имени суточного файла панели. Выгрузка EasyBuilder даёт
+# `<имя лога>_<ГГГГММДД>_<имя лога>.db`, то есть дата стоит В СЕРЕДИНЕ, а не в
+# конце — вырезаем её везде, где встретим, иначе файлы одного лога за разные дни
+# считались бы разными потоками и мойка через полночь не склеивалась бы.
+STREAM_DATE_TOKEN_RE = re.compile(
+    r"(?<!\d)(?:\d{4}[ _.\-]?\d{2}[ _.\-]?\d{2}|\d{6})(?!\d)"
+)
+# Историческое имя лога в проектах панели: `Canal_1_...`. Такие файлы сохраняют
+# прежние номера каналов — иначе сломались бы ключи переименованных объектов и
+# ссылки на графики в уже работающих установках. Ограничение на 1–3 цифры не даёт
+# принять за номер канала дату из имени вида `Canal20260414.db`.
+LEGACY_CHANNEL_RE = re.compile(r"Canal[ _.\-]?(\d{1,3})(?!\d)", flags=re.IGNORECASE)
+# Папка-контейнер месяца в зеркале FTP (`2026-07`, `2026-07-13`, `unknown`) —
+# именем потока служить не может.
+MONTH_DIR_RE = re.compile(r"^(?:\d{4}-\d{2}(?:-\d{2})?|unknown)$")
+# Номера потоков, у которых нет legacy-номера в имени, начинаются заведомо выше
+# любого канала панели, чтобы не столкнуться с `Canal_1..N`.
+STREAM_CHANNEL_ID_BASE = 1_000_000
+UNNAMED_STREAM_LABEL = "Журнал"
+
+
+def stream_base_name(stem: str) -> str:
+    """Имя файла без даты: `Canal_1_20260414_Canal_1` → `Canal_1`, `CIP-2026-07-13`
+    → `CIP`, `20260713` → `` (в имени только дата).
+
+    Выгрузка панели повторяет имя лога по обе стороны от даты — одинаковые половины
+    схлопываем, иначе подпись потока читалась бы как `Canal_1 Canal_1`."""
+    parts = [part.strip(" _.-") for part in STREAM_DATE_TOKEN_RE.sub("\x00", stem).split("\x00")]
+    parts = [part for part in parts if part]
+    if len(parts) == 2 and parts[0] == parts[1]:
+        return parts[0]
+    return " ".join(parts)
+
+
+def stream_label(db_path: Path) -> str:
+    """Человекочитаемое имя потока: как лог назван на панели.
+
+    У Weintek имя файла задаёт объект Data Sampling проекта, поэтому на каждой
+    панели оно своё. Если в имени осталась только дата (раскладка
+    `<имя лога>/20260713.db`), имя берём у папки-контейнера."""
+    base = stream_base_name(Path(db_path).stem)
+    if base:
+        return base
+
+    parent_name = Path(db_path).parent.name
+    if parent_name and not MONTH_DIR_RE.match(parent_name):
+        return parent_name
+    return UNNAMED_STREAM_LABEL
+
+
+def stream_channel_id(label: str) -> int:
+    """Стабильный числовой id потока по его имени.
+
+    Номер участвует в ключе мойки и в ключе переименования объекта, поэтому он
+    обязан быть одинаковым между запусками и на разных машинах — отсюда хеш от
+    имени, а не порядковый номер по списку найденных файлов (он съезжал бы при
+    появлении нового лога, обнуляя пользовательские имена объектов)."""
+    digest = hashlib.blake2b(label.encode("utf-8"), digest_size=6).digest()
+    return STREAM_CHANNEL_ID_BASE + int.from_bytes(digest, "big")
+
+
+def resolve_stream(db_path: Path) -> tuple[int, str]:
+    """Поток архива: (номер канала, имя для показа).
+
+    Имя файла больше не обязано быть `Canal_N` — подойдёт любое, лишь бы файлы
+    одного лога отличались только датой."""
+    path = Path(db_path)
+    label = stream_label(path)
+    legacy = LEGACY_CHANNEL_RE.search(stream_base_name(path.stem))
+    if legacy:
+        # Подпись прежняя («Канал 1»), чтобы в старых установках ничего не поехало.
+        number = int(legacy.group(1))
+        return number, f"Канал {number}"
+    return stream_channel_id(label), label
+
+
 def infer_channel(db_path: Path) -> int:
-    match = re.search(r"Canal[_-]?(\d+)", db_path.name, flags=re.IGNORECASE)
-    if not match:
-        raise SystemExit(
-            f"Не удалось определить номер канала по имени файла {db_path.name}. "
-            "Ожидается шаблон вроде Canal_1_*.db."
-        )
-    return int(match.group(1))
+    return resolve_stream(db_path)[0]
 
 def sqlite_read_only_uri(db_path: Path | str) -> str:
     """URI для открытия архива строго на чтение: обычный sqlite3.connect
@@ -1325,8 +1399,11 @@ def build_analysis_result(
     channels_by_db: dict[str, int] = {}
     sample_stream_by_channel: dict[int, str] = {}
 
+    channel_labels: dict[int, str] = {}
+
     for channel, channel_chunks in sorted(chunks_by_channel.items()):
         channel_chunks = sorted(channel_chunks, key=lambda chunk: source_key(chunk.db_path))
+        channel_labels[channel] = resolve_stream(channel_chunks[0].db_path)[1]
         # Сегменты и циклы пересобираем по объединённому потоку канала, а не
         # склеиваем готовые куски файлов: только так статистика мойки,
         # разрезанной границей суток, считается по общему набору точек.
@@ -1376,6 +1453,7 @@ def build_analysis_result(
         samples_by_db=samples_by_db,
         channels_by_db=channels_by_db,
         sample_stream_by_channel=sample_stream_by_channel,
+        channel_labels=channel_labels,
         sorted_cycles=sorted_cycles,
         cycles_by_key=cycles_by_key,
         segments_by_cycle_key=segments_by_cycle_key,
