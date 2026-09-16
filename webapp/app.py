@@ -966,11 +966,16 @@ def update_app_settings_route(payload: dict[str, Any] = Body(...)) -> JSONRespon
 
 
 @app.post("/api/ftp/discover")
-async def api_ftp_discover() -> JSONResponse:
-    """Ищет панели (FTP-хосты) в локальной подсети. Только по нажатию кнопки —
-    guard middleware уже ограничивает эндпоинт локальными запросами."""
+async def api_ftp_discover(payload: dict[str, Any] | None = Body(default=None)) -> JSONResponse:
+    """Ищет панели (FTP-хосты) в локальных подсетях. Только по нажатию кнопки —
+    guard middleware уже ограничивает эндпоинт локальными запросами.
+    Необязательное поле `subnet` в теле сканирует только указанную сеть (панель
+    за маршрутизатором); тело может отсутствовать — это обычный скан."""
+    subnet = str(payload.get("subnet") or "").strip() if isinstance(payload, dict) else ""
     try:
-        result = await discovery.discover_ftp_panels()
+        result = await discovery.discover_ftp_panels(subnet)
+    except ValueError as exc:  # подсеть задана вручную и некорректна
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except OSError as exc:
         raise HTTPException(
             status_code=500, detail=f"Не удалось выполнить поиск: {exc}"

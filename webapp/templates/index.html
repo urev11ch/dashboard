@@ -88,6 +88,11 @@
             <span class="ftp-discover-status" data-ftp-discover-status role="status" aria-live="polite"></span>
             <ul class="ftp-discover-results" data-ftp-discover-results hidden></ul>
             <div class="ftp-discover-actions">
+              <!-- Подсеть для скана: показывается, только если скан ничего не нашёл
+                   (панель за маршрутизатором — своего адреса в её сети у ПК нет). -->
+              <input type="text" class="ftp-discover-subnet" data-ftp-subnet hidden
+                     placeholder="Подсеть, напр. 192.168.18.0" aria-label="Подсеть для поиска"
+                     autocomplete="off" spellcheck="false">
               <button type="button" class="ghost" data-ftp-manual hidden>Добавить вручную</button>
               <button type="button" class="ftp-search-btn" data-ftp-discover>
                 <svg class="ftp-search-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z"></path></svg>

@@ -7,6 +7,8 @@ E2E в этой сборке проверить нельзя, поэтому л�
 import asyncio
 import socket
 
+import pytest
+
 import webapp.app as app
 
 
@@ -28,8 +30,11 @@ class _FakeUDPSocket:
         pass
 
 
-def _patch_local_ip(monkeypatch, local_ip):
+def _patch_local_ip(monkeypatch, local_ip, interfaces=()):
+    """Адрес маршрута по умолчанию (UDP-проба) + адреса интерфейсов ОС. Реальные
+    интерфейсы машины с тестами в скан попасть не должны, поэтому подменяем и их."""
     monkeypatch.setattr(app.discovery.socket, "socket", lambda *a, **k: _FakeUDPSocket(local_ip))
+    monkeypatch.setattr(app.discovery, "_interface_ipv4", lambda: list(interfaces))
 
 
 def test_local_networks_private_ip_yields_slash24(monkeypatch):
@@ -57,6 +62,118 @@ def test_local_networks_no_route(monkeypatch):
     own, networks = app.discovery._local_ipv4_networks()
     assert own == ""
     assert networks == []
+
+
+def test_local_networks_include_every_interface(monkeypatch):
+    """Две заводские подсети на одном ПК: сканируются обе, подсеть адреса
+    маршрута по умолчанию — первой. Это и был баг: 192.168.18.x не сканировалась."""
+    _patch_local_ip(
+        monkeypatch, "192.168.19.50", ["192.168.19.50", "192.168.18.7", "127.0.0.1"]
+    )
+    own, networks = app.discovery._local_ipv4_networks()
+    assert own == "192.168.19.50"
+    assert [str(net) for net in networks] == ["192.168.19.0/24", "192.168.18.0/24"]
+
+
+def test_local_networks_without_default_route_still_scans_interfaces(monkeypatch):
+    """Нет маршрута в интернет (типовой заводской ПК) — подсети интерфейсов
+    всё равно сканируем."""
+    _patch_local_ip(monkeypatch, None, ["192.168.18.7"])
+    own, networks = app.discovery._local_ipv4_networks()
+    assert own == ""
+    assert [str(net) for net in networks] == ["192.168.18.0/24"]
+
+
+def test_local_networks_skip_apipa_and_public_interfaces(monkeypatch):
+    """169.254.x (DHCP не ответил) и публичные адреса не сканируем."""
+    _patch_local_ip(monkeypatch, None, ["169.254.10.3", "8.8.8.8", "10.10.5.2", "нет-ip"])
+    _own, networks = app.discovery._local_ipv4_networks()
+    assert [str(net) for net in networks] == ["10.10.5.0/24"]
+
+
+def test_local_networks_limited_by_max_networks(monkeypatch):
+    """Каждая подсеть — 254 пробы, поэтому число сетей ограничено."""
+    addresses = [f"192.168.{octet}.5" for octet in range(1, 12)]
+    _patch_local_ip(monkeypatch, None, addresses)
+    _own, networks = app.discovery._local_ipv4_networks()
+    assert len(networks) == app.discovery.FTP_DISCOVERY_MAX_NETWORKS
+
+
+def test_interface_ipv4_from_os_parses_ip_addr(monkeypatch):
+    output = (
+        "1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever\n"
+        "2: eth0    inet 192.168.19.50/24 brd 192.168.19.255 scope global eth0\n"
+        "3: eth1    inet 192.168.18.7/24 brd 192.168.18.255 scope global eth1\n"
+    )
+
+    class _Proc:
+        stdout = output
+
+    monkeypatch.setattr(app.discovery.subprocess, "run", lambda *a, **k: _Proc())
+    assert app.discovery._interface_ipv4_from_os() == [
+        "127.0.0.1",
+        "192.168.19.50",
+        "192.168.18.7",
+    ]
+
+
+def test_interface_ipv4_from_os_survives_missing_command(monkeypatch):
+    def _no_command(*_args, **_kwargs):
+        raise OSError("нет такой команды")
+
+    monkeypatch.setattr(app.discovery.subprocess, "run", _no_command)
+    assert app.discovery._interface_ipv4_from_os() == []
+
+
+def test_interface_ipv4_uses_getaddrinfo(monkeypatch):
+    """Windows отдаёт адреса всех адаптеров через getaddrinfo по своему имени —
+    системные команды там не зовём."""
+    monkeypatch.setattr(app.discovery.socket, "gethostname", lambda: "pc-cip")
+    monkeypatch.setattr(
+        app.discovery.socket,
+        "getaddrinfo",
+        lambda *a, **k: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.19.50", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.18.7", 0)),
+        ],
+    )
+    monkeypatch.setattr(app.discovery.os, "name", "nt")
+    monkeypatch.setattr(
+        app.discovery, "_interface_ipv4_from_os", lambda: pytest.fail("на Windows не зовём")
+    )
+    assert app.discovery._interface_ipv4() == ["192.168.19.50", "192.168.18.7"]
+
+
+def test_interface_ipv4_survives_unresolvable_hostname(monkeypatch):
+    def _fails(*_args, **_kwargs):
+        raise socket.gaierror("имя не разрешается")
+
+    monkeypatch.setattr(app.discovery.socket, "getaddrinfo", _fails)
+    monkeypatch.setattr(app.discovery, "_interface_ipv4_from_os", lambda: ["192.168.18.7"])
+    monkeypatch.setattr(app.discovery.os, "name", "posix")
+    assert app.discovery._interface_ipv4() == ["192.168.18.7"]
+
+
+def test_parse_scan_subnet_accepts_network_and_bare_ip():
+    assert str(app.discovery.parse_scan_subnet("192.168.18.0/24")) == "192.168.18.0/24"
+    # Без маски подразумевается /24, адрес хоста приводится к сети.
+    assert str(app.discovery.parse_scan_subnet(" 192.168.18.5 ")) == "192.168.18.0/24"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "не-подсеть",
+        "8.8.8.0/24",  # публичная сеть — не сканируем
+        "127.0.0.0/24",  # loopback
+        "169.254.0.0/24",  # APIPA
+        "10.0.0.0/8",  # слишком широкая
+    ],
+)
+def test_parse_scan_subnet_rejects_bad_values(value):
+    with pytest.raises(ValueError):
+        app.discovery.parse_scan_subnet(value)
 
 
 def _reserve_closed_port():
@@ -391,4 +508,104 @@ def test_read_arp_table_parses_output(monkeypatch):
 def test_discover_no_network_returns_empty(monkeypatch):
     monkeypatch.setattr(app.discovery, "_local_ipv4_networks", lambda: ("", []))
     result = asyncio.run(app.discovery.discover_ftp_panels())
-    assert result == {"scanned": 0, "network": "", "panels": []}
+    assert result == {"scanned": 0, "network": "", "networks": [], "panels": []}
+
+
+def _patch_networks(monkeypatch, own_ip, networks):
+    monkeypatch.setattr(
+        app.discovery,
+        "_local_ipv4_networks",
+        lambda: (own_ip, [app.discovery.ipaddress.ip_network(net) for net in networks]),
+    )
+    monkeypatch.setattr(app.discovery, "_read_arp_table", lambda: {})
+
+
+def test_discover_scans_every_local_network(monkeypatch):
+    """Панель в 192.168.18.x находится, даже когда маршрут по умолчанию — через
+    192.168.19.x (ровно тот случай, из-за которого панели «не видно»)."""
+    _patch_networks(monkeypatch, "192.168.19.50", ["192.168.19.0/24", "192.168.18.0/24"])
+    seen = []
+
+    async def fake_probe(host, _sem):
+        seen.append(host)
+        if host != "192.168.18.30":
+            return None
+        return {
+            "host": host, "port": 21, "banner": "220 Weintek",
+            "likely_weintek": True, "confirmed_weintek": True,
+        }
+
+    monkeypatch.setattr(app.discovery, "_probe_ftp_host", fake_probe)
+
+    result = asyncio.run(app.discovery.discover_ftp_panels())
+    assert result["networks"] == ["192.168.19.0/24", "192.168.18.0/24"]
+    assert result["network"] == "192.168.19.0/24"  # совместимость со старым полем
+    # 254 хоста в каждой /24, минус свой адрес в первой.
+    assert result["scanned"] == 253 + 254
+    assert "192.168.18.30" in seen
+    assert [panel["host"] for panel in result["panels"]] == ["192.168.18.30"]
+
+
+def test_discover_does_not_probe_host_twice(monkeypatch):
+    """Пересекающиеся подсети (ручная совпала со своей) — адрес пробуем один раз."""
+    _patch_networks(monkeypatch, "192.168.18.50", ["192.168.18.0/24", "192.168.18.0/24"])
+    seen = []
+
+    async def fake_probe(host, _sem):
+        seen.append(host)
+        return None
+
+    monkeypatch.setattr(app.discovery, "_probe_ftp_host", fake_probe)
+
+    result = asyncio.run(app.discovery.discover_ftp_panels())
+    assert result["scanned"] == 253
+    assert len(seen) == len(set(seen)) == 253
+
+
+def test_discover_with_manual_subnet_scans_only_it(monkeypatch):
+    """Указанная вручную подсеть заменяет автоопределение: панель за
+    маршрутизатором, своего адреса в её сети у ПК нет."""
+    _patch_networks(monkeypatch, "192.168.19.50", ["192.168.19.0/24"])
+    seen = []
+
+    async def fake_probe(host, _sem):
+        seen.append(host)
+        return None
+
+    monkeypatch.setattr(app.discovery, "_probe_ftp_host", fake_probe)
+
+    result = asyncio.run(app.discovery.discover_ftp_panels("192.168.18.0/24"))
+    assert result["networks"] == ["192.168.18.0/24"]
+    assert result["scanned"] == 254  # свой адрес не в этой подсети
+    assert all(host.startswith("192.168.18.") for host in seen)
+
+
+def test_discover_with_bad_subnet_raises(monkeypatch):
+    _patch_networks(monkeypatch, "192.168.19.50", ["192.168.19.0/24"])
+    with pytest.raises(ValueError):
+        asyncio.run(app.discovery.discover_ftp_panels("8.8.8.0/24"))
+
+
+def test_discover_route_passes_subnet_and_maps_bad_value_to_400(monkeypatch):
+    """Роут: тело может отсутствовать (обычный скан), а неверная подсеть — это
+    400 с понятным текстом, не 500."""
+    calls = []
+
+    async def fake_discover(subnet=""):
+        calls.append(subnet)
+        if subnet == "мусор":
+            raise ValueError("Некорректная подсеть: мусор")
+        return {"scanned": 0, "network": "", "networks": [], "panels": []}
+
+    monkeypatch.setattr(app.discovery, "discover_ftp_panels", fake_discover)
+
+    response = asyncio.run(app.api_ftp_discover(None))
+    assert response.status_code == 200
+
+    asyncio.run(app.api_ftp_discover({"subnet": " 192.168.18.0/24 "}))
+    assert calls == ["", "192.168.18.0/24"]  # пробелы срезаются
+
+    with pytest.raises(app.HTTPException) as excinfo:
+        asyncio.run(app.api_ftp_discover({"subnet": "мусор"}))
+    assert excinfo.value.status_code == 400
+    assert "Некорректная подсеть" in excinfo.value.detail

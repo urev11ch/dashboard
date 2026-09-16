@@ -3821,6 +3821,11 @@ body.modal-export-mode .chart-print-document {
   align-items: center;
   gap: 8px;
 }
+.ftp-discover-subnet {
+  flex: 0 1 200px;
+  min-width: 0;
+  font-size: 12px;
+}
 .ftp-search-btn {
   display: inline-flex;
   align-items: center;

@@ -203,6 +203,10 @@
     const root = button.closest("[data-ftp-discover-root]");
     const statusEl = root?.querySelector("[data-ftp-discover-status]");
     const resultsEl = root?.querySelector("[data-ftp-discover-results]");
+    // Поле подсети: обычно скрыто (сканируются подсети всех интерфейсов ПК);
+    // раскрывается, когда скан ничего не нашёл — панель может стоять за
+    // маршрутизатором, где своего адреса у ПК нет.
+    const subnetInput = root?.querySelector("[data-ftp-subnet]");
     if (!root || !resultsEl) {
       return;
     }
@@ -340,31 +344,50 @@
       button.disabled = true;
       resultsEl.hidden = true;
       resultsEl.innerHTML = "";
-      setStatus("Сканирую локальную сеть…");
+      const subnet = subnetInput && !subnetInput.hidden ? subnetInput.value.trim() : "";
+      setStatus(subnet ? `Сканирую ${subnet}…` : "Сканирую локальную сеть…");
       try {
         const response = await fetchWithTimeout("/api/ftp/discover", {
           method: "POST",
           timeout: 30000,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(subnet ? { subnet } : {}),
         });
+        if (response.status === 400) {
+          // Подсеть введена вручную и неверна — показываем причину от сервера.
+          const problem = await response.json().catch(() => null);
+          setStatus(problem?.detail || "Некорректная подсеть.");
+          return;
+        }
         if (!response.ok) {
           throw new Error("ftp-discover-failed");
         }
         const data = await response.json();
         const panels = Array.isArray(data.panels) ? data.panels : [];
         if (!panels.length) {
+          // Перечисляем просканированные подсети: сразу видно, что «своей»
+          // подсети панели среди них нет.
+          const scanned = Array.isArray(data.networks) && data.networks.length
+            ? `проверены подсети ${data.networks.join(", ")} (${data.scanned} адресов)`
+            : `проверено адресов: ${data.scanned}`;
           if (!data.scanned) {
             setStatus("Не удалось определить локальную сеть.");
           } else if (data.ftp_hosts) {
             setStatus(
-              `Панели Weintek не найдены. FTP-хостов в сети: ${data.ftp_hosts} ` +
-                `(проверено ${data.scanned}). Если панель есть, но не видна — ` +
-                `она в другой подсети (MAC-поиск не проходит за маршрутизатор); ` +
-                `добавьте вручную.`
+              `Панели Weintek не найдены. FTP-хостов в сети: ${data.ftp_hosts}, ` +
+                `${scanned}. Панель в другой подсети (MAC-поиск не проходит за ` +
+                `маршрутизатор) — укажите подсеть слева или добавьте вручную.`
             );
           } else {
-            setStatus(`Проверено адресов: ${data.scanned}. Панели не найдены.`);
+            setStatus(
+              `Панели не найдены, ${scanned}. Панель в другой подсети — укажите ` +
+                `подсеть слева или добавьте вручную.`
+            );
           }
           renderResults([]);
+          if (subnetInput) {
+            subnetInput.hidden = false; // даём указать подсеть за маршрутизатором
+          }
           if (manualBtn) {
             manualBtn.hidden = false; // панелей нет — предлагаем добавить вручную
           }
@@ -374,6 +397,9 @@
         if (manualBtn) {
           manualBtn.hidden = true;
         }
+        if (subnetInput) {
+          subnetInput.hidden = true;
+        }
         renderResults(panels);
       } catch (_error) {
         // Инлайновый статус, не showToast: экран выбора источника — до гейта,
@@ -381,6 +407,9 @@
         setStatus("Не удалось выполнить поиск панели.");
         if (manualBtn) {
           manualBtn.hidden = false; // скан не удался — путь ручного добавления
+        }
+        if (subnetInput) {
+          subnetInput.hidden = false;
         }
       } finally {
         button.disabled = false;
