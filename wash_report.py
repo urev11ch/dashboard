@@ -18,16 +18,49 @@ from typing import Any, Callable, Mapping, Sequence
 from webapp.io_utils import read_json_object
 
 OBJECT_NAMES_FILENAME = "wash_object_names.json"
-REQUIRED_DATA_COLUMNS = {
-    "time@timestamp",
-    "data_format_0",
-    "data_format_1",
-    "data_format_2",
-    "data_format_3",
-    "data_format_4",
-    "data_format_5",
-    "data_format_6",
-    "data_format_7",
+
+# Столбец времени — единственный с фиксированным именем; остальные панель пишет
+# как data_format_<i>, а что в них лежит — знает только по подписи в таблице
+# `data_format`. Раскладка лога у объектов разная (где-то есть давление подачи,
+# где-то нет), поэтому столбцы сопоставляем по подписям, а не по номеру.
+TIMESTAMP_COLUMN = "time@timestamp"
+DATA_FORMAT_COLUMN_RE = re.compile(r"^data_format_(\d+)$")
+SAMPLE_METRIC_FIELDS = (
+    "concentration_return",
+    "temperature_return",
+    "temperature_supply",
+    "pressure_supply",
+    "flow_supply",
+)
+# Без процесса, программы и объекта лог бесполезен: непонятно, где мойка и чья.
+# Метрики опциональны — отсутствующая просто остаётся пустой (как NULL в архиве).
+REQUIRED_SAMPLE_FIELDS = ("process", "program", "object_id")
+SAMPLE_FIELDS = (*SAMPLE_METRIC_FIELDS, *REQUIRED_SAMPLE_FIELDS)
+# Подпись столбца → поле Sample. Порядок важен: «температура возврата» обязана
+# проверяться до общего «температура».
+FIELD_KEYWORDS: tuple[tuple[str, tuple[tuple[str, ...], ...]], ...] = (
+    ("concentration_return", (("концентрац",), ("conductiv",), ("concentrat",))),
+    ("temperature_return", (("температур", "возврат"), ("temperature", "return"))),
+    ("temperature_supply", (("температур", "подач"), ("temperature", "supply"))),
+    ("pressure_supply", (("давлен",), ("pressure",))),
+    ("flow_supply", (("расход",), ("flow",))),
+    ("process", (("процесс",), ("process",))),
+    ("program", (("программ",), ("program",))),
+    ("object_id", (("объект",), ("object",))),
+)
+# Фолбэк для архивов без таблицы `data_format` (старые выгрузки) и для панелей с
+# подписями, которые не удалось распознать: порядок столбцов у Weintek совпадает
+# с порядком тегов в Data Sampling. 8 столбцов — раскладка с давлением подачи,
+# 7 — та же без него.
+POSITIONAL_LAYOUTS = {
+    8: SAMPLE_FIELDS,
+    7: (
+        "concentration_return",
+        "temperature_return",
+        "temperature_supply",
+        "flow_supply",
+        *REQUIRED_SAMPLE_FIELDS,
+    ),
 }
 
 DEFAULT_MAX_GAP_SECONDS = 15.0
@@ -545,6 +578,101 @@ def broken_db_exit(db_path: Path, error: Exception) -> SystemExit:
         f"Файл {Path(db_path).name} повреждён или не является базой SQLite: {error}."
     )
 
+def normalize_column_comment(comment: object) -> str:
+    """Подпись столбца для сравнения: нижний регистр, `ё` → `е`. Сравниваем по
+    корням слов («температур»), поэтому окончания и падежи значения не имеют."""
+    return str(comment or "").strip().lower().replace("ё", "е")
+
+
+def match_sample_field(comment: object) -> str | None:
+    """Поле Sample по подписи столбца из `data_format` («Температура возврата» →
+    temperature_return). None — подпись не распознана."""
+    text = normalize_column_comment(comment)
+    if not text:
+        return None
+    for field_name, keyword_groups in FIELD_KEYWORDS:
+        if any(all(keyword in text for keyword in group) for group in keyword_groups):
+            return field_name
+    return None
+
+
+def read_data_format_comments(connection: sqlite3.Connection) -> dict[int, str]:
+    """`data_format_index` → подпись тега панели. Пусто, если таблицы нет
+    (старые выгрузки) или она нечитаема — тогда работает позиционный фолбэк."""
+    try:
+        rows = connection.execute(
+            "SELECT data_format_index, comment FROM data_format"
+        ).fetchall()
+    except sqlite3.DatabaseError:
+        return {}
+    comments: dict[int, str] = {}
+    for row in rows:
+        if not row or len(row) < 2 or row[0] is None:
+            continue
+        try:
+            comments[int(row[0])] = str(row[1] or "")
+        except (TypeError, ValueError):
+            continue
+    return comments
+
+
+def resolve_data_layout(connection: sqlite3.Connection, db_path: Path) -> dict[str, str]:
+    """Раскладка лога: поле Sample → имя столбца в таблице `data`.
+
+    Сначала по подписям из `data_format` (у разных объектов разный набор тегов:
+    лог без давления подачи — это 7 столбцов вместо 8, и раньше такой архив
+    отвергался целиком). Если подписей нет или они не распознаны — позиционный
+    фолбэк по числу столбцов. Метрики опциональны, отсутствующие просто не
+    попадают в результат; без процесса/программы/объекта — SystemExit."""
+    try:
+        columns = [
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(data)")
+            if row and len(row) > 1 and row[1]
+        ]
+    except sqlite3.DatabaseError as error:
+        raise broken_db_exit(db_path, error) from error
+
+    if TIMESTAMP_COLUMN not in columns:
+        raise SystemExit(
+            f"Файл {db_path.name} не содержит поле времени `{TIMESTAMP_COLUMN}`."
+        )
+
+    indexed_columns: list[tuple[int, str]] = []
+    for column in columns:
+        match = DATA_FORMAT_COLUMN_RE.match(column)
+        if match:
+            indexed_columns.append((int(match.group(1)), column))
+    indexed_columns.sort()
+
+    comments = read_data_format_comments(connection)
+    layout: dict[str, str] = {}
+    for index, column in indexed_columns:
+        field_name = match_sample_field(comments.get(index))
+        # Первая подходящая подпись выигрывает: дубли («Температура возврата» в
+        # двух столбцах) не должны затирать уже найденный столбец.
+        if field_name and field_name not in layout:
+            layout[field_name] = column
+
+    if not set(REQUIRED_SAMPLE_FIELDS).issubset(layout):
+        positional = POSITIONAL_LAYOUTS.get(len(indexed_columns))
+        if positional:
+            layout = dict(zip(positional, (column for _index, column in indexed_columns)))
+
+    missing = [name for name in REQUIRED_SAMPLE_FIELDS if name not in layout]
+    if missing:
+        known = ", ".join(
+            f"{column} — {comments[index]}" if comments.get(index) else column
+            for index, column in indexed_columns
+        )
+        raise SystemExit(
+            f"Файл {db_path.name}: не удалось определить поля лога — нет столбцов "
+            f"процесса, программы и объекта мойки. "
+            f"Столбцы в файле: {known or 'нет столбцов data_format_*'}."
+        )
+    return layout
+
+
 def preflight_db_file(db_path: Path) -> int:
     channel = infer_channel(db_path)
     try:
@@ -557,22 +685,12 @@ def preflight_db_file(db_path: Path) -> int:
             has_data_table = connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'data' LIMIT 1"
             ).fetchone()
-            if has_data_table is None:
-                raise SystemExit(f"Файл {db_path.name} не содержит таблицу `data`.")
-
-            columns = {
-                str(row[1])
-                for row in connection.execute("PRAGMA table_info(data)")
-                if row and len(row) > 1 and row[1]
-            }
         except sqlite3.DatabaseError as error:
             raise broken_db_exit(db_path, error) from error
+        if has_data_table is None:
+            raise SystemExit(f"Файл {db_path.name} не содержит таблицу `data`.")
 
-        missing_columns = sorted(REQUIRED_DATA_COLUMNS.difference(columns))
-        if missing_columns:
-            raise SystemExit(
-                f"Файл {db_path.name} не содержит обязательные поля: {', '.join(missing_columns)}."
-            )
+        resolve_data_layout(connection, db_path)
     finally:
         connection.close()
     return channel
@@ -711,27 +829,38 @@ def read_samples(
     batch_size: int = 2000,
     cancel_check: Callable[[], bool] | None = None,
 ) -> list[Sample]:
-    query = """
-        SELECT
-            [time@timestamp],
-            data_format_0,
-            data_format_1,
-            data_format_2,
-            data_format_3,
-            data_format_4,
-            data_format_5,
-            data_format_6,
-            data_format_7
-        FROM data
-        WHERE [time@timestamp] IS NOT NULL
-        ORDER BY [time@timestamp]
-    """
     try:
         connection = connect_read_only(db_path)
     except sqlite3.DatabaseError as error:
         raise broken_db_exit(db_path, error) from error
 
     try:
+        # Столбцы берём из раскладки файла: их состав зависит от набора тегов
+        # Data Sampling (см. resolve_data_layout), а не фиксирован.
+        layout = resolve_data_layout(connection, db_path)
+        selected_fields = [name for name in SAMPLE_FIELDS if name in layout]
+        # Имена столбцов пришли из PRAGMA этого же файла, но берём их в скобки:
+        # `time@timestamp` без них не разбирается, да и любое имя тега безопасно.
+        selected_columns = ", ".join(f"[{layout[name]}]" for name in selected_fields)
+        query = f"""
+            SELECT
+                [{TIMESTAMP_COLUMN}],
+                {selected_columns}
+            FROM data
+            WHERE [{TIMESTAMP_COLUMN}] IS NOT NULL
+            ORDER BY [{TIMESTAMP_COLUMN}]
+        """
+        # Позиции столбцов в строке ответа считаем один раз, до цикла по строкам:
+        # 0 — время, дальше выбранные поля. None — тега в этом логе нет.
+        position = {name: index for index, name in enumerate(selected_fields, start=1)}
+        at_concentration = position.get("concentration_return")
+        at_temperature_return = position.get("temperature_return")
+        at_temperature_supply = position.get("temperature_supply")
+        at_pressure_supply = position.get("pressure_supply")
+        at_flow_supply = position.get("flow_supply")
+        at_process = position["process"]
+        at_program = position["program"]
+        at_object = position["object_id"]
         samples: list[Sample] = []
         skipped_rows = 0
         try:
@@ -753,16 +882,39 @@ def read_samples(
                             # NaN/Inf во времени ломает сортировку и bisect —
                             # строка бесполезна, пропускаем как битую.
                             raise ValueError("non-finite timestamp")
+                        # Отсутствующий в этом логе тег (напр. давление подачи)
+                        # даёт None — та же пустая метрика, что и NULL в архиве
+                        # при обрыве связи панели с контроллером.
                         sample = Sample(
                             ts=ts,
-                            concentration_return=concentration_metric(row[1]),
-                            temperature_return=optional_metric(row[2]),
-                            temperature_supply=optional_metric(row[3]),
-                            pressure_supply=optional_metric(row[4]),
-                            flow_supply=optional_metric(row[5]),
-                            process=int(float(row[6] or 0)),
-                            program=int(float(row[7] or 0)),
-                            object_id=int(float(row[8] or 0)),
+                            concentration_return=(
+                                concentration_metric(row[at_concentration])
+                                if at_concentration is not None
+                                else None
+                            ),
+                            temperature_return=(
+                                optional_metric(row[at_temperature_return])
+                                if at_temperature_return is not None
+                                else None
+                            ),
+                            temperature_supply=(
+                                optional_metric(row[at_temperature_supply])
+                                if at_temperature_supply is not None
+                                else None
+                            ),
+                            pressure_supply=(
+                                optional_metric(row[at_pressure_supply])
+                                if at_pressure_supply is not None
+                                else None
+                            ),
+                            flow_supply=(
+                                optional_metric(row[at_flow_supply])
+                                if at_flow_supply is not None
+                                else None
+                            ),
+                            process=int(float(row[at_process] or 0)),
+                            program=int(float(row[at_program] or 0)),
+                            object_id=int(float(row[at_object] or 0)),
                         )
                     except (ValueError, TypeError):
                         skipped_rows += 1

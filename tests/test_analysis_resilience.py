@@ -1,6 +1,7 @@
 """Тесты устойчивости анализа: повреждённая база пропускается, а не валит джоб,
 и пользователь узнаёт о пропущенных файлах."""
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -110,7 +111,58 @@ def test_all_db_files_broken_fails_with_names(isolated_analysis, monkeypatch):
 
     with pytest.raises(SystemExit) as excinfo:
         app.analyze_db_files_incremental([broken], output_dir=isolated_analysis)
-    assert "Canal_1.db" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "Canal_1.db" in message
+    # Причина должна быть в самом сообщении: без неё оставалось идти в desktop.log.
+    assert "повреждён" in message
+
+
+def test_all_db_files_broken_message_groups_same_reason(isolated_analysis, monkeypatch):
+    """Каталог с одинаковой структурой лога: причина одна на всех, показываем её
+    один раз с числом файлов."""
+    files = [_db(isolated_analysis, f"Canal_{index}.db") for index in range(1, 4)]
+
+    def fake_preflight(db_path):
+        raise SystemExit(f"Файл {Path(db_path).name} не содержит таблицу `data`.")
+
+    monkeypatch.setattr(app.core, "preflight_db_file", fake_preflight)
+
+    with pytest.raises(SystemExit) as excinfo:
+        app.analyze_db_files_incremental(files, output_dir=isolated_analysis)
+    message = str(excinfo.value)
+    assert "не содержит таблицу `data` (таких файлов: 3)" in message
+    # Имя файла из причины убрано — иначе одинаковые причины не схлопнулись бы.
+    assert message.count("не содержит таблицу") == 1
+
+
+def test_all_db_files_broken_message_limits_reasons(isolated_analysis, monkeypatch):
+    """Разных причин много — показываем две, остальные считаем."""
+    files = [_db(isolated_analysis, f"Canal_{index}.db") for index in range(1, 5)]
+
+    def fake_preflight(db_path):
+        raise SystemExit(f"причина {Path(db_path).name}")
+
+    monkeypatch.setattr(app.core, "preflight_db_file", fake_preflight)
+
+    with pytest.raises(SystemExit) as excinfo:
+        app.analyze_db_files_incremental(files, output_dir=isolated_analysis)
+    assert "и ещё 2 — см. desktop.log." in str(excinfo.value)
+
+
+def test_describe_skip_reason_strips_file_name():
+    error = SystemExit("Файл Canal_1.db не содержит таблицу `data`.")
+    assert app.analysis.describe_skip_reason(Path("Canal_1.db"), error) == (
+        "не содержит таблицу `data`"
+    )
+    # Причина без префикса «Файл <имя>» остаётся как есть.
+    other = OSError("Отказано в доступе")
+    assert app.analysis.describe_skip_reason(Path("Canal_1.db"), other) == "Отказано в доступе"
+    # Пустой текст исключения — показываем хотя бы тип.
+    assert app.analysis.describe_skip_reason(Path("Canal_1.db"), OSError()) == "OSError"
+
+
+def test_format_skip_reasons_without_reasons():
+    assert app.analysis.format_skip_reasons([]) == "Проверьте, что файлы не повреждены."
 
 
 def test_completion_message_mentions_skipped_and_failed():

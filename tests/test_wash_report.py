@@ -1,6 +1,8 @@
 """Тесты основной логики анализа (wash_report)."""
 import sqlite3
 
+import pytest
+
 import wash_report as core
 
 
@@ -169,6 +171,144 @@ def _make_archive_db(path, rows):
     )
     connection.commit()
     connection.close()
+
+
+# Подписи тегов реальной панели: лог без давления подачи — 7 столбцов вместо 8.
+PANEL_COMMENTS_WITHOUT_PRESSURE = (
+    "Концентрация возврата",
+    "Температура возврата",
+    "Температура подачи",
+    "Расход подачи",
+    "Процесс",
+    "Программа мойки",
+    "Объект мойки",
+)
+
+
+def _make_log_db(path, comments, rows):
+    """Архив панели с произвольным числом столбцов `data_format_*` и таблицей
+    `data_format` с подписями тегов (как пишет cMT). comments=None — архив без
+    этой таблицы (старые выгрузки)."""
+    count = len(comments) if comments is not None else len(rows[0]) - 1
+    columns = ", ".join(f"data_format_{index}" for index in range(count))
+    connection = sqlite3.connect(str(path))
+    connection.execute(f"CREATE TABLE data ([time@timestamp] REAL, {columns})")
+    placeholders = ", ".join("?" for _ in range(count + 1))
+    connection.executemany(f"INSERT INTO data VALUES ({placeholders})", rows)
+    if comments is not None:
+        connection.execute(
+            "CREATE TABLE data_format (data_format_index INTEGER, comment TEXT,"
+            " data_type TEXT, size INTEGER)"
+        )
+        connection.executemany(
+            "INSERT INTO data_format VALUES (?, ?, ?, ?)",
+            [(index, comment, "REAL32", 1) for index, comment in enumerate(comments)],
+        )
+    connection.commit()
+    connection.close()
+
+
+def test_match_sample_field_by_comment():
+    assert core.match_sample_field("Температура возврата") == "temperature_return"
+    assert core.match_sample_field("Температура подачи") == "temperature_supply"
+    assert core.match_sample_field("Концентрация возврата") == "concentration_return"
+    assert core.match_sample_field("Давление подачи") == "pressure_supply"
+    assert core.match_sample_field("Расход подачи") == "flow_supply"
+    assert core.match_sample_field("Объект мойки") == "object_id"
+    # Регистр и «ё» значения не имеют, незнакомая подпись — None.
+    assert core.match_sample_field("ОБЪЁМ") is None
+    assert core.match_sample_field("") is None
+
+
+def test_layout_maps_columns_by_data_format_comments(tmp_path):
+    """Лог без давления подачи (7 тегов) раскладывается по подписям, а не по
+    номеру столбца — раньше такой архив отвергался целиком."""
+    db_path = tmp_path / "20260907_Canal_1.db"
+    _make_log_db(
+        db_path,
+        PANEL_COMMENTS_WITHOUT_PRESSURE,
+        [(1000.0, 1.0, 60.0, 65.0, 10.0, 6, 3, 4)],
+    )
+    connection = core.connect_read_only(db_path)
+    try:
+        layout = core.resolve_data_layout(connection, db_path)
+    finally:
+        connection.close()
+    assert layout == {
+        "concentration_return": "data_format_0",
+        "temperature_return": "data_format_1",
+        "temperature_supply": "data_format_2",
+        "flow_supply": "data_format_3",
+        "process": "data_format_4",
+        "program": "data_format_5",
+        "object_id": "data_format_6",
+    }
+
+
+def test_read_samples_without_pressure_column(tmp_path):
+    """Отсутствующий тег читается как пустая метрика, остальные — на своих местах."""
+    db_path = tmp_path / "20260907_Canal_1.db"
+    _make_log_db(
+        db_path,
+        PANEL_COMMENTS_WITHOUT_PRESSURE,
+        [(1000.0, 1.5, 60.0, 65.0, 10.0, 6, 3, 4)],
+    )
+    assert core.preflight_db_file(db_path) == 1
+    sample = core.read_samples(db_path)[0]
+    assert sample.pressure_supply is None
+    assert sample.concentration_return == 1.5
+    assert sample.temperature_return == 60.0
+    assert sample.temperature_supply == 65.0
+    assert sample.flow_supply == 10.0
+    assert (sample.process, sample.program, sample.object_id) == (6, 3, 4)
+
+
+def test_layout_falls_back_to_positional_without_data_format(tmp_path):
+    """Старый архив без таблицы `data_format` — раскладка по порядку столбцов."""
+    db_path = tmp_path / "Canal_1_20260713.db"
+    _make_log_db(db_path, None, [(1000.0, 1.0, 60.0, 65.0, 2.0, 10.0, 6, 3, 4)])
+    sample = core.read_samples(db_path)[0]
+    assert sample.pressure_supply == 2.0
+    assert sample.flow_supply == 10.0
+    assert (sample.process, sample.program, sample.object_id) == (6, 3, 4)
+
+
+def test_layout_falls_back_to_positional_for_unknown_comments(tmp_path):
+    """Подписи на незнакомом языке: порядок тегов у Weintek тот же, поэтому
+    раскладку берём по числу столбцов, а не отвергаем файл."""
+    db_path = tmp_path / "Canal_1_20260713.db"
+    _make_log_db(
+        db_path,
+        ("c0", "c1", "c2", "c3", "c4", "c5", "c6"),
+        [(1000.0, 1.0, 60.0, 65.0, 10.0, 6, 3, 4)],
+    )
+    sample = core.read_samples(db_path)[0]
+    assert sample.pressure_supply is None
+    assert sample.flow_supply == 10.0
+    assert (sample.process, sample.program, sample.object_id) == (6, 3, 4)
+
+
+def test_preflight_rejects_log_without_process_columns(tmp_path):
+    """Нет ни распознанных подписей, ни известной раскладки — файл отвергаем, но
+    в сообщении перечисляем, что в нём нашли."""
+    db_path = tmp_path / "Canal_1_20260713.db"
+    _make_log_db(db_path, ("Температура возврата", "Влажность"), [(1000.0, 60.0, 5.0)])
+    with pytest.raises(SystemExit) as excinfo:
+        core.preflight_db_file(db_path)
+    message = str(excinfo.value)
+    assert "не удалось определить поля лога" in message
+    assert "data_format_1 — Влажность" in message
+
+
+def test_preflight_rejects_db_without_timestamp(tmp_path):
+    db_path = tmp_path / "Canal_1_20260713.db"
+    connection = sqlite3.connect(str(db_path))
+    connection.execute("CREATE TABLE data (id INTEGER, data_format_0)")
+    connection.commit()
+    connection.close()
+    with pytest.raises(SystemExit) as excinfo:
+        core.preflight_db_file(db_path)
+    assert "не содержит поле времени" in str(excinfo.value)
 
 
 def test_read_samples_keeps_null_metrics_out_of_stats(tmp_path):

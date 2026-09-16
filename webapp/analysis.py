@@ -18,6 +18,7 @@ import threading
 import time
 import uuid
 import zipfile
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable
@@ -279,6 +280,34 @@ def discover_db_files(
     )
 
 
+def describe_skip_reason(db_path: Path, error: BaseException) -> str:
+    """Причина пропуска БЕЗ имени файла: в каталоге с одинаковой структурой лога
+    причина у всех файлов одна, и в сообщении её надо показать один раз.
+    Сообщения wash_report начинаются с «Файл <имя>…» — этот префикс срезаем."""
+    reason = str(error).strip() or error.__class__.__name__
+    prefix = f"Файл {db_path.name}"
+    if reason.startswith(prefix):
+        reason = reason[len(prefix):].lstrip(" :")
+    # Точку в конце снимаем: причины склеиваются через «;» и считаются
+    # («… (таких файлов: 3)»), точка внутри строки читалась бы как конец фразы.
+    return reason.strip().rstrip(".") or error.__class__.__name__
+
+
+def format_skip_reasons(reasons: list[str], limit: int = 2) -> str:
+    """Причины для итогового сообщения: одинаковые схлопываем с числом файлов,
+    показываем не больше `limit` — остальное лежит в desktop.log."""
+    counts = Counter(reason for reason in reasons if reason)
+    if not counts:
+        return "Проверьте, что файлы не повреждены."
+    shown = "; ".join(
+        f"{reason} (таких файлов: {count})" if count > 1 else reason
+        for reason, count in counts.most_common(limit)
+    )
+    if len(counts) > limit:
+        return f"Причины: {shown}; и ещё {len(counts) - limit} — см. desktop.log."
+    return f"Причины: {shown}."
+
+
 def analyze_db_files_incremental(
     db_files: list[Path],
     *,
@@ -310,6 +339,10 @@ def analyze_db_files_incremental(
     chunks_by_db: dict[str, core.DbAnalysisChunk] = {}
     pending_jobs: list[tuple[int, Path, int]] = []
     skipped_db_files: list[str] = []
+    # Причины пропуска (текст исключения по каждому файлу) — только для итогового
+    # сообщения, когда не прочиталась НИ ОДНА база: без них пользователь видел
+    # лишь список имён и шёл искать причину в desktop.log.
+    skip_reasons: list[str] = []
     total_files = len(db_files)
     cached_files = 0
 
@@ -346,6 +379,7 @@ def analyze_db_files_incremental(
         except (SystemExit, sqlite3.Error, OSError, ValueError) as exc:
             logging.warning("Файл `%s` пропущен: %s", db_path.name, exc)
             skipped_db_files.append(db_path.name)
+            skip_reasons.append(describe_skip_reason(db_path, exc))
             continue
         pending_jobs.append((index, db_path, channel))
 
@@ -387,6 +421,7 @@ def analyze_db_files_incremental(
                     except (SystemExit, sqlite3.Error, OSError, ValueError) as exc:
                         logging.warning("Файл `%s` пропущен: %s", db_path.name, exc)
                         skipped_db_files.append(db_path.name)
+                        skip_reasons.append(describe_skip_reason(db_path, exc))
                         continue
                     save_cached_db_analysis(db_path, chunk)
                     chunks_by_db[str(db_path)] = chunk
@@ -415,7 +450,7 @@ def analyze_db_files_incremental(
             raise SystemExit(
                 "Ни одну базу данных не удалось прочитать: "
                 f"{format_file_list(skipped_db_files)}. "
-                "Проверьте, что файлы не повреждены и имеют вид `Canal_*.db`."
+                f"{format_skip_reasons(skip_reasons)}"
             )
         raise SystemExit("SQLite-файлы не найдены.")
 
