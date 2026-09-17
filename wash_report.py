@@ -1193,38 +1193,22 @@ def build_object_overviews(chunks: Sequence[DbAnalysisChunk]) -> list[ObjectOver
         key=lambda item: (item.channel, item.object_name, item.start_ts),
     )
 
-# Визуальные группы операций: цвет полосы фазы на графике и штриховка к нему.
-# Штриховка дублирует цвет линиями: на ч/б печати заливки сводятся к почти
-# одинаковым оттенкам серого, а линии остаются различимы. Поэтому цвет и
-# штриховка задаются одной таблицей — два параллельных списка id разъехались бы.
-OPERATION_STYLE_GROUPS: tuple[tuple[frozenset[int], str, str], ...] = (
-    (frozenset({1, 2, 3, 4, 7, 8, 11, 12, 15, 16, 19, 20}), "#bfdbfe", "diagonal-right"),
-    (frozenset({5, 6, 22, 23, 29, 30}), "#fdba74", "diagonal-left"),
-    (frozenset({9, 10, 24, 25, 31, 32}), "#f9a8d4", "vertical"),
-    (frozenset({13, 14}), "#c4b5fd", "horizontal"),
-    (frozenset({17, 18}), "#fca5a5", "cross"),
-    (frozenset({21, 28, 37}), "#86efac", "grid"),
-    (frozenset({50, 55}), "#d1d5db", "sparse"),
-)
-# Операция вне таблицы: нейтральный фон без штриховки — незнакомая фаза не
-# должна притворяться одной из известных.
-OPERATION_STYLE_DEFAULT: tuple[str, str] = ("#e5e7eb", "plain")
-
-
-def _operation_style(process_id: int) -> tuple[str, str]:
-    for process_ids, color, pattern in OPERATION_STYLE_GROUPS:
-        if process_id in process_ids:
-            return color, pattern
-    return OPERATION_STYLE_DEFAULT
-
-
 def operation_color(process_id: int) -> str:
-    return _operation_style(process_id)[0]
-
-
-def operation_pattern(process_id: int) -> str:
-    """Штриховка полосы фазы; id разбирает SEGMENT_PATTERN_OPTIONS в wash-chart.js."""
-    return _operation_style(process_id)[1]
+    if process_id in {1, 2, 3, 4, 7, 8, 11, 12, 15, 16, 19, 20}:
+        return "#bfdbfe"
+    if process_id in {5, 6, 22, 23, 29, 30}:
+        return "#fdba74"
+    if process_id in {9, 10, 24, 25, 31, 32}:
+        return "#f9a8d4"
+    if process_id in {13, 14}:
+        return "#c4b5fd"
+    if process_id in {17, 18}:
+        return "#fca5a5"
+    if process_id in {21, 28, 37}:
+        return "#86efac"
+    if process_id in {50, 55}:
+        return "#d1d5db"
+    return "#e5e7eb"
 
 def operation_label(process_name: str) -> str:
     return re.sub(r"\s*\([^)]*\)", "", process_name).strip()

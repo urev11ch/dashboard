@@ -28,40 +28,10 @@
     { id: "dotted", label: "Точечная", dasharray: "2 7" },
     { id: "longdash", label: "Длинный штрих", dasharray: "18 10" },
   ];
-  // Штриховка полос фаз. На ч/б печати заливки фаз сводятся к близким оттенкам
-  // серого и перестают различаться, линии — нет. id приходит с сервера
-  // (wash_report.operation_pattern) и привязан к той же группе операций, что и
-  // цвет полосы. Тайл — вертикальные (и горизонтальные) линии, наклон задаётся
-  // поворотом всего паттерна: повёрнутый тайл остаётся бесшовным, в отличие от
-  // диагонали, нарисованной внутри квадрата.
-  // Шаг тайла — компромисс: реже 10-12 px короткая фаза получила бы одну-две
-  // линии и перестала читаться, чаще — фон начинает рябить под кривыми.
-  const SEGMENT_PATTERN_OPTIONS = [
-    { id: "diagonal-right", size: 10, rotate: 45, lines: ["v"], width: 1 },
-    { id: "diagonal-left", size: 10, rotate: -45, lines: ["v"], width: 1 },
-    { id: "vertical", size: 9, rotate: 0, lines: ["v"], width: 1 },
-    { id: "horizontal", size: 9, rotate: 90, lines: ["v"], width: 1 },
-    { id: "cross", size: 11, rotate: 45, lines: ["v", "h"], width: 0.9 },
-    { id: "grid", size: 11, rotate: 0, lines: ["v", "h"], width: 0.9 },
-    { id: "sparse", size: 18, rotate: 45, lines: ["v"], width: 0.9 },
-    // Последний вариант — он же fallback: незнакомая фаза остаётся без
-    // штриховки, а не притворяется одной из известных.
-    { id: "plain", size: 0, rotate: 0, lines: [], width: 0 },
-  ];
-  const SEGMENT_PATTERN_STROKE = "#26432f";
-  // Полоса — фон под кривыми, поэтому она бледная. Образец в подписи, наоборот,
-  // должен читаться на своих 16x10 px, и его же видно рядом с полосой, так что
-  // сопоставить их удаётся и при разной насыщенности.
+  // Полоса фазы — фон под кривыми, поэтому заливка бледная; стык фаз и выноска
+  // к подписи рисуются одним нейтральным штрихом.
   const SEGMENT_FILL_OPACITY = 0.08;
-  const SEGMENT_PATTERN_OPACITY = 0.24;
-  const SEGMENT_SWATCH_FILL_OPACITY = 0.5;
-  const SEGMENT_SWATCH_PATTERN_OPACITY = 0.55;
   const SEGMENT_EDGE_STROKE = "rgba(38, 67, 49, 0.28)";
-  const SEGMENT_SWATCH_WIDTH = 16;
-  const SEGMENT_SWATCH_HEIGHT = 10;
-  const SEGMENT_SWATCH_GAP = 6;
-  const SEGMENT_SWATCH_SPACE = SEGMENT_SWATCH_WIDTH + SEGMENT_SWATCH_GAP;
-  let segmentPatternSeq = 0;
 
   function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
@@ -73,13 +43,6 @@
 
   function getLineStyleOption(id) {
     return LINE_STYLE_OPTIONS.find((option) => option.id === id) || LINE_STYLE_OPTIONS[0];
-  }
-
-  function getSegmentPatternOption(id) {
-    return (
-      SEGMENT_PATTERN_OPTIONS.find((option) => option.id === id) ||
-      SEGMENT_PATTERN_OPTIONS[SEGMENT_PATTERN_OPTIONS.length - 1]
-    );
   }
 
   function escapeHtml(value) {
@@ -221,92 +184,6 @@
       node.setAttribute(key, String(value));
     });
     return node;
-  }
-
-  // Паттерны кладём в <defs> своего svg, а id префиксуем: на странице живёт
-  // несколько графиков (карточка, модалка, печатная копия), а url(#id)
-  // резолвится по всему документу — с общим id второй график ссылался бы на
-  // defs первого и терял бы штриховку вместе с ним при перерисовке.
-  // Возвращает Map: id варианта штриховки -> { band, swatch } с id паттернов.
-  function appendSegmentPatternDefs(svg, segments) {
-    const prefix = `wash-seg-${(segmentPatternSeq += 1)}`;
-    const patternIds = new Map();
-    segments.forEach((segment) => {
-      const option = getSegmentPatternOption(segment.pattern);
-      if (option.lines.length && !patternIds.has(option.id)) {
-        patternIds.set(option.id, {
-          band: `${prefix}-${option.id}`,
-          swatch: `${prefix}-${option.id}-sw`,
-        });
-      }
-    });
-    if (!patternIds.size) {
-      return patternIds;
-    }
-
-    const defs = createSvgNode("defs", {});
-    patternIds.forEach((ids, optionId) => {
-      const option = getSegmentPatternOption(optionId);
-      // Тайл паттерна живёт в системе координат svg, а не прямоугольника,
-      // поэтому в образец подписи (16x10) шага полосы попала бы одна линия и
-      // штриховка стала бы неузнаваемой. Для образца кладём тот же рисунок
-      // вдвое мельче.
-      [
-        { id: ids.band, size: option.size, width: option.width },
-        { id: ids.swatch, size: Math.max(4, Math.round(option.size / 2)), width: 0.8 },
-      ].forEach(({ id, size, width }) => {
-        const attributes = {
-          id,
-          width: size,
-          height: size,
-          patternUnits: "userSpaceOnUse",
-        };
-        if (option.rotate) {
-          attributes.patternTransform = `rotate(${option.rotate})`;
-        }
-        const pattern = createSvgNode("pattern", attributes);
-        const half = size / 2;
-        option.lines.forEach((direction) => {
-          pattern.append(
-            createSvgNode("path", {
-              d: direction === "v" ? `M ${half} 0 V ${size}` : `M 0 ${half} H ${size}`,
-              stroke: SEGMENT_PATTERN_STROKE,
-              "stroke-width": width,
-              fill: "none",
-            })
-          );
-        });
-        defs.append(pattern);
-      });
-    });
-    svg.append(defs);
-    return patternIds;
-  }
-
-  // Заливка полосы фазы и её образца в подписи: цвет плюс та же штриховка
-  // поверх — одной функцией, чтобы образец не разъехался с полосой.
-  function appendSegmentFill(parent, box, segment, patternIds, options = {}) {
-    const isSwatch = options.variant === "swatch";
-    parent.append(
-      createSvgNode("rect", {
-        ...box,
-        ...(options.border || {}),
-        fill: segment.color,
-        opacity: isSwatch ? SEGMENT_SWATCH_FILL_OPACITY : SEGMENT_FILL_OPACITY,
-      })
-    );
-
-    const ids = patternIds.get(getSegmentPatternOption(segment.pattern).id);
-    const patternId = ids && ids[isSwatch ? "swatch" : "band"];
-    if (patternId) {
-      parent.append(
-        createSvgNode("rect", {
-          ...box,
-          fill: `url(#${patternId})`,
-          opacity: isSwatch ? SEGMENT_SWATCH_PATTERN_OPACITY : SEGMENT_PATTERN_OPACITY,
-        })
-      );
-    }
   }
 
   function appendSvgText(parent, attributes, content) {
@@ -633,13 +510,7 @@
       const displayLabel = normalizeSegmentLabel(segment.label);
       const lines = displayLabel.split("\n");
       const longestLineLength = lines.reduce((lineMax, line) => Math.max(lineMax, line.length), 1);
-      // Слева в пилюле — образец штриховки фазы (по нему подпись сопоставляется
-      // с полосой, когда цвет не читается), поэтому пилюля шире на его место.
-      const labelWidth = clamp(
-        longestLineLength * 6.4 + 26 + SEGMENT_SWATCH_SPACE,
-        (isModal ? 150 : 132) + SEGMENT_SWATCH_SPACE,
-        plotWidth * 0.24 + SEGMENT_SWATCH_SPACE
-      );
+      const labelWidth = clamp(longestLineLength * 6.4 + 26, isModal ? 150 : 132, plotWidth * 0.24);
       const labelHeight = lines.length * labelLineHeight + (isModal ? 18 : 16);
       const labelX = clamp(
         midpoint,
@@ -802,7 +673,6 @@
       };
       const labeledSegments = assignSegmentLanes(styledPayload.segments || [], scaleX, plotWidth, chartLayout);
       const plotTop = resolvePlotTop(chartLayout, labeledSegments);
-      const segmentPatternIds = appendSegmentPatternDefs(svg, labeledSegments);
       const panelHeights = buildPanelHeights(
         panels.length,
         chartLayout.height,
@@ -870,25 +740,10 @@
           })
         );
 
-        appendSegmentFill(
-          svg,
-          {
-            x: segment.labelX - segment.labelWidth / 2 + 11,
-            y: segment.labelY - 10 + (segment.labelHeight - SEGMENT_SWATCH_HEIGHT) / 2,
-            width: SEGMENT_SWATCH_WIDTH,
-            height: SEGMENT_SWATCH_HEIGHT,
-          },
-          segment,
-          segmentPatternIds,
-          { variant: "swatch", border: { stroke: SEGMENT_EDGE_STROKE, "stroke-width": 1 } }
-        );
-
         appendSvgMultilineText(
           svg,
           {
-            // Текст сдвинут на половину места под образец: пилюля выросла влево
-            // и вправо от середины, а занят образцом только левый край.
-            x: segment.labelX + SEGMENT_SWATCH_SPACE / 2,
+            x: segment.labelX,
             y: segment.labelY + 1,
             fill: "#314338",
             "font-size": chartLayout.width >= MODAL_CHART_WIDTH ? 10 : 9,
@@ -979,20 +834,19 @@
         );
 
         labeledSegments.forEach((segment, index) => {
-          appendSegmentFill(
-            svg,
-            {
+          svg.append(
+            createSvgNode("rect", {
               x: segment.startX,
               y: layout.top,
               width: Math.max(segment.endX - segment.startX, 1),
               height: layout.height,
-            },
-            segment,
-            segmentPatternIds
+              fill: segment.color,
+              opacity: SEGMENT_FILL_OPACITY,
+            })
           );
 
-          // Стык фаз: смена штриховки его уже показывает, но тонкая линия
-          // называет момент переключения точно — и в цвете, и в ч/б.
+          // Стык фаз: тонкая линия называет момент переключения точно и не
+          // зависит от цвета — на ч/б печати соседние заливки неразличимы.
           const edges = index === labeledSegments.length - 1
             ? [segment.startX, segment.endX]
             : [segment.startX];
@@ -1473,8 +1327,6 @@
       formatAxisValue,
       findNearestPointIndex,
       getLineStyleOption,
-      getSegmentPatternOption,
-      SEGMENT_PATTERN_OPTIONS,
     };
   }
 })();

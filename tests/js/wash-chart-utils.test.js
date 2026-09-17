@@ -96,28 +96,3 @@ describe("formatValue", () => {
     expect(() => chart.formatValue(NaN, "%")).not.toThrow();
   });
 });
-
-describe("getSegmentPatternOption", () => {
-  it("возвращает известную штриховку, незнакомую сводит к plain", () => {
-    expect(chart.getSegmentPatternOption("diagonal-right").id).toBe("diagonal-right");
-    expect(chart.getSegmentPatternOption("нет-такой").id).toBe("plain");
-    expect(chart.getSegmentPatternOption(undefined).id).toBe("plain");
-  });
-
-  it("plain — пустая штриховка: фаза без линий рисуется одной заливкой", () => {
-    expect(chart.getSegmentPatternOption("plain").lines).toHaveLength(0);
-  });
-
-  it("у штриховок уникальные id, а линии лежат по центру тайла", () => {
-    const ids = chart.SEGMENT_PATTERN_OPTIONS.map((option) => option.id);
-    expect(new Set(ids).size).toBe(ids.length);
-
-    // Линия по центру тайла — условие бесшовности: на краю соседние тайлы
-    // нарисовали бы её дважды в половинной толщине.
-    chart.SEGMENT_PATTERN_OPTIONS.filter((option) => option.lines.length).forEach((option) => {
-      expect(option.size).toBeGreaterThan(0);
-      expect(option.width).toBeGreaterThan(0);
-      expect(option.size / 2).toBeGreaterThan(option.width);
-    });
-  });
-});
