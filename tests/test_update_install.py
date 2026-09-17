@@ -268,3 +268,83 @@ def test_ready_installer_is_reused_without_redownload(tmp_path, monkeypatch):
     finally:
         with app.state_lock:
             app.state.update_job = None
+
+
+# --- выход процесса после старта установщика ------------------------------
+
+
+class _FakeTimer:
+    """Подменяет threading.Timer: запоминает задержку и действие, ничего не ждёт."""
+
+    started: list["_FakeTimer"] = []
+
+    def __init__(self, delay, action):
+        self.delay = delay
+        self.action = action
+        self.daemon = False
+
+    def start(self):
+        _FakeTimer.started.append(self)
+
+
+def _arm_ready_update(tmp_path, monkeypatch):
+    import hashlib
+    from types import SimpleNamespace
+
+    import run_wash_desktop as desktop
+
+    installer = tmp_path / "OptiCIP-Dashboard-Setup.exe"
+    installer.write_bytes(b"installer")
+    app.state.update_job = SimpleNamespace(
+        status="ready",
+        path=str(installer),
+        version="1.1.35",
+        sha256=hashlib.sha256(b"installer").hexdigest(),
+    )
+    monkeypatch.setattr(desktop.DesktopBridge, "_supports_installer", staticmethod(lambda: True))
+    monkeypatch.setattr(desktop, "INSTALLER_CONFIRM_WAIT", 0.05)
+    # Установщик «работает»: poll() не возвращает код всё окно ожидания.
+    monkeypatch.setattr(
+        desktop.subprocess, "Popen", lambda *a, **k: SimpleNamespace(poll=lambda: None)
+    )
+    _FakeTimer.started = []
+    monkeypatch.setattr(desktop.threading, "Timer", _FakeTimer)
+    return desktop
+
+
+def test_install_update_arms_forced_exit(tmp_path, monkeypatch):
+    # Пока процесс жив, установщик ждёт мьютекс и не может заменить .exe: тихая
+    # установка стоит на прогрессе. Поэтому выход дожимается по дедлайну.
+    desktop = _arm_ready_update(tmp_path, monkeypatch)
+    bridge = desktop.DesktopBridge()
+
+    assert bridge.install_update() == {"ok": True}
+
+    delays = [timer.delay for timer in _FakeTimer.started]
+    assert delays == [desktop.INSTALLER_WINDOW_CLOSE_DELAY, desktop.INSTALLER_EXIT_DEADLINE]
+    # Оба таймера daemon: обычный интерпретатор дожидался бы их в atexit, и
+    # штатный выход растянулся бы ровно на дедлайн.
+    assert all(timer.daemon for timer in _FakeTimer.started)
+
+
+def test_forced_exit_timer_exits_with_zero(tmp_path, monkeypatch):
+    desktop = _arm_ready_update(tmp_path, monkeypatch)
+    bridge = desktop.DesktopBridge()
+    bridge.install_update()
+
+    codes = []
+    monkeypatch.setattr(desktop, "force_exit", lambda code: codes.append(code))
+    _FakeTimer.started[1].action()
+
+    assert codes == [0]
+
+
+def test_install_update_without_ready_job_does_not_arm_timers(tmp_path, monkeypatch):
+    desktop = _arm_ready_update(tmp_path, monkeypatch)
+    app.state.update_job = None
+    bridge = desktop.DesktopBridge()
+
+    result = bridge.install_update()
+
+    assert result["ok"] is False
+    assert _FakeTimer.started == []

@@ -21,6 +21,7 @@ import webbrowser
 from contextlib import closing, nullcontext
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import Any, Callable
 
 import uvicorn
 
@@ -159,8 +160,18 @@ AUTOSTART_VALUE_NAME = "OptiCIP Dashboard"
 # окно. Inno Setup при отказе от UAC выходит сразу (код 1223), поэтому запас в
 # несколько секунд ловит и отказ, и падение на старте. Оператор может думать над
 # UAC дольше — тогда мы закроемся, а установщик дождётся освобождения AppMutex.
-INSTALLER_CONFIRM_WAIT = 8.0
+# Окно, в котором ловим «установщик стартовал и сразу умер» (отказ UAC, битый
+# файл). Держать его дольше нельзя: всё это время процесс жив, а установщик уже
+# проверяет мьютекс единственного экземпляра и ждёт, пока мы освободим .exe.
+INSTALLER_CONFIRM_WAIT = 2.5
 INSTALLER_POLL_INTERVAL = 0.25
+# Пауза перед закрытием окна: ровно чтобы результат дошёл до JS и показал тост.
+INSTALLER_WINDOW_CLOSE_DELAY = 0.8
+# Сколько ждём собственного выхода после старта установщика, прежде чем выйти
+# принудительно. Установщик ждёт мьютекс единственного экземпляра (AppMutex) и
+# не может заменить занятый .exe: пока процесс жив, тихая установка стоит, и
+# снаружи это выглядит зависшим прогрессом.
+INSTALLER_EXIT_DEADLINE = 2.5
 # Коды выхода Windows, по которым видно причину отказа.
 ERROR_CANCELLED = 1223  # пользователь нажал «Нет» в UAC
 ERROR_ELEVATION_REQUIRED = 740  # запуск требует повышения прав
@@ -1035,7 +1046,7 @@ class DesktopBridge:
         # отказ JS-промиса, и пользователь видит сырой Python-текст в тосте, а
         # в логе не остаётся НИЧЕГО. Ловим сами — тогда причина попадёт в лог.
         try:
-            if os.name != "nt":
+            if not self._supports_installer():
                 return {"ok": False, "error": "Установка обновления доступна только в Windows."}
 
             from webapp.app import state, state_lock
@@ -1118,10 +1129,49 @@ class DesktopBridge:
             return {"ok": False, "error": f"Не удалось запустить установщик: {error}"}
 
         # Установщик пережил окно ожидания — значит, работает. Закрываем окно
-        # отложенно, чтобы результат успел дойти до JS и показать тост.
-        logging.info("Установщик работает, закрываю окно через 1.5 с.")
-        threading.Timer(1.5, self.close_window).start()
+        # отложенно, чтобы результат успел дойти до JS и показать тост, и сразу
+        # заводим жёсткий дедлайн на выход процесса (см. _force_exit_for_update).
+        logging.info(
+            "Установщик работает, закрываю окно через %.1f с.", INSTALLER_WINDOW_CLOSE_DELAY
+        )
+        self._start_daemon_timer(INSTALLER_WINDOW_CLOSE_DELAY, self.close_window)
+        self._start_daemon_timer(INSTALLER_EXIT_DEADLINE, self._force_exit_for_update)
         return {"ok": True}
+
+    @staticmethod
+    def _supports_installer() -> bool:
+        # Отдельным предикатом, а не `os.name` по месту: подмена os.name в тестах
+        # заодно переключает pathlib на Windows-семантику и ломает работу с
+        # временными файлами.
+        return os.name == "nt"
+
+    @staticmethod
+    def _start_daemon_timer(delay: float, action: Callable[[], Any]) -> None:
+        # Именно daemon: обычный таймер интерпретатор дожидается в atexit, и
+        # штатный выход растянулся бы до срабатывания дедлайна.
+        timer = threading.Timer(delay, action)
+        timer.daemon = True
+        timer.start()
+
+    @staticmethod
+    def _force_exit_for_update() -> None:
+        """Дожимает выход процесса после старта установщика обновления.
+
+        Штатный выход гасит сервер и ждёт фоновую загрузку рабочей области (до
+        ~20 с, а незавершённые воркеры пула добавляют своё уже в atexit). Всё
+        это время процесс держит мьютекс и открытый .exe, а установщик стоит на
+        месте. Здесь ожидание не нужно: обновление всё равно перезапустит
+        приложение (/RELAUNCH=1), настройки и кэш пишутся атомарно, а
+        незавершённая фоновая загрузка повторится после перезапуска.
+
+        Если процесс успел выйти сам, таймер просто не доживёт до вызова.
+        """
+        logging.warning(
+            "Установка обновления: процесс жив через %.0f с после старта установщика —"
+            " выхожу принудительно, чтобы освободить мьютекс и .exe.",
+            INSTALLER_EXIT_DEADLINE,
+        )
+        force_exit(0)
 
     def open_external(self, payload: dict | None = None) -> dict[str, bool]:
         """Открывает URL в системном браузере (запасной путь веб-просмотра панели,
