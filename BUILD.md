@@ -132,6 +132,10 @@ version` сверяет их **до** сборки и роняет прогон 
   `runasoriginaluser`).
 - Обновление поверх работающего приложения: Inno Setup проверяет мьютекс
   `Local\OptiCIP-Dashboard-SingleInstance` (`AppMutex`) и просит закрыть окно.
+  Файлы, занятые приложением, освобождает Restart Manager:
+  `CloseApplications=force` завершает процесс принудительно, если сам он не
+  закрылся (например, «призрак» без окон от прежней версии), а
+  `RestartApplications=no` оставляет перезапуск секции `[Run]` (`/RELAUNCH=1`).
 
 ## Web-режим (без десктоп-окна)
 

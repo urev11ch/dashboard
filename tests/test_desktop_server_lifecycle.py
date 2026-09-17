@@ -53,3 +53,88 @@ def test_stop_is_safe_before_start():
     # Не должно бросать RuntimeError на join() непущенного потока.
     srv.stop()
     assert srv.server.should_exit is True
+
+
+# --- дочерние окна панелей не должны переживать главное окно ---------------
+#
+# Пока живо хоть одно окно webview, webview.start() не возвращается: процесс
+# остаётся в памяти без видимых окон, держит мьютекс единственного экземпляра и
+# открытый .exe. Установщик обновления в этом случае сообщает «программе
+# установки не удалось закрыть все приложения».
+
+
+class _FakeWindow:
+    def __init__(self, fail=False):
+        self.destroyed = False
+        self.fail = fail
+
+    def destroy(self):
+        if self.fail:
+            raise RuntimeError("окно уже закрыто")
+        self.destroyed = True
+
+
+def _bridge_with_panels(**kwargs):
+    bridge = desktop.DesktopBridge()
+    panels = {url: _FakeWindow(**kwargs) for url in ("http://panel-1/", "http://panel-2/")}
+    bridge._panel_windows.update(panels)
+    return bridge, panels
+
+
+def test_close_window_destroys_panel_windows():
+    bridge, panels = _bridge_with_panels()
+    main = _FakeWindow()
+    bridge._window = main
+
+    assert bridge.close_window() == {"ok": True}
+
+    assert main.destroyed is True
+    assert all(window.destroyed for window in panels.values())
+    assert bridge._panel_windows == {}
+
+
+def test_main_window_closed_event_destroys_panels():
+    # Крестик и Restart Manager закрывают окно мимо close_window — панели
+    # закрываются по событию closed главного окна.
+    bridge, panels = _bridge_with_panels()
+
+    bridge._on_main_window_closed()
+
+    assert all(window.destroyed for window in panels.values())
+    assert bridge._panel_windows == {}
+
+
+def test_panel_cleanup_survives_destroy_failure():
+    # Окно могло закрыться само: исключение не должно оставлять запись в реестре
+    # окон, иначе процесс «ждёт» уже несуществующее окно.
+    bridge, panels = _bridge_with_panels(fail=True)
+
+    bridge._on_main_window_closed()
+
+    assert bridge._panel_windows == {}
+
+
+def test_bind_window_subscribes_to_closed():
+    class _Event:
+        def __init__(self):
+            self.handlers = []
+
+        def __iadd__(self, handler):
+            self.handlers.append(handler)
+            return self
+
+    class _Events:
+        def __init__(self):
+            self.maximized = _Event()
+            self.restored = _Event()
+            self.closed = _Event()
+
+    class _Window:
+        def __init__(self):
+            self.events = _Events()
+
+    bridge = desktop.DesktopBridge()
+    window = _Window()
+    bridge.bind_window(window)
+
+    assert window.events.closed.handlers == [bridge._on_main_window_closed]

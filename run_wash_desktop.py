@@ -836,6 +836,7 @@ class DesktopBridge:
         for event_name, handler in (
             ("maximized", self._on_native_maximized),
             ("restored", self._on_native_restored),
+            ("closed", self._on_main_window_closed),
         ):
             try:
                 event = getattr(window.events, event_name, None)
@@ -843,6 +844,27 @@ class DesktopBridge:
                     event += handler
             except Exception:
                 logging.exception("Не удалось подписаться на событие окна %s", event_name)
+
+    def _on_main_window_closed(self, *_args) -> None:
+        """Главное окно закрыли — крестиком, Alt+F4 или запросом Restart Manager,
+        когда установщик просит освободить файлы.
+
+        Окна панелей (`open_panel_window`) — самостоятельные окна webview, и пока
+        живо хоть одно, `webview.start()` не возвращается: процесс остаётся в
+        памяти без единого видимого окна. Такой «призрак» держит мьютекс
+        единственного экземпляра и открытый .exe, поэтому установщик сообщает
+        «не удалось закрыть все приложения», а повторный запуск молча выходит.
+        """
+        self._destroy_panel_windows()
+
+    def _destroy_panel_windows(self) -> None:
+        for url, window in list(self._panel_windows.items()):
+            try:
+                window.destroy()
+            except Exception:  # noqa: BLE001 — окно могло закрыться само
+                logging.exception("Не удалось закрыть окно панели %s", url)
+            finally:
+                self._panel_windows.pop(url, None)
 
     def _on_native_maximized(self, *_args) -> None:
         self._maximized = True
@@ -1022,6 +1044,9 @@ class DesktopBridge:
         return bool(result["ok"])
 
     def close_window(self, *_args) -> dict[str, bool]:
+        # Дочерние окна панелей закрываем первыми: иначе процесс переживёт
+        # главное окно (см. _on_main_window_closed).
+        self._destroy_panel_windows()
         if self._window is None:
             return {"ok": False}
         try:
@@ -1171,7 +1196,7 @@ class DesktopBridge:
             " выхожу принудительно, чтобы освободить мьютекс и .exe.",
             INSTALLER_EXIT_DEADLINE,
         )
-        force_exit(0)
+        force_exit(0, "идёт установка обновления")
 
     def open_external(self, payload: dict | None = None) -> dict[str, bool]:
         """Открывает URL в системном браузере (запасной путь веб-просмотра панели,
@@ -1531,7 +1556,10 @@ def resolve_gui_backend() -> str | None:
 
 
 # Сколько ждём завершения фоновой загрузки рабочей области при закрытии окна.
-BACKGROUND_SHUTDOWN_TIMEOUT = 8.0
+# Сколько ждём остановки фоновой загрузки при выходе. Отмена ей уже выставлена,
+# а процесс всё равно завершается принудительно, поэтому ждать долго вредно:
+# всё это время установщик обновления не может заменить занятый .exe.
+BACKGROUND_SHUTDOWN_TIMEOUT = 4.0
 
 
 def request_background_shutdown() -> threading.Thread | None:
@@ -1580,12 +1608,17 @@ def join_background_loader(
     return True
 
 
-def force_exit(code: int) -> None:
-    """Принудительный выход, когда фоновые задачи не остановились: обычный выход
-    завис бы в atexit-джойне воркеров, окно уже закрыто, а «мёртвый» процесс
-    держал бы мьютекс единственного экземпляра (повторный запуск молча выходит).
-    Логи перед этим сбрасываем на диск — os._exit не делает ничего."""
-    logging.warning("Принудительное завершение процесса (код возврата %s)", code)
+def force_exit(code: int, reason: str = "фоновые задачи не остановились") -> None:
+    """Завершает процесс, не дожидаясь atexit.
+
+    Обычный выход джойнит не-daemon воркеров ThreadPoolExecutor (распаковка
+    архивов, анализ баз) — окно уже закрыто, а процесс живёт ещё минуты. Такой
+    «призрак» держит мьютекс единственного экземпляра (повторный запуск молча
+    выходит) и открытый .exe: установщик обновления упирается в него и сообщает
+    «не удалось закрыть все приложения».
+
+    Логи перед выходом сбрасываем на диск — os._exit не делает ничего."""
+    logging.info("Завершаю процесс (код возврата %s): %s", code, reason)
     logging.shutdown()
     os._exit(code)
 
@@ -1772,8 +1805,14 @@ def main(argv: list[str] | None = None) -> int:
                 window.destroy()
             except Exception:
                 logging.exception("Window destroy failed during shutdown")
-        if not background_stopped:
-            force_exit(exit_code)
+        force_exit(
+            exit_code,
+            "фоновая загрузка не остановилась"
+            if not background_stopped
+            else "окно закрыто, сервер остановлен",
+        )
+    # Сюда не возвращаемся: force_exit выше завершает процесс. Оставлено ради
+    # сигнатуры и статических анализаторов.
     return exit_code
 
 

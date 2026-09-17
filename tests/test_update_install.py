@@ -333,7 +333,7 @@ def test_forced_exit_timer_exits_with_zero(tmp_path, monkeypatch):
     bridge.install_update()
 
     codes = []
-    monkeypatch.setattr(desktop, "force_exit", lambda code: codes.append(code))
+    monkeypatch.setattr(desktop, "force_exit", lambda code, *_reason: codes.append(code))
     _FakeTimer.started[1].action()
 
     assert codes == [0]
