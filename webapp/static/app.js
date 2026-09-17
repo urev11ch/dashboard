@@ -1340,6 +1340,7 @@
   const dayFilter = document.querySelector("#dayFilter");
   const openDayFilterButton = document.querySelector("#openDayFilter");
   const clearDateFiltersButton = document.querySelector("#clearDateFilters");
+  const exportXlsxButton = document.querySelector("#exportXlsx");
   const periodPresetButtons = Array.from(document.querySelectorAll("[data-period-preset]"));
   const channelFilter = document.querySelector("#channelFilter");
   const sortOrder = document.querySelector("#sortOrder");
@@ -2752,6 +2753,133 @@
     syncOverlayState();
   }
 
+
+  function hasDesktopExportApi() {
+    return typeof window.pywebview?.api?.save_wash_export === "function";
+  }
+
+  // Имя файла задаёт сервер (Content-Disposition, filename* в UTF-8) — здесь
+  // только достаём его; без заголовка берём нейтральное.
+  function parseAttachmentFileName(header) {
+    const encoded = /filename\*=UTF-8''([^;]+)/i.exec(header || "");
+    if (encoded) {
+      try {
+        return decodeURIComponent(encoded[1].trim());
+      } catch (_error) {
+        // Битое процентное кодирование — уходим на дефолт ниже.
+      }
+    }
+    const plain = /filename="?([^";]+)"?/i.exec(header || "");
+    return plain ? plain[1].trim() : "Мойки.xlsx";
+  }
+
+  async function blobToBase64(blob) {
+    const buffer = await blob.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    // По кускам: btoa(String.fromCharCode(...bytes)) на файле в мегабайты
+    // разворачивает массив в аргументы и падает по лимиту стека.
+    let binary = "";
+    const CHUNK = 0x8000;
+    for (let offset = 0; offset < bytes.length; offset += CHUNK) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(offset, offset + CHUNK));
+    }
+    return btoa(binary);
+  }
+
+  function downloadBlobInBrowser(blob, fileName) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    // Освобождаем URL после клика: в Chrome/WebView2 отзыв в том же кадре
+    // иногда отменяет уже начатую загрузку.
+    window.setTimeout(() => URL.revokeObjectURL(url), 10000);
+  }
+
+  let exportJobInFlight = false;
+
+  async function exportWashesXlsx(button) {
+    if (exportJobInFlight) {
+      showToast("Выгрузка уже выполняется, дождитесь завершения.", "info");
+      return;
+    }
+
+    const rows = state.filteredRows.length ? state.filteredRows : getFilteredRows();
+    const keys = rows.map((row) => row.key).filter(Boolean);
+    if (!keys.length) {
+      showToast("Нет моек для выгрузки — измените фильтры.", "info");
+      return;
+    }
+
+    exportJobInFlight = true;
+    const originalLabel = button?.textContent || "Выгрузить XLSX";
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Готовлю...";
+    }
+
+    try {
+      const response = await fetchWithTimeout("/api/wash-export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keys }),
+        // Каждая строка читает сэмплы своей мойки: на сотнях моек это заметно
+        // дольше обычного запроса, но ждать бесконечно тоже нельзя.
+        timeout: 180000,
+      });
+
+      if (!response.ok) {
+        let detail = "";
+        try {
+          detail = (await response.json())?.detail || "";
+        } catch (_error) {
+          detail = "";
+        }
+        throw new Error(detail || "Не удалось подготовить файл.");
+      }
+
+      const missing = Number(response.headers.get("X-Export-Missing") || 0);
+      const fileName = parseAttachmentFileName(response.headers.get("Content-Disposition"));
+      const blob = await response.blob();
+
+      if (hasDesktopExportApi()) {
+        const result = await window.pywebview.api.save_wash_export({
+          file_name: fileName,
+          content_base64: await blobToBase64(blob),
+        });
+        if (result?.cancelled) {
+          showToast("Выгрузка отменена", "info");
+          return;
+        }
+        if (!result?.ok) {
+          throw new Error("desktop-export-save-failed");
+        }
+      } else {
+        downloadBlobInBrowser(blob, fileName);
+      }
+
+      showToast(`Выгружено моек: ${keys.length - missing}`, "success");
+      if (missing > 0) {
+        // Ключи, которых уже нет в анализе: список открыли до обновления
+        // источника, а выгрузили после.
+        showToast(`Пропущено моек (список устарел): ${missing}`, "info");
+      }
+    } catch (error) {
+      const message = error?.message && !/^desktop-/.test(error.message)
+        ? error.message
+        : "Не удалось выгрузить мойки. Попробуйте ещё раз.";
+      showToast(message, "error");
+    } finally {
+      exportJobInFlight = false;
+      if (button) {
+        button.disabled = false;
+        button.textContent = originalLabel;
+      }
+    }
+  }
 
   function hasDesktopPdfApi() {
     return typeof window.pywebview?.api?.save_graph_pdf === "function";
@@ -5147,6 +5275,12 @@
     resetAllSearchFilters();
     renderWashList({ resetScroll: true });
   });
+
+  if (exportXlsxButton) {
+    exportXlsxButton.addEventListener("click", () => {
+      void exportWashesXlsx(exportXlsxButton);
+    });
+  }
 
   if (workspaceRefreshForm) {
     workspaceRefreshForm.addEventListener("submit", async (event) => {

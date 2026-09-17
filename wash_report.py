@@ -13,7 +13,7 @@ from datetime import datetime
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from webapp.io_utils import read_json_object
 
@@ -1274,6 +1274,22 @@ def cycle_result_label_from_operations(
         return "Требует проверки, были паузы"
     return "Требует проверки"
 
+def phase_working_window(
+    series: Sequence[float], threshold: float
+) -> tuple[int, int] | None:
+    """Границы рабочей полки фазы в `series`: от первого до последнего значения
+    не ниже порога, полуинтервал [start, end).
+
+    Датчик стоит на возврате, поэтому края фазы — не режим: до полки контур
+    заполняется раствором, после неё раствор вытесняется водой. None — порог не
+    достигнут ни разу, полки нет.
+    """
+    reached = [index for index, value in enumerate(series) if value >= threshold]
+    if not reached:
+        return None
+    return reached[0], reached[-1] + 1
+
+
 def _evaluate_phase_concentration(
     series: Sequence[float], norm: float, threshold: float
 ) -> dict[str, Any]:
@@ -1290,11 +1306,12 @@ def _evaluate_phase_concentration(
     - `ok`: вышел на режим и держался. Показываем минимум полки.
     """
     peak = max(series)
-    reached = [index for index, value in enumerate(series) if value >= threshold]
-    if not reached:
+    window = phase_working_window(series, threshold)
+    if window is None:
         return {"status": "low", "reason": "not_reached", "peak": peak, "floor": None}
 
-    working = series[reached[0]: reached[-1] + 1]
+    start, end = window
+    working = series[start:end]
     floor = min(working)
     if floor < threshold:
         return {"status": "low", "reason": "dip", "peak": peak, "floor": floor}
@@ -1392,6 +1409,89 @@ def evaluate_concentration(
     else:
         kind = "ok"
     return {"phases": phases, "kind": kind}
+
+# Доля пика, по которой отделяется рабочая полка фазы, когда норматив не задан.
+# С нормативом порог даёт сама норма (с допуском); без него полку иначе не
+# отличить от заполнения контура и вытеснения, а выгрузка нужна и по объектам,
+# где нормативы не заведены.
+PHASE_PEAK_FRACTION = 0.5
+
+
+def phase_working_averages(
+    samples: Sequence[Sample],
+    process_id: int,
+    *,
+    norm: float | None = None,
+    tolerance_percent: float = 0.0,
+) -> tuple[float | None, float | None]:
+    """Средние концентрации возврата и температуры подачи на рабочей полке фазы.
+
+    Полка ищется по ряду концентрации (`phase_working_window`) — тем же способом,
+    каким её отделяет оценка концентрации, поэтому число в выгрузке и вердикт в
+    журнале говорят об одном участке. Температура усредняется по тем же сэмплам:
+    в начале фазы контур ещё прогревается, и среднее по всей фазе было бы ниже
+    режимного.
+
+    Порог полки — `норма·(1 − допуск/100)`, а без норматива `PHASE_PEAK_FRACTION`
+    от пика фазы. Если порог не достигнут ни разу (раствор не подан или слаб),
+    полки нет и средние считаются по всей фазе: занизить такую мойку честнее,
+    чем оставить строку выгрузки пустой.
+
+    Возвращает `(концентрация, температура подачи)`; None в позиции — считать
+    было не из чего.
+    """
+    phase_samples = [sample for sample in samples if sample.process == process_id]
+    if not phase_samples:
+        return None, None
+
+    concentrations = [
+        (index, sample.concentration_return)
+        for index, sample in enumerate(phase_samples)
+        if sample.concentration_return is not None and math.isfinite(sample.concentration_return)
+    ]
+
+    window_samples = phase_samples
+    if concentrations:
+        series = [value for _, value in concentrations]
+        threshold = _phase_threshold(series, norm, tolerance_percent)
+        window = phase_working_window(series, threshold)
+        if window is not None:
+            start, end = window
+            # Индексы окна — позиции в ряду концентраций; на сэмплы фазы их
+            # переводят сами точки ряда (у части сэмплов концентрации нет).
+            first = concentrations[start][0]
+            last = concentrations[end - 1][0]
+            window_samples = phase_samples[first : last + 1]
+
+    return (
+        _finite_average(sample.concentration_return for sample in window_samples),
+        _finite_average(sample.temperature_supply for sample in window_samples),
+    )
+
+
+def _phase_threshold(
+    series: Sequence[float], norm: float | None, tolerance_percent: float
+) -> float:
+    try:
+        norm_value = float(norm) if norm is not None else 0.0
+        tolerance = max(0.0, min(100.0, float(tolerance_percent)))
+    except (TypeError, ValueError):
+        norm_value, tolerance = 0.0, 0.0
+    if norm_value > 0:
+        return norm_value * (1.0 - tolerance / 100.0)
+    return max(series) * PHASE_PEAK_FRACTION
+
+
+def _finite_average(values: Iterable[float | None]) -> float | None:
+    total = 0.0
+    count = 0
+    for value in values:
+        if value is None or not math.isfinite(value):
+            continue
+        total += value
+        count += 1
+    return total / count if count else None
+
 
 def prune_samples_to_cycles(
     samples: Sequence[Sample],

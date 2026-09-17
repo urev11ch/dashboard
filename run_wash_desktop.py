@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import hmac
 import ipaddress
@@ -1208,22 +1210,58 @@ class DesktopBridge:
         self._save_current_view_pdf(target_path)
         return {"ok": True, "cancelled": False, "path": str(target_path)}
 
-    def _choose_target_path(self, default_name: str) -> Path | None:
+    def save_wash_export(self, payload: dict | None = None) -> dict[str, str | bool]:
+        """Сохраняет готовую книгу выгрузки (.xlsx) через системный диалог.
+
+        Книгу собирает сервер, а сюда она приходит от JS в base64: в окне
+        WebView2 обычная ссылка со `download` уходит в загрузки браузерного
+        движка мимо пользователя, и файл оказывается не там, где его ждут.
+        """
+        if self._window is None:
+            raise RuntimeError("Окно приложения не инициализировано.")
+
+        payload = payload or {}
+        try:
+            content = base64.b64decode(str(payload.get("content_base64") or ""), validate=True)
+        except (binascii.Error, ValueError):
+            logging.warning("Выгрузка моек: получено недекодируемое содержимое.")
+            return {"ok": False, "cancelled": False, "error": "bad-content"}
+        if not content:
+            return {"ok": False, "cancelled": False, "error": "empty-content"}
+
+        default_name = self._normalize_filename(
+            payload.get("file_name") or "washes.xlsx", suffix=".xlsx"
+        )
+        target_path = self._choose_target_path(
+            default_name, file_types=("Книга Excel (*.xlsx)",), suffix=".xlsx"
+        )
+        if target_path is None:
+            return {"ok": False, "cancelled": True}
+
+        target_path.write_bytes(content)
+        return {"ok": True, "cancelled": False, "path": str(target_path)}
+
+    def _choose_target_path(
+        self,
+        default_name: str,
+        file_types: tuple[str, ...] = ("PDF (*.pdf)",),
+        suffix: str = ".pdf",
+    ) -> Path | None:
         import webview
 
         assert self._window is not None
         result = self._window.create_file_dialog(
             self._dialog_type("SAVE", webview.SAVE_DIALOG),
             save_filename=default_name,
-            file_types=("PDF (*.pdf)",),
+            file_types=file_types,
         )
         if not result:
             return None
 
         selected = result[0] if isinstance(result, (list, tuple)) else result
         path = Path(selected)
-        if path.suffix.lower() != ".pdf":
-            path = path.with_suffix(".pdf")
+        if path.suffix.lower() != suffix:
+            path = path.with_suffix(suffix)
         return path
 
     def _choose_directory(self, initial_path: str = "") -> Path | None:
@@ -1415,12 +1453,12 @@ class DesktopBridge:
         return sys.platform in {"darwin", "win32"}
 
     @staticmethod
-    def _normalize_filename(value: str) -> str:
+    def _normalize_filename(value: str, suffix: str = ".pdf") -> str:
         normalized = str(value).strip() or "wash_graph"
         normalized = "".join("_" if char in '\\/:*?\"<>|' else char for char in normalized)
         normalized = "_".join(normalized.split())
-        if not normalized.lower().endswith(".pdf"):
-            normalized = f"{normalized}.pdf"
+        if not normalized.lower().endswith(suffix):
+            normalized = f"{normalized}{suffix}"
         return normalized
 
     @staticmethod

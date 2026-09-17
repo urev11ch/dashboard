@@ -15,12 +15,18 @@ import uuid
 # патчит app.OrderedDict), хотя сам app.py его не использует напрямую.
 from collections import OrderedDict
 from contextlib import asynccontextmanager
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from pathlib import Path
 from typing import Any
 
 from fastapi import Body, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -252,6 +258,14 @@ from webapp.views import (  # noqa: F401
     resolve_workspace_input_value,
 )
 from webapp.chart_payload import SERIES_CONFIG, build_cycle_chart_payload
+# Выгрузка журнала моек в .xlsx (сборка строк + книга).
+from webapp import wash_export
+from webapp.wash_export import (  # noqa: F401
+    EXPORT_COLUMNS,
+    build_export_rows,
+    build_export_workbook,
+    export_filename,
+)
 
 
 
@@ -1199,6 +1213,64 @@ def wash_details(key: str) -> JSONResponse:
     with state_lock:
         analysis = require_analysis()
     return JSONResponse(build_wash_detail(analysis, key))
+
+
+XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+@app.post("/api/wash-export")
+def export_washes(payload: dict[str, Any] = Body(...)) -> Response:
+    """Отдаёт .xlsx по списку ключей моек — ровно тех, что отобраны на экране.
+
+    Ключи присылает клиент: фильтры журнала (поиск, период, канал, сортировка)
+    живут в браузере, и повторять их разбор на сервере значило бы держать две
+    копии одного правила, которые разойдутся.
+    """
+    raw_keys = payload.get("keys")
+    if not isinstance(raw_keys, list):
+        raise HTTPException(status_code=400, detail="Ожидался список ключей моек.")
+
+    keys = [key for key in raw_keys if isinstance(key, str) and key]
+    if not keys:
+        raise HTTPException(status_code=400, detail="Нет моек для выгрузки.")
+    if len(keys) > config.WASH_EXPORT_MAX_ROWS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"За раз выгружается не больше {config.WASH_EXPORT_MAX_ROWS} моек — "
+                "сузьте период или фильтр."
+            ),
+        )
+
+    # Снимок берём под локом, чтение сэмплов и сборку книги делаем снаружи:
+    # выгрузка сотен моек тянет с диска потоки сэмплов, и держать на этом общий
+    # лок значило бы подвесить SSE и остальные запросы.
+    with state_lock:
+        analysis = require_analysis()
+        overrides = dict(state.object_name_overrides)
+    settings = load_app_settings()
+
+    rows, missing = build_export_rows(analysis, keys, settings, overrides)
+    if not rows:
+        raise HTTPException(
+            status_code=409,
+            detail="Выбранных моек нет в текущем анализе — обновите список и повторите.",
+        )
+
+    filename = export_filename()
+    content = build_export_workbook(rows)
+    return Response(
+        content=content,
+        media_type=XLSX_MEDIA_TYPE,
+        headers={
+            # filename* с UTF-8: имя файла кириллическое, в голом filename= его
+            # браузеры и WebView2 разбирают по-разному.
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+            # Сколько ключей не нашлось в анализе — UI показывает предупреждение.
+            "X-Export-Missing": str(missing),
+            "X-Export-Rows": str(len(rows)),
+        },
+    )
 
 
 @app.get("/api/wash-chart-data")
