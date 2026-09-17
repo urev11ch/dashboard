@@ -170,6 +170,8 @@ def build_cycle_chart_payload(
             "start": round(segment.start_ts * 1000),
             "end": round(segment.end_ts * 1000),
             "color": core.operation_color(segment.process_id),
+            # Штриховка полосы: на ч/б печати цвет фазы теряется, линии — нет.
+            "pattern": core.operation_pattern(segment.process_id),
         }
         for index, segment in enumerate(cycle_segments, start=1)
     ]
