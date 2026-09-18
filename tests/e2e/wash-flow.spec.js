@@ -48,3 +48,34 @@ test("сбой обновления разблокирует кнопку и п�
   await expect(page.locator("#screenErrorNotice")).toBeVisible({ timeout: 15000 });
   await expect(refreshButton).toBeEnabled({ timeout: 15000 });
 });
+
+test("дата и время везде в одном формате ДД.ММ.ГГГГ ЧЧ:ММ:СС", async ({ page }) => {
+  await openWashList(page);
+
+  // Регресс, от которого защищаемся: карточка мойки и печатный отчёт писали
+  // «14.07.2026. 12.00.00» (точки вместо двоеточий), диагностика — сырое
+  // «2026-07-14 12:00:00» с бэкенда, список — третий вариант.
+  const FORMAT = /^\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}:\d{2}$/;
+
+  const listTime = await page.locator("#washList [data-key] .wash-entry-time").first().innerText();
+  expect(listTime.trim()).toMatch(FORMAT);
+
+  await page.locator("#washList [data-key]").first().click();
+  const modalRow = page.locator("tr", { has: page.getByRole("rowheader", { name: "Начало мойки" }) });
+  await expect(modalRow.locator("td")).toHaveText(FORMAT, { timeout: 15000 });
+});
+
+test("результат мойки по умолчанию скрыт и включается тумблером", async ({ page }) => {
+  // Свежий профиль: ключа opticipShowWashResultV1 в localStorage нет.
+  await openWashList(page);
+
+  const badge = page.locator("#washList [data-key] .wash-cell--status .badge").first();
+  await expect(badge).toBeHidden();
+
+  await page.locator("#openSettings").click();
+  const toggle = page.locator("[data-setting-wash-result]");
+  await expect(toggle).not.toBeChecked();
+
+  await toggle.check();
+  await expect(badge).toBeVisible();
+});

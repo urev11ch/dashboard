@@ -1266,6 +1266,8 @@
   const WASH_LIST_OVERSCAN = 8;
   const SEARCH_INPUT_DEBOUNCE_MS = 180;
   const DEFAULT_PERIOD_PRESET = "7d";
+  // Пресет → сколько календарных суток показываем, считая сегодняшние.
+  const PERIOD_PRESET_DAYS = { "7d": 7, "30d": 30 };
   // Потолок опроса /api/update/job: 500 мс × 2400 ≈ 20 минут.
   const UPDATE_POLL_MAX_TICKS = 2400;
   const state = {
@@ -1489,11 +1491,16 @@
 
   const WASH_RESULT_PREF_KEY = "opticipShowWashResultV1";
 
+  // По умолчанию результат мойки НЕ показывается: вердикт зависит от настроек
+  // (шаг окончания, нормативы концентрации), и до того, как их задали под
+  // конкретную станцию, колонка вводит в заблуждение. Показывается только по
+  // явному включению — ключ со значением "1". Тем, кто уже включил тумблер
+  // раньше, ключ сохраняет выбор (значение не менялось).
   function isWashResultVisible() {
     try {
-      return window.localStorage.getItem(WASH_RESULT_PREF_KEY) !== "0";
+      return window.localStorage.getItem(WASH_RESULT_PREF_KEY) === "1";
     } catch (error) {
-      return true;
+      return false;
     }
   }
 
@@ -1528,26 +1535,57 @@
     return resolved === "completed" ? "badge ok" : "badge warn";
   }
 
-  function formatModalDateTime(value) {
-    const match = String(value ?? "").match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);
-    if (!match) {
-      return String(value ?? "—");
-    }
-
-    const [, year, month, day, hours, minutes, seconds] = match;
-    return `${day}.${month}.${year}. ${hours}.${minutes}.${seconds}`;
-  }
-
+  // Единый формат даты и времени во всём приложении: ДД.ММ.ГГГГ ЧЧ:ММ:СС.
+  // Раньше карточка мойки и печатный отчёт писали «14.07.2026. 12.00.00»
+  // (точки вместо двоеточий), список — «14.07.2026 12:00:00», а диагностика
+  // отдавала сырое «2026-07-14 12:00:00» с бэкенда: три вида одной метки.
+  //
   // Возвращает сырую строку: экранирование — только в месте вставки в разметку,
   // иначе получалось двойное экранирование (&amp;quot; в тултипе).
-  function formatListDateTime(value) {
-    const match = String(value ?? "").match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);
+  function formatDateTime(value) {
+    const match = String(value ?? "").match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/);
     if (!match) {
       return String(value ?? "—");
     }
 
     const [, year, month, day, hours, minutes, seconds] = match;
     return `${day}.${month}.${year} ${hours}:${minutes}:${seconds}`;
+  }
+
+  // Epoch-секунды в том же формате и в таймзоне СЕРВЕРА — как format_ts на
+  // бэкенде. Сдвигаем метку на смещение сервера и читаем компоненты как UTC;
+  // без смещения (сервер его не отдал) — зона браузера, как раньше.
+  function formatEpochSeconds(seconds) {
+    const value = Number(seconds);
+    if (!Number.isFinite(value)) {
+      return "—";
+    }
+
+    const useServerTz = state.serverTzOffsetMin !== null;
+    const date = new Date(value * 1000 + (useServerTz ? state.serverTzOffsetMin * 60000 : 0));
+    if (Number.isNaN(date.getTime())) {
+      return "—";
+    }
+
+    const pad = (part) => String(part).padStart(2, "0");
+    const [year, month, day, hours, minutes, secs] = useServerTz
+      ? [
+          date.getUTCFullYear(),
+          date.getUTCMonth() + 1,
+          date.getUTCDate(),
+          date.getUTCHours(),
+          date.getUTCMinutes(),
+          date.getUTCSeconds(),
+        ]
+      : [
+          date.getFullYear(),
+          date.getMonth() + 1,
+          date.getDate(),
+          date.getHours(),
+          date.getMinutes(),
+          date.getSeconds(),
+        ];
+    return `${pad(day)}.${pad(month)}.${year} ${pad(hours)}:${pad(minutes)}:${pad(secs)}`;
   }
 
   function buildSearchBlob(row) {
@@ -1913,11 +1951,13 @@
     if (state.activePeriodPreset === "today") {
       return getServerDayStartTs(getServerDateKey());
     }
-    if (state.activePeriodPreset === "7d") {
-      return (Date.now() - 7 * 24 * 60 * 60 * 1000) / 1000;
-    }
-    if (state.activePeriodPreset === "30d") {
-      return (Date.now() - 30 * 24 * 60 * 60 * 1000) / 1000;
+    // «7 дней» — это 7 календарных суток, включая сегодняшние, а не скользящее
+    // окно ровно в 168 часов: иначе в 15:00 мойка, начавшаяся семь дней назад
+    // утром, из списка выпадала («вчера была, сегодня пропала»).
+    const presetDays = PERIOD_PRESET_DAYS[state.activePeriodPreset];
+    if (presetDays) {
+      const firstDayKey = getServerDateKey(Date.now() - (presetDays - 1) * 24 * 60 * 60 * 1000);
+      return getServerDayStartTs(firstDayKey);
     }
     return null;
   }
@@ -2085,7 +2125,7 @@
   }
 
   function renderWashRow(row) {
-    const dateTime = escapeHtml(formatListDateTime(row.date_time));
+    const dateTime = escapeHtml(formatDateTime(row.date_time));
     return `
       <div class="wash-row" data-key="${escapeHtml(row.key)}" role="button" tabindex="0">
         <div class="wash-cell wash-cell--primary">
@@ -2632,8 +2672,8 @@
     return [
       ["Объект", detail.object_name],
       ["Программа мойки", detail.program],
-      ["Начало мойки", formatModalDateTime(detail.start_time || detail.date_time)],
-      ["Конец мойки", formatModalDateTime(detail.end_time)],
+      ["Начало мойки", formatDateTime(detail.start_time || detail.date_time)],
+      ["Конец мойки", formatDateTime(detail.end_time)],
       ["Длительность мойки", detail.duration],
       ["Результат", detail.status],
       ...concentrationSummaryRows(detail),
@@ -3833,7 +3873,7 @@
       ? [
           ["Источник", kindLabel[data.source_kind] || "—"],
           ["Путь", data.display_root || "—"],
-          ["Последняя синхронизация", data.last_sync || "—"],
+          ["Последняя синхронизация", formatDateTime(data.last_sync) || "—"],
           ["Моек", counts.cycles ?? 0],
           ["Объектов", counts.objects ?? 0],
           ["Баз данных", counts.databases ?? 0],
@@ -3848,7 +3888,7 @@
             "Хранение архивов",
             data.datalog?.retention_enabled ? `${data.datalog.retention_days} дней` : "выкл",
           ],
-          ["Последняя очистка", data.datalog?.last_cleanup || "—"],
+          ["Последняя очистка", formatDateTime(data.datalog?.last_cleanup) || "—"],
           ["Обработка", data.job?.active ? data.job.message || "выполняется" : "нет"],
           ["Ошибка", data.error || "—"],
         ]
@@ -4270,9 +4310,10 @@
     }
     if (isTimestampColumn(column) && typeof value === "number" && value > 10 ** 8 && value < 10 ** 11) {
       // Метку времени панели показываем датой, сырое значение — в подсказке.
-      const date = new Date(value * 1000);
-      if (!Number.isNaN(date.getTime())) {
-        const text = date.toLocaleString("ru-RU", { hour12: false });
+      // Формат и зона — те же, что в журнале (зона сервера), иначе одна и та же
+      // мойка выглядела бы по-разному в списке и в просмотрщике базы.
+      const text = formatEpochSeconds(value);
+      if (text !== "—") {
         return `<span title="${escapeHtml(value)}">${escapeHtml(text)}</span>`;
       }
     }
@@ -4904,11 +4945,11 @@
                   </tr>
                   <tr>
                     <th scope="row">Начало мойки</th>
-                    <td>${escapeHtml(formatModalDateTime(detail.start_time || detail.date_time))}</td>
+                    <td>${escapeHtml(formatDateTime(detail.start_time || detail.date_time))}</td>
                   </tr>
                   <tr>
                     <th scope="row">Конец мойки</th>
-                    <td>${escapeHtml(formatModalDateTime(detail.end_time))}</td>
+                    <td>${escapeHtml(formatDateTime(detail.end_time))}</td>
                   </tr>
                   <tr>
                     <th scope="row">Длительность мойки</th>
