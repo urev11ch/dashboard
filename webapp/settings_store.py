@@ -159,47 +159,36 @@ def apply_object_name_overrides(
 
 # ---- названия программ мойки ------------------------------------------------
 # Хранилище — wash_program_names.json рядом с остальными настройками, структура
-# {"programs": {"<область>": {"<номер программы>": "название"}}}. Область читаем
-# и пишем строкой (core.program_scope_key), чтобы файл оставался читаемым руками.
+# {"programs": {"<номер программы>": "название"}}. Номера в JSON строками: другого
+# типа ключа там нет.
 def program_name_overrides_path(root_path: Path) -> Path:
     return root_path / PROGRAM_NAME_OVERRIDES_FILENAME
 
 
-def normalize_program_name_overrides(raw_programs: Any) -> dict[str, dict[int, str]]:
-    """JSON → {область: {номер: название}}. Негодные ключи и пустые названия
-    выбрасываем молча: это не потеря данных, а отсев мусора в чужой правке."""
+def normalize_program_name_overrides(raw_programs: Any) -> dict[int, str]:
+    """JSON → {номер: название}. Негодные ключи и пустые названия выбрасываем
+    молча: это не потеря данных, а отсев мусора в правке файла руками."""
     if not isinstance(raw_programs, dict):
         return {}
 
-    overrides: dict[str, dict[int, str]] = {}
-    for raw_scope, raw_entries in raw_programs.items():
-        scope = str(raw_scope).strip()
-        if core.parse_program_scope_key(scope) is None:
+    overrides: dict[int, str] = {}
+    for raw_program_id, raw_name in raw_programs.items():
+        try:
+            program_id = int(raw_program_id)
+        except (TypeError, ValueError):
             continue
-        if not isinstance(raw_entries, dict):
+        if not PROGRAM_ID_MIN <= program_id <= PROGRAM_ID_MAX:
             continue
 
-        entries: dict[int, str] = {}
-        for raw_program_id, raw_name in raw_entries.items():
-            try:
-                program_id = int(raw_program_id)
-            except (TypeError, ValueError):
-                continue
-            if not PROGRAM_ID_MIN <= program_id <= PROGRAM_ID_MAX:
-                continue
-
-            name = " ".join(str(raw_name or "").split())[:PROGRAM_NAME_MAX_LEN]
-            if not name:
-                continue
-            entries[program_id] = name
-
-        if entries:
-            overrides[scope] = entries
+        name = " ".join(str(raw_name or "").split())[:PROGRAM_NAME_MAX_LEN]
+        if not name:
+            continue
+        overrides[program_id] = name
 
     return overrides
 
 
-def load_program_name_overrides(root_path: Path | None) -> dict[str, dict[int, str]]:
+def load_program_name_overrides(root_path: Path | None) -> dict[int, str]:
     if root_path is None:
         return {}
 
@@ -207,17 +196,15 @@ def load_program_name_overrides(root_path: Path | None) -> dict[str, dict[int, s
     return normalize_program_name_overrides(payload.get("programs"))
 
 
-def save_program_name_overrides(root_path: Path, overrides: dict[str, dict[int, str]]) -> None:
+def save_program_name_overrides(root_path: Path, overrides: dict[int, str]) -> None:
     path = program_name_overrides_path(root_path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     programs_payload = {
-        scope: {str(program_id): name for program_id, name in sorted(entries.items()) if name.strip()}
-        for scope, entries in sorted(overrides.items())
-        if entries
+        str(program_id): name
+        for program_id, name in sorted(overrides.items())
+        if name.strip()
     }
-    programs_payload = {scope: entries for scope, entries in programs_payload.items() if entries}
-
     if not programs_payload:
         # Пустой файл не держим: его отсутствие — валидное состояние «ничего не
         # переименовано», и так же ведёт себя файл имён объектов.
@@ -236,18 +223,13 @@ def save_program_name_overrides(root_path: Path, overrides: dict[str, dict[int, 
     )
 
 
-def resolve_program_name(
-    channel: int,
-    object_id: int,
-    program_id: int,
-    overrides: dict[str, dict[int, str]] | None = None,
-) -> str:
-    return core.resolve_program_name(channel, object_id, program_id, overrides)
+def resolve_program_name(program_id: int, overrides: dict[int, str] | None = None) -> str:
+    return core.resolve_program_name(program_id, overrides)
 
 
 def apply_program_name_overrides(
     analysis: core.AnalysisResult | None,
-    overrides: dict[str, dict[int, str]],
+    overrides: dict[int, str],
 ) -> None:
     """Накладывает пользовательские названия на уже разобранный анализ.
 
@@ -259,9 +241,7 @@ def apply_program_name_overrides(
 
     for collection in (analysis.segments, analysis.cycles):
         for item in collection:
-            item.program_name = core.resolve_program_name(
-                item.channel, item.object_id, item.program_id, overrides
-            )
+            item.program_name = core.resolve_program_name(item.program_id, overrides)
 
 
 # ---- стили кривых графика (цвет + тип линии), общие для всех источников -----

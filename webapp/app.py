@@ -244,9 +244,7 @@ from webapp.analysis import (  # noqa: F401
 from webapp import views
 from webapp.views import (  # noqa: F401
     build_object_rows,
-    build_program_editor_payload,
     build_program_rows,
-    build_program_scopes,
     build_scan_warnings,
     build_seed_object_name_overrides,
     build_summary_payload,
@@ -683,7 +681,7 @@ def workspace_data() -> JSONResponse:
         snapshot.analysis, snapshot.analysis_revision, snapshot.object_name_overrides
     )
     payload["object_rows"] = build_object_rows(snapshot.object_name_overrides, snapshot.analysis)
-    payload["program_scopes"] = build_program_scopes(
+    payload["program_rows"] = build_program_rows(
         snapshot.program_name_overrides, snapshot.analysis
     )
     return JSONResponse(payload)
@@ -946,23 +944,13 @@ def sync_object_names_file() -> JSONResponse:
 # и без архива, а файл названий лежит в TEMP_ROOT рядом с прочими настройками.
 # Требовать открытый источник (как для переименования объекта) здесь незачем —
 # это мешало бы заполнить названия заранее.
-def normalized_program_scope(raw_scope: object) -> str:
-    scope = str(raw_scope or core.PROGRAM_SCOPE_ALL).strip()
-    if core.parse_program_scope_key(scope) is None:
-        raise HTTPException(status_code=400, detail="Некорректная область названий программ.")
-    return scope
-
-
 @app.get("/api/program-names")
-def get_program_names(scope: str = core.PROGRAM_SCOPE_ALL) -> JSONResponse:
-    resolved_scope = normalized_program_scope(scope)
+def get_program_names() -> JSONResponse:
     with state_lock:
-        overrides = {
-            key: dict(entries) for key, entries in state.program_name_overrides.items()
-        }
+        overrides = dict(state.program_name_overrides)
         analysis = state.analysis
 
-    return JSONResponse(build_program_editor_payload(overrides, analysis, resolved_scope))
+    return JSONResponse({"program_rows": build_program_rows(overrides, analysis)})
 
 
 @app.post("/api/program-name")
@@ -970,27 +958,22 @@ def update_program_name(payload: dict[str, Any] = Body(...)) -> JSONResponse:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Некорректное тело запроса.")
 
-    scope = normalized_program_scope(payload.get("scope"))
     mode = str(payload.get("mode") or "set").strip().lower()
-    if mode not in {"set", "reset", "reset_scope"}:
+    if mode not in {"set", "reset"}:
         raise HTTPException(status_code=400, detail="Некорректный режим сохранения программы.")
 
-    program_id = 0
-    if mode != "reset_scope":
-        try:
-            program_id = int(payload.get("program_id"))
-        except (TypeError, ValueError) as exc:
-            raise HTTPException(
-                status_code=400, detail="Не удалось определить номер программы."
-            ) from exc
-        if not config.PROGRAM_ID_MIN <= program_id <= config.PROGRAM_ID_MAX:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Номер программы должен быть в диапазоне от {config.PROGRAM_ID_MIN} "
-                    f"до {config.PROGRAM_ID_MAX}."
-                ),
-            )
+    try:
+        program_id = int(payload.get("program_id"))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Не удалось определить номер программы.") from exc
+    if not config.PROGRAM_ID_MIN <= program_id <= config.PROGRAM_ID_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Номер программы должен быть в диапазоне от {config.PROGRAM_ID_MIN} "
+                f"до {config.PROGRAM_ID_MAX}."
+            ),
+        )
 
     normalized_name = " ".join(str(payload.get("name") or "").split())
     if mode == "set":
@@ -1006,22 +989,11 @@ def update_program_name(payload: dict[str, Any] = Body(...)) -> JSONResponse:
             )
 
     with state_lock:
-        overrides = {
-            key: dict(entries) for key, entries in state.program_name_overrides.items()
-        }
-        entries = overrides.get(scope, {})
-
+        overrides = dict(state.program_name_overrides)
         if mode == "set":
-            entries[program_id] = normalized_name
-            overrides[scope] = entries
-        elif mode == "reset":
-            entries.pop(program_id, None)
-            if entries:
-                overrides[scope] = entries
-            else:
-                overrides.pop(scope, None)
+            overrides[program_id] = normalized_name
         else:
-            overrides.pop(scope, None)
+            overrides.pop(program_id, None)
 
         try:
             save_program_name_overrides(config.TEMP_ROOT, overrides)
@@ -1038,41 +1010,30 @@ def update_program_name(payload: dict[str, Any] = Body(...)) -> JSONResponse:
             state.analysis_revision += 1
         # Ответ собираем под тем же локом — иначе клиент может получить строки,
         # не соответствующие только что сохранённой правке.
-        editor_payload = build_program_editor_payload(
-            state.program_name_overrides, state.analysis, scope
-        )
+        program_rows = build_program_rows(state.program_name_overrides, state.analysis)
 
-    return JSONResponse({"ok": True, "mode": mode, **editor_payload})
+    return JSONResponse({"ok": True, "mode": mode, "program_rows": program_rows})
 
 
 @app.post("/api/program-names-file/sync")
-def sync_program_names_file(payload: dict[str, Any] = Body(default=None)) -> JSONResponse:
-    """Материализует файл названий: записывает в выбранную область то, что сейчас
-    показывается. Дальше его можно править руками или раздать на другие машины."""
-    scope = normalized_program_scope((payload or {}).get("scope"))
-
+def sync_program_names_file() -> JSONResponse:
+    """Материализует файл названий: записывает то, что сейчас показывается.
+    Дальше его можно править руками или раздать на другие машины."""
     with state_lock:
-        overrides = {
-            key: dict(entries) for key, entries in state.program_name_overrides.items()
-        }
+        overrides = dict(state.program_name_overrides)
         path = program_name_overrides_path(config.TEMP_ROOT)
         file_existed = path.exists()
 
-        rows = build_program_rows(overrides, state.analysis, scope)
-        entries = dict(overrides.get(scope, {}))
+        next_overrides = dict(overrides)
         added_entry_count = 0
-        for row in rows:
+        for row in build_program_rows(overrides, state.analysis):
             program_id = int(row["program_id"])
-            if program_id in entries:
+            if program_id in next_overrides:
                 continue
-            entries[program_id] = str(row["program_name"])
+            next_overrides[program_id] = str(row["program_name"])
             added_entry_count += 1
 
-        next_overrides = dict(overrides)
-        if entries:
-            next_overrides[scope] = entries
         changed = next_overrides != overrides or not file_existed
-
         if changed:
             try:
                 save_program_name_overrides(config.TEMP_ROOT, next_overrides)
@@ -1086,9 +1047,7 @@ def sync_program_names_file(payload: dict[str, Any] = Body(default=None)) -> JSO
                 apply_program_name_overrides(state.analysis, next_overrides)
                 state.analysis_revision += 1
 
-        editor_payload = build_program_editor_payload(
-            state.program_name_overrides, state.analysis, scope
-        )
+        program_rows = build_program_rows(state.program_name_overrides, state.analysis)
 
     return JSONResponse(
         {
@@ -1096,9 +1055,9 @@ def sync_program_names_file(payload: dict[str, Any] = Body(default=None)) -> JSO
             "changed": changed,
             "created": not file_existed,
             "file_path": str(path),
-            "entry_count": len(state.program_name_overrides.get(scope, {})),
+            "entry_count": len(state.program_name_overrides),
             "added_entry_count": added_entry_count,
-            **editor_payload,
+            "program_rows": program_rows,
         }
     )
 

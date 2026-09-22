@@ -769,68 +769,18 @@ def load_object_name_overrides_for_db_files(
 # ---- названия программ мойки ------------------------------------------------
 # Названия программ задаёт пользователь: в архиве панели лежит только номер
 # программы (data_format_<i> по подписи «Программа»), справочника имён там нет.
-# Область действия названия: "*" — все объекты, "<канал>" — весь канал,
-# "<канал>:<объект>" — конкретный объект. Иерархия нужна потому, что на станции
-# набор программ у объектов обычно общий и расходится у единиц: плоский ключ по
-# объекту заставлял бы вводить одни и те же семь названий для каждого объекта.
-PROGRAM_SCOPE_ALL = "*"
-
-def program_scope_key(channel: int | None = None, object_id: int | None = None) -> str:
-    if channel is None:
-        return PROGRAM_SCOPE_ALL
-    if object_id is None:
-        return str(channel)
-    return f"{channel}:{object_id}"
-
-def parse_program_scope_key(raw_key: str) -> tuple[int | None, int | None] | None:
-    """"*" → (None, None), "2" → (2, None), "2:5" → (2, 5). None — ключ негоден."""
-    text = str(raw_key).strip()
-    if text == PROGRAM_SCOPE_ALL:
-        return None, None
-
-    parts = text.split(":", 1)
-    try:
-        channel = int(parts[0])
-    except ValueError:
-        return None
-    if channel <= 0:
-        return None
-
-    if len(parts) == 1:
-        return channel, None
-
-    try:
-        object_id = int(parts[1])
-    except ValueError:
-        return None
-    if object_id < 0:
-        return None
-    return channel, object_id
-
-def program_scope_chain(channel: int, object_id: int) -> tuple[str, ...]:
-    """Порядок поиска названия — от частного к общему."""
-    return (
-        program_scope_key(channel, object_id),
-        program_scope_key(channel),
-        PROGRAM_SCOPE_ALL,
-    )
-
+# Список программ на станции один и тот же для всех объектов, поэтому и название
+# одно на номер — без разбивки по каналам и объектам.
 def fallback_program_name(program_id: int) -> str:
     """Встроенное название программы. Неизвестный номер не прячем за прочерком:
-    «Программа 9» в журнале — сигнал, что на объекте есть незаполненный слот."""
+    «Программа 9» в журнале — сигнал, что на панели есть незаполненный слот."""
     return PROGRAM_NAMES.get(program_id, f"Программа {program_id}")
 
 def resolve_program_name(
-    channel: int,
-    object_id: int,
     program_id: int,
-    overrides: Mapping[str, Mapping[int, str]] | None = None,
+    overrides: Mapping[int, str] | None = None,
 ) -> str:
-    for scope in program_scope_chain(channel, object_id):
-        name = (overrides or {}).get(scope, {}).get(program_id)
-        if name:
-            return name
-    return fallback_program_name(program_id)
+    return (overrides or {}).get(program_id) or fallback_program_name(program_id)
 
 def name_for_program(program_id: int) -> str:
     """Название на этапе разбора архива — всегда встроенное.

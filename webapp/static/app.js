@@ -1275,12 +1275,8 @@
     channelLabels: new Map(),
     washRowIndexesByObjectKey: new Map(),
     objectRows: [],
-    // Редактор названий: активная вкладка и состояние вкладки «Программы».
-    // programScope — область («*», «<канал>», «<канал>:<объект>»), programRows —
-    // строки этой области с сервера (там же считается наследование).
+    // Редактор названий: активная вкладка и строки вкладки «Программы».
     editorTab: "objects",
-    programScope: "*",
-    programScopes: [],
     programRows: [],
     filteredRows: [],
     displayItems: [],
@@ -1784,7 +1780,7 @@
 
     applyWorkspaceMeta(payload);
     replaceObjectRows(payload?.object_rows);
-    replaceProgramScopes(payload?.program_scopes);
+    replaceProgramRows(payload?.program_rows);
     replaceWashRows(payload?.wash_rows);
     fillChannelFilter();
     syncDateFilterBounds();
@@ -4163,35 +4159,10 @@
   // ---- редактор названий программ мойки -------------------------------
   // Названия программ в архиве панели не хранятся — там только номер. Что этот
   // номер значит, знает лишь пользователь, поэтому названия задаются здесь и
-  // ложатся в wash_program_names.json. Область («Все объекты» → канал → объект)
-  // нужна потому, что на одной станции набор программ у объектов обычно общий и
-  // расходится у единиц: без иерархии одни и те же семь названий пришлось бы
-  // вводить для каждого объекта заново.
-  const PROGRAM_SCOPE_ALL = "*";
-
-  const PROGRAM_SCOPE_HINTS = {
-    all: "Действует на все объекты — кроме тех, где задано своё название для канала или объекта.",
-    channel: "Переопределяет «Все объекты» для всех объектов этого канала.",
-    object: "Переопределяет канал и «Все объекты» только для этого объекта.",
-  };
-
-  function replaceProgramScopes(scopes) {
-    state.programScopes = Array.isArray(scopes) ? scopes.map((scope) => ({ ...scope })) : [];
-    // Источник могли переоткрыть, и прежней области в нём может не быть —
-    // иначе редактор открылся бы на области, которой нет в списке.
-    if (!state.programScopes.some((scope) => scope.scope === state.programScope)) {
-      state.programScope = PROGRAM_SCOPE_ALL;
-    }
-  }
-
-  function currentProgramScope() {
-    return (
-      state.programScopes.find((scope) => scope.scope === state.programScope) || {
-        scope: PROGRAM_SCOPE_ALL,
-        label: "Все объекты",
-        kind: "all",
-      }
-    );
+  // ложатся в wash_program_names.json. Список программ на станции один и тот же
+  // для всех объектов, поэтому название одно на номер.
+  function replaceProgramRows(rows) {
+    state.programRows = Array.isArray(rows) ? rows.map((row) => ({ ...row })) : [];
   }
 
   async function requestProgramNames(url, options = {}) {
@@ -4211,72 +4182,12 @@
     return response.json();
   }
 
-  function applyProgramEditorPayload(payload) {
-    if (!payload) {
-      return;
-    }
-    if (Array.isArray(payload.scopes)) {
-      state.programScopes = payload.scopes.map((scope) => ({ ...scope }));
-    }
-    if (typeof payload.scope === "string" && payload.scope) {
-      state.programScope = payload.scope;
-    }
-    if (Array.isArray(payload.program_rows)) {
-      state.programRows = payload.program_rows.map((row) => ({ ...row }));
-    }
-  }
-
-  async function loadProgramRows(scope = state.programScope) {
-    const payload = await requestProgramNames(
-      `/api/program-names?scope=${encodeURIComponent(scope)}`
-    );
-    applyProgramEditorPayload(payload);
-    return payload;
-  }
-
-  async function persistProgramName(scope, programId, name = "", mode = "set") {
+  async function persistProgramName(programId, name = "", mode = "set") {
     return requestProgramNames("/api/program-name", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scope, program_id: programId, name, mode }),
+      body: JSON.stringify({ program_id: programId, name, mode }),
     });
-  }
-
-  function renderProgramScopeChoices() {
-    if (!state.programScopes.length) {
-      return `
-        <button
-          type="button"
-          class="object-editor-choice is-selected"
-          data-program-scope="${escapeHtml(PROGRAM_SCOPE_ALL)}"
-        >Все объекты</button>
-      `;
-    }
-
-    return state.programScopes
-      .map((scope) => {
-        const isSelected = scope.scope === state.programScope;
-        const entryCount = Number(scope.entry_count || 0);
-        // Канал занимает строку целиком, его объекты идут под ним: плоский ряд
-        // «Канал 2», «Танк 1», «Танк 2», «Канал 3» не читается — непонятно, чей
-        // это объект.
-        const modifier =
-          scope.kind === "object"
-            ? " object-editor-choice--nested"
-            : scope.kind === "channel"
-              ? " object-editor-choice--channel"
-              : "";
-        const badge = entryCount ? `<span class="program-scope-badge">${entryCount}</span>` : "";
-        return `
-          <button
-            type="button"
-            class="object-editor-choice${modifier}${isSelected ? " is-selected" : ""}"
-            data-program-scope="${escapeHtml(scope.scope)}"
-            title="${escapeHtml(scope.label)}"
-          >${escapeHtml(scope.label)}${badge}</button>
-        `;
-      })
-      .join("");
   }
 
   function renderProgramEditorRows() {
@@ -4286,17 +4197,13 @@
 
     return state.programRows
       .map((row) => {
-        // В поле — только собственное название области. Унаследованное идёт
-        // в placeholder: так видно, что именно применится после «Сбросить».
+        // В поле — только пользовательское название. Встроенное идёт в
+        // placeholder: так видно, что именно вернёт «Сбросить».
         const ownName = String(row.own_name || "");
-        const inherited = String(row.inherited_name || "");
+        const baseName = String(row.base_program_name || "");
         const marks = [];
-        if (row.is_own_name) {
+        if (row.is_custom_name) {
           marks.push('<span class="program-row-mark program-row-mark--own">своё</span>');
-        } else {
-          marks.push(
-            `<span class="program-row-mark">наследует: ${escapeHtml(inherited)}</span>`
-          );
         }
         if (!row.is_seen) {
           marks.push('<span class="program-row-mark program-row-mark--idle">нет в данных</span>');
@@ -4317,7 +4224,7 @@
                 type="text"
                 name="program_name"
                 value="${escapeHtml(ownName)}"
-                placeholder="${escapeHtml(inherited)}"
+                placeholder="${escapeHtml(baseName)}"
                 autocomplete="off"
                 spellcheck="false"
               >
@@ -4329,7 +4236,7 @@
                 class="ghost object-editor-row-button"
                 data-program-editor-reset
                 data-program-id="${escapeHtml(row.program_id)}"
-                ${row.is_own_name ? "" : "disabled"}
+                ${row.is_custom_name ? "" : "disabled"}
               >
                 Сбросить
               </button>
@@ -4338,23 +4245,6 @@
         `;
       })
       .join("");
-  }
-
-  function renderProgramEditorPanel() {
-    const scope = currentProgramScope();
-    const hint = PROGRAM_SCOPE_HINTS[scope.kind] || PROGRAM_SCOPE_HINTS.all;
-    return `
-      <div class="program-editor-scope">
-        <span class="object-editor-label"><span>Область</span></span>
-        <div class="object-editor-choice-grid program-editor-scope-grid">
-          ${renderProgramScopeChoices()}
-        </div>
-        <p class="program-editor-hint">${escapeHtml(hint)}</p>
-      </div>
-      <div class="program-editor-rows" data-program-editor-rows>
-        ${renderProgramEditorRows()}
-      </div>
-    `;
   }
 
   function closeAddObjectDialog() {
@@ -4913,7 +4803,7 @@
 
     function renderProgramEditor() {
       if (programRoot) {
-        programRoot.innerHTML = renderProgramEditorPanel();
+        programRoot.innerHTML = renderProgramEditorRows();
       }
     }
 
@@ -4923,8 +4813,8 @@
       }
     }
 
-    // Вкладка «Программы» тянет строки при первом открытии: областей и
-    // наследования на клиенте нет, их считает сервер.
+    // Строки приходят с сервера: какие номера программ показывать и что из них
+    // встречалось в данных, знает он.
     let programRowsLoaded = false;
 
     async function ensureProgramRows(force = false) {
@@ -4933,7 +4823,8 @@
       }
       setProgramEditorBusy(true);
       try {
-        await loadProgramRows(state.programScope);
+        const payload = await requestProgramNames("/api/program-names");
+        replaceProgramRows(payload?.program_rows);
         programRowsLoaded = true;
       } catch (error) {
         showToast(
@@ -4963,7 +4854,7 @@
       if (copy) {
         copy.textContent =
           nextTab === "programs"
-            ? "Названия программ мойки по областям."
+            ? "Названия программ мойки."
             : "Названия объектов по потокам.";
       }
 
@@ -5056,13 +4947,8 @@
         }
 
         try {
-          const payload = await persistProgramName(
-            state.programScope,
-            programId,
-            programName,
-            mode
-          );
-          applyProgramEditorPayload(payload);
+          const payload = await persistProgramName(programId, programName, mode);
+          replaceProgramRows(payload?.program_rows);
           renderProgramEditor();
           // Журнал держит названия в строках: перечитываем данные, иначе список
           // моек показывал бы прежнее название до следующего обновления.
@@ -5119,19 +5005,6 @@
     };
 
     objectEditorRoot.onclick = async (event) => {
-      const scopeButton = event.target.closest("[data-program-scope]");
-      if (scopeButton) {
-        const nextScope = String(scopeButton.dataset.programScope || PROGRAM_SCOPE_ALL);
-        if (nextScope !== state.programScope) {
-          state.programScope = nextScope;
-          // Перерисовываем сразу, чтобы выбор области не «залипал» до ответа;
-          // строки под ним обновит ensureProgramRows.
-          renderProgramEditor();
-          await ensureProgramRows(true);
-        }
-        return;
-      }
-
       const programResetButton = event.target.closest("[data-program-editor-reset]");
       if (programResetButton) {
         const programId = Number(programResetButton.dataset.programId || 0);
@@ -5140,8 +5013,8 @@
         programResetButton.textContent = "Сбрасываю...";
 
         try {
-          const payload = await persistProgramName(state.programScope, programId, "", "reset");
-          applyProgramEditorPayload(payload);
+          const payload = await persistProgramName(programId, "", "reset");
+          replaceProgramRows(payload?.program_rows);
           renderProgramEditor();
           await hydrateWorkspaceData({ keepUi: true });
           showToast("Название сброшено", "success");
@@ -5165,10 +5038,8 @@
         try {
           const payload = await requestProgramNames("/api/program-names-file/sync", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ scope: state.programScope }),
           });
-          applyProgramEditorPayload(payload);
+          replaceProgramRows(payload?.program_rows);
           renderProgramEditor();
           showToast(
             payload?.changed
