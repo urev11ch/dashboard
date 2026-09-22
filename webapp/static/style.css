@@ -12,6 +12,10 @@
   --shadow: 0 16px 32px rgba(26, 36, 48, 0.06);
   --success-bg: #e8f5eb;
   --success-text: #1c6e2f;
+  /* Заливка зелёной кнопки выгрузки: темнее, чем текст бейджа, — на ней белый
+     текст 12px uppercase, и контраста --success-text для него не хватало. */
+  --success-accent: #1c7c3c;
+  --success-accent-strong: #155f2c;
   --warn-bg: #fae9e4;
   --tag-bg: #eef3fb;
   --radius-panel: 6px;
@@ -825,11 +829,31 @@ code {
   margin-left: auto;
 }
 
+/* Выгрузка XLSX — единственное действие тулбара, которое создаёт файл, поэтому
+   она заливная зелёная, а не ghost, как «Сбросить фильтры» рядом. */
 .toolbar-export {
   height: 36px;
   padding-left: 12px;
   padding-right: 12px;
   white-space: nowrap;
+  background: var(--success-accent);
+  border-color: var(--success-accent);
+  color: #fff;
+}
+
+.toolbar-export:hover {
+  background: var(--success-accent-strong);
+  border-color: var(--success-accent-strong);
+}
+
+/* На время сборки книги кнопка блокируется и пишет «Готовлю...» — приглушаем,
+   иначе disabled-состояние неотличимо от активной кнопки. */
+.toolbar-export:disabled,
+.toolbar-export:hover:disabled {
+  background: var(--success-bg);
+  border-color: var(--success-bg);
+  color: var(--success-text);
+  cursor: default;
 }
 
 .toolbar-period-presets {
