@@ -23,10 +23,12 @@ from webapp.config import DEFAULT_FTP_FORM_VALUES, PROJECT_ROOT, STATIC_DIR
 from webapp.state import AppStateSnapshot, ScanSummary, state
 from webapp.analysis import serialize_job
 from webapp.io_utils import (
+    format_bytes,
     format_day_key,
     format_file_list,
     format_source_label,
     local_tz_offset_min,
+    plural_ru,
 )
 from webapp.settings_store import (
     app_settings_path,
@@ -39,6 +41,7 @@ from webapp.settings_store import (
     resolve_object_name,
 )
 from webapp.ftp_registry import list_ftp_sources_public
+from webapp.ftp_client import ftp_profile_stats
 from webapp.chart_payload import SERIES_CONFIG
 
 def resolve_workspace_input_value(
@@ -77,6 +80,45 @@ def copy_scan_summary(summary: ScanSummary) -> ScanSummary:
         ftp_error=summary.ftp_error,
         skipped_db_files=list(summary.skipped_db_files),
     )
+
+
+def build_menu_source_rows(
+    ftp_sources: list[dict[str, Any]],
+    connected_id: str = "",
+) -> list[dict[str, Any]]:
+    """Панели для главного меню: к записи реестра добавляется состояние зеркала.
+
+    Обход каталога зеркала делается здесь, а не в list_ftp_sources_public:
+    список панелей собирается на КАЖДУЮ отрисовку `/`, включая экран журнала, а
+    состояние нужно только меню."""
+    rows: list[dict[str, Any]] = []
+    for source in ftp_sources:
+        stats = ftp_profile_stats(source["id"])
+        archive_count = int(stats["archive_count"])
+
+        meta: list[str] = []
+        if source.get("host"):
+            meta.append(str(source["host"]))
+        if archive_count:
+            meta.append(
+                f"{archive_count} {plural_ru(archive_count, 'архив', 'архива', 'архивов')}"
+            )
+            last_day = str(stats["last_day"])
+            if last_day:
+                year, month, day = last_day.split("-")
+                meta.append(f"последний {day}.{month}.{year}")
+            meta.append(format_bytes(int(stats["size_bytes"])))
+        else:
+            # Пустое зеркало — не ошибка (панель добавили, но не синхронизировали).
+            # Молчать нельзя: иначе непонятно, почему у панели нет данных.
+            meta.append("архивов нет")
+
+        row = dict(source)
+        row["meta"] = meta
+        row["is_connected"] = bool(connected_id) and source["id"] == connected_id
+        rows.append(row)
+
+    return rows
 
 
 def capture_state_snapshot() -> AppStateSnapshot:
@@ -479,6 +521,7 @@ def page_context(request: Request, snapshot: AppStateSnapshot) -> dict[str, Any]
     # На экране меню (даже при загруженной области) wash-JS не должен стартовать —
     # его DOM отсутствует. Гейт `if (!hasWorkspace) return` смотрит на hasWorkspace.
     wash_visible = analysis is not None and not force_menu
+    menu_sources = [] if wash_visible else build_menu_source_rows(ftp_sources, connected_id)
     def asset_version(filename: str) -> int:
         try:
             return int((STATIC_DIR / filename).stat().st_mtime)
@@ -505,7 +548,7 @@ def page_context(request: Request, snapshot: AppStateSnapshot) -> dict[str, Any]
         "workspace_path_placeholder": default_folder_path,
         "workspace_default_path": default_folder_path,
         "ftp_form_defaults": dict(DEFAULT_FTP_FORM_VALUES),
-        "ftp_sources": ftp_sources,
+        "ftp_sources": menu_sources,
         "force_menu": force_menu,
         "connected_id": connected_id,
         "app_version": APP_VERSION,

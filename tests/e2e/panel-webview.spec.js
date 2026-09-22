@@ -51,7 +51,20 @@ test("попап поиска: имя, «Пароль», «Добавить па
   await expect(modal.getByText(":21")).toHaveCount(0);
 });
 
-test("нет панелей → появляется «Добавить вручную» и раскрывает форму", async ({ page }) => {
+test("«Добавить вручную» доступна сразу и раскрывает форму", async ({ page }) => {
+  await page.goto("/");
+  // Панель за маршрутизатором скан не найдёт никогда, поэтому ручной путь
+  // открыт с самого начала, а не только после неудачного поиска.
+  const manual = page.locator("[data-ftp-manual]");
+  await expect(manual).toBeVisible();
+
+  await manual.click();
+  const form = page.locator("[data-ftp-add]");
+  await expect(form).toBeVisible();
+  await expect(form.locator("button[type=submit]")).toHaveText("Добавить панель");
+});
+
+test("пустой скан не прячет ручное подключение", async ({ page }) => {
   // Роут, зарегистрированный позже beforeEach, побеждает — отдаём пустой список.
   await page.route("**/api/ftp/discover", (route) =>
     route.fulfill({
@@ -59,15 +72,11 @@ test("нет панелей → появляется «Добавить вруч
     }),
   );
   await page.goto("/");
-  const manual = page.locator("[data-ftp-manual]");
-  await expect(manual).toBeHidden();
   await page.click("[data-ftp-discover]");
-  await expect(manual).toBeVisible({ timeout: 15000 });
-
-  await manual.click();
-  const form = page.locator("[data-ftp-add]");
-  await expect(form).toBeVisible();
-  await expect(form.locator("button[type=submit]")).toHaveText("Добавить панель");
+  await expect(page.locator("[data-ftp-discover-status]")).toContainText("Панели не найдены", {
+    timeout: 15000,
+  });
+  await expect(page.locator("[data-ftp-manual]")).toBeVisible();
 });
 
 test.describe("сохранённая панель", () => {
@@ -88,10 +97,11 @@ test.describe("сохранённая панель", () => {
   test.afterEach(async ({ page }) => {
     await page.request.post("/workspace/reset"); // снять пометку подключения
     await page.goto("/");
-    const del = page.locator(".ftp-source-item form[action*='delete'] button");
-    while (await del.count()) {
+    const more = page.locator(".ftp-source-item [data-panel-more] > summary");
+    while (await more.count()) {
+      await more.first().click(); // «Удалить» лежит под многоточием
       page.once("dialog", (d) => d.accept());
-      await del.first().click();
+      await page.locator(".ftp-source-item form[action*='delete'] button").first().click();
       await page.waitForLoadState("networkidle");
     }
   });
@@ -122,6 +132,7 @@ test.describe("сохранённая панель", () => {
 
   test("«Изменить» переименовывает панель в списке", async ({ page }) => {
     await page.goto("/");
+    await page.click("[data-panel-more] > summary");
     await page.click("[data-panel-rename]");
     const modal = page.locator(".ftp-connect-modal");
     await expect(modal).toBeVisible();

@@ -266,9 +266,10 @@ code {
 }
 
 /* Ширина под содержимое, а не «во весь экран»: внутри список панелей и форма,
-   и на 920px строки растягивались, разрывая название и адрес по краям. */
+   и на 920px строки растягивались, разрывая название и адрес по краям. 720px —
+   чтобы строка панели вмещала имя, состояние зеркала и действия без переносов. */
 .welcome-card {
-  width: min(560px, 100%);
+  width: min(720px, 100%);
   background: var(--panel);
   backdrop-filter: blur(14px);
   border: 1px solid rgba(40, 58, 96, 0.1);
@@ -277,14 +278,89 @@ code {
   box-shadow: var(--shadow);
 }
 
+/* Шапка экрана запуска: название продукта слева, версия справа. Название именно
+   заголовком — это главный экран, а не диалог; раньше здесь стоял серый eyebrow
+   11px, мельче подписей полей под ним. */
+.welcome-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.welcome-head-text {
+  min-width: 0;
+}
+
 /* Служебный заголовок, а не рекламный герой: clamp(34px…56px) с интерлиньяжем
    0.96 и сжатием −0.05em спорил со всем остальным интерфейсом, который построен
    на мелких радиусах и компактной типографике. */
-.welcome-card h1 {
-  margin-top: 4px;
+.welcome-title {
+  margin: 0;
   font-size: 22px;
   line-height: 1.25;
   letter-spacing: -0.01em;
+}
+
+.welcome-subtitle {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* Секции «Панели» и «Папка с архивами» видны одновременно: раньше они были
+   вкладками, и чтобы открыть папку, надо было сначала догадаться переключиться. */
+.welcome-section {
+  margin-top: 24px;
+}
+
+.welcome-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.welcome-section-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.welcome-section-actions button {
+  height: 34px;
+  padding: 0 14px;
+}
+
+.welcome-empty {
+  margin: 0;
+  padding: 14px 12px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-control);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* Путь и действия одной строкой: поле тянется, кнопки прижаты справа. */
+.welcome-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.welcome-folder-row input {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+.welcome-folder-row button {
+  height: 40px;
+  padding: 0 14px;
+  flex: 0 0 auto;
 }
 
 .welcome-copy {
@@ -321,44 +397,6 @@ code {
 .welcome-update-status {
   font-size: 12px;
   color: var(--muted);
-}
-
-/* Сегментный переключатель вместо двух отдельных кнопок по 220×46: выбор из двух
-   взаимоисключающих режимов читается как один контрол, а не как два действия. */
-.welcome-source-switcher {
-  margin-top: 20px;
-  display: inline-flex;
-  gap: 2px;
-  padding: 3px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-control);
-  background: var(--panel-soft);
-}
-
-/* Специфичность 0,2,0 — перебивает button.ghost (0,1,1) у неактивной вкладки. */
-.welcome-source-switcher .welcome-source-tab {
-  min-width: 0;
-  height: 30px;
-  padding: 0 16px;
-  border-color: transparent;
-  background: transparent;
-  box-shadow: none;
-  color: var(--muted);
-  letter-spacing: 0.06em;
-}
-
-.welcome-source-switcher .welcome-source-tab:hover {
-  color: var(--text);
-}
-
-.welcome-source-switcher .welcome-source-tab.is-active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-}
-
-.welcome-source-stack {
-  margin-top: 18px;
 }
 
 .folder-form {
@@ -3908,15 +3946,10 @@ body.modal-export-mode .chart-print-document {
   gap: 8px;
   margin: 12px 0;
 }
-/* Ряд действий поиска — кнопка «Найти панель» прижата вправо снизу. */
-.ftp-discover-actions {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  gap: 8px;
-}
+/* Поле подсети — в колонку блока поиска; кнопка «Найти панель» переехала в
+   шапку секции «Панели». */
 .ftp-discover-subnet {
-  flex: 0 1 200px;
+  max-width: 260px;
   min-width: 0;
   font-size: 12px;
 }
@@ -4025,10 +4058,12 @@ body.modal-export-mode .chart-print-document {
   border-top: 1px solid var(--line);
   padding-top: 12px;
 }
+/* Сетка, а не flex: колонка с именем обязана ужиматься до многоточия. На flex
+   она держала min-content, и «Weintek cMT-3C6F» переносился на две строки. */
 .ftp-source-item {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   gap: 16px;
   padding: 10px 12px;
   border: 1px solid var(--line);
@@ -4054,6 +4089,9 @@ body.modal-export-mode .chart-print-document {
 .ftp-source-label {
   font-weight: 600;
   color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .ftp-source-meta {
   font-family: var(--font-mono);
@@ -4079,17 +4117,80 @@ body.modal-export-mode .chart-print-document {
   height: 32px;
   padding: 0 12px;
 }
-/* «Удалить» стоит вплотную к «Подключиться», а промах необратим — снимаем с него
-   вес: серый текст без рамки, цвет предупреждения появляется только при
-   наведении. Это оформление, поведение (confirm при отправке) не меняется. */
 .ftp-source-actions button.ghost {
-  padding: 0 8px;
+  padding: 0 10px;
   border-color: transparent;
   background: transparent;
   color: var(--muted);
 }
 .ftp-source-actions button.ghost:hover {
   border-color: transparent;
+  background: rgba(23, 87, 255, 0.08);
+  color: var(--accent);
+}
+
+/* Вторичные действия строки под многоточием: «Удалить» необратимо, а стояло
+   вплотную к главному действию. Нативный details — закрывается сам при клике по
+   summary и не требует обработчика. */
+.ftp-source-more {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.ftp-source-more > summary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-control);
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.ftp-source-more > summary::-webkit-details-marker {
+  display: none;
+}
+
+.ftp-source-more > summary:hover,
+.ftp-source-more[open] > summary {
+  background: rgba(23, 87, 255, 0.08);
+  color: var(--accent);
+}
+
+.ftp-source-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 3;
+  display: grid;
+  gap: 2px;
+  min-width: 152px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--panel-strong);
+  box-shadow: var(--shadow);
+}
+
+.ftp-source-menu form {
+  margin: 0;
+}
+
+/* Пункты меню — строками во всю ширину, чтобы попадать было легко. */
+.ftp-source-menu button {
+  width: 100%;
+  height: 32px;
+  justify-content: flex-start;
+  padding: 0 10px;
+  text-align: left;
+}
+
+.ftp-source-menu-danger:hover {
   background: var(--warn-bg);
   color: var(--warn);
 }

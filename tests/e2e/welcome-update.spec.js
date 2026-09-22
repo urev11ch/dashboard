@@ -14,13 +14,13 @@ function mockUpdateCheck(page, payload) {
 
 const button = (page) => page.locator("[data-update-btn]");
 
-test("welcome: «Выбрать папку» без pywebview показывает тост, не падает (toastRoot до гейта)", async ({
+test("welcome: «Обзор» без pywebview показывает тост, не падает (toastRoot до гейта)", async ({
   page,
 }) => {
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
   await page.goto("/");
-  await page.click('[data-source-tab="folder"]');
+  // Вкладок источника больше нет — секция «Папка с архивами» видна сразу.
   await page.click("[data-folder-picker]"); // в браузере choose_folder недоступен → тост об ошибке
   await expect(page.locator(".toast-stack .toast")).toBeVisible({ timeout: 15000 });
   expect(errors).toEqual([]);

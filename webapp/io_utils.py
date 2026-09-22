@@ -42,6 +42,33 @@ def read_json_object(path: Path, *, warn_on_corrupt: bool = False) -> dict[str, 
     return payload
 
 
+def format_bytes(value: int) -> str:
+    """Объём по-человечески: «41 МБ». Дробная часть только до 10 единиц — «1.4 ГБ»
+    информативно, «41.3 МБ» уже шум."""
+    size = float(max(0, int(value or 0)))
+    if size < 1024:
+        return f"{int(size)} Б"
+
+    for unit in ("КБ", "МБ", "ГБ", "ТБ"):
+        size /= 1024
+        if size < 1024 or unit == "ТБ":
+            return f"{size:.0f} {unit}" if size >= 10 else f"{size:.1f} {unit}"
+    return f"{size:.0f} ТБ"
+
+
+def plural_ru(count: int, one: str, few: str, many: str) -> str:
+    """Русское согласование числительного: 1 архив, 2 архива, 5 архивов."""
+    number = abs(int(count))
+    if number % 100 in range(11, 15):
+        return many
+    remainder = number % 10
+    if remainder == 1:
+        return one
+    if remainder in (2, 3, 4):
+        return few
+    return many
+
+
 def format_source_label(value: str) -> str:
     return Path(value).name
 

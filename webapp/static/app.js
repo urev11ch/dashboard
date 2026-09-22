@@ -63,43 +63,9 @@
     appState.jobStatus && typeof appState.jobStatus === "object"
       ? appState.jobStatus
       : { active: false, status: "idle" };
-  const sourceTabs = Array.from(document.querySelectorAll("[data-source-tab]"));
-  const sourcePanels = Array.from(document.querySelectorAll("[data-source-panel]"));
 
   function hasDesktopFolderPickerApi() {
     return typeof window.pywebview?.api?.choose_folder === "function";
-  }
-
-  function setActiveWelcomeSource(source) {
-    if (!sourceTabs.length || !sourcePanels.length) {
-      return;
-    }
-
-    sourceTabs.forEach((button) => {
-      const isActive = button.dataset.sourceTab === source;
-      button.classList.toggle("is-active", isActive);
-      button.classList.toggle("ghost", !isActive);
-      button.setAttribute("aria-pressed", isActive ? "true" : "false");
-    });
-
-    sourcePanels.forEach((panel) => {
-      panel.hidden = panel.dataset.sourcePanel !== source;
-    });
-  }
-
-  function initWelcomeSourceTabs() {
-    if (!sourceTabs.length || !sourcePanels.length) {
-      return;
-    }
-
-    const activeTab = sourceTabs.find((button) => button.classList.contains("is-active")) || sourceTabs[0];
-    setActiveWelcomeSource(activeTab?.dataset.sourceTab || "ftp");
-
-    sourceTabs.forEach((button) => {
-      button.addEventListener("click", () => {
-        setActiveWelcomeSource(button.dataset.sourceTab || "ftp");
-      });
-    });
   }
 
   function submitForm(form) {
@@ -200,7 +166,9 @@
     if (!button) {
       return;
     }
-    const root = button.closest("[data-ftp-discover-root]");
+    // Кнопка живёт в шапке секции, а статус и результаты — ниже списка панелей,
+    // поэтому корень ищем по документу, а не через closest от кнопки.
+    const root = document.querySelector("[data-ftp-discover-root]");
     const statusEl = root?.querySelector("[data-ftp-discover-status]");
     const resultsEl = root?.querySelector("[data-ftp-discover-results]");
     // Поле подсети: обычно скрыто (сканируются подсети всех интерфейсов ПК);
@@ -211,8 +179,9 @@
       return;
     }
 
-    // Ручное добавление: кнопка скрыта по умолчанию, показывается, когда скан
-    // не нашёл панелей; клик раскрывает форму «Добавить панель вручную».
+    // Ручное подключение доступно всегда, а не только после неудачного скана:
+    // панель за маршрутизатором скан не найдёт никогда, и прятать до него
+    // единственный рабочий путь — значит прятать его навсегда.
     const manualBtn = document.querySelector("[data-ftp-manual]");
     const manualDetails = document.querySelector("[data-ftp-add]");
     if (manualBtn && manualDetails) {
@@ -381,22 +350,16 @@
           } else {
             setStatus(
               `Панели не найдены, ${scanned}. Панель в другой подсети — укажите ` +
-                `подсеть слева или добавьте вручную.`
+                `подсеть ниже или подключитесь вручную.`
             );
           }
           renderResults([]);
           if (subnetInput) {
             subnetInput.hidden = false; // даём указать подсеть за маршрутизатором
           }
-          if (manualBtn) {
-            manualBtn.hidden = false; // панелей нет — предлагаем добавить вручную
-          }
           return;
         }
         setStatus("");  // список говорит сам за себя — без строки-счётчика
-        if (manualBtn) {
-          manualBtn.hidden = true;
-        }
         if (subnetInput) {
           subnetInput.hidden = true;
         }
@@ -405,9 +368,6 @@
         // Инлайновый статус, не showToast: экран выбора источника — до гейта,
         // toastRoot ещё не создан (TDZ).
         setStatus("Не удалось выполнить поиск панели.");
-        if (manualBtn) {
-          manualBtn.hidden = false; // скан не удался — путь ручного добавления
-        }
         if (subnetInput) {
           subnetInput.hidden = false;
         }
@@ -889,7 +849,6 @@
     }
   }
 
-  initWelcomeSourceTabs();
   initFolderPickerButtons();
   initFolderDefaultButtons();
   initFtpDiscovery();

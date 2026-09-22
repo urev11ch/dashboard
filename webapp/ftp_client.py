@@ -391,6 +391,63 @@ def directory_size_bytes(root_path: Path) -> int:
     return sum(stat_result.st_size for _path, _rel, stat_result in iter_tree_files(root_path))
 
 
+# Дата в имени архива панели: `Canal_1_20260713.db` → 2026-07-13. Берём последнюю
+# группу из восьми цифр, не склеенную с соседними, — номер канала в начале имени
+# под неё не подходит.
+ARCHIVE_DAY_RE = re.compile(r"(?<!\d)(\d{8})(?!\d)")
+
+
+def archive_day_from_name(filename: str) -> str:
+    """`ГГГГ-ММ-ДД` из имени архива или "" — если даты в имени нет либо она
+    невалидна. По mtime не заменяем: он показывает, когда файл СКАЧАЛИ, а нужно,
+    за какое число в нём данные."""
+    day = ""
+    for match in ARCHIVE_DAY_RE.finditer(str(filename)):
+        digits = match.group(1)
+        try:
+            parsed = datetime.strptime(digits, "%Y%m%d")
+        except ValueError:
+            continue
+        day = parsed.strftime("%Y-%m-%d")
+    return day
+
+
+def ftp_profile_stats(conn_id: str) -> dict[str, Any]:
+    """Состояние зеркала панели для главного меню: сколько архивов скачано, за
+    какое число самый свежий и сколько они занимают на диске.
+
+    Считаем прямо с диска: отдельного учёта нет и заводить его незачем — каталог
+    зеркала и есть источник правды. Обход идёт через iter_tree_files, поэтому
+    каталоги уже удалённых профилей (`<id>.deleted-*`) в счёт не попадают.
+    Вызывается только при отрисовке меню, не на каждый запрос."""
+    empty = {"archive_count": 0, "size_bytes": 0, "last_day": ""}
+    conn_id = str(conn_id or "").strip()
+    if not conn_id:
+        return empty
+
+    datalog_root = app_config.DATALOG_ROOT
+    profile_dir = datalog_root / conn_id
+    try:
+        if not profile_dir.is_dir() or profile_dir.resolve().parent != datalog_root.resolve():
+            return empty
+    except OSError:
+        return empty
+
+    archive_count = 0
+    size_bytes = 0
+    last_day = ""
+    for path, _relative, stat_result in iter_tree_files(profile_dir):
+        if path.suffix.lower() != ".db":
+            continue
+        archive_count += 1
+        size_bytes += stat_result.st_size
+        day = archive_day_from_name(path.name)
+        if day > last_day:
+            last_day = day
+
+    return {"archive_count": archive_count, "size_bytes": size_bytes, "last_day": last_day}
+
+
 # Размер datalog для /api/diagnostics: полный обход дерева на каждое открытие
 # диагностики слишком дорог, поэтому значение кэшируется на короткий TTL.
 DATALOG_SIZE_CACHE_TTL_SECONDS = 60.0
