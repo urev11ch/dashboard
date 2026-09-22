@@ -88,6 +88,9 @@ def capture_state_snapshot() -> AppStateSnapshot:
         selected_display_root=state.selected_display_root,
         pending_display_root=state.pending_display_root,
         object_name_overrides=dict(state.object_name_overrides),
+        program_name_overrides={
+            scope: dict(entries) for scope, entries in state.program_name_overrides.items()
+        },
         error=state.error,
         scan_summary=copy_scan_summary(state.scan_summary),
         workspace_job_payload=serialize_job(state.workspace_job),
@@ -328,6 +331,173 @@ def build_seed_object_name_overrides(
             continue
         seeded[key] = str(overview.object_name or "").strip() or fallback_object_name(overview.object_id)
     return seeded
+
+
+def program_ids_seen(
+    analysis: core.AnalysisResult | None,
+    channel: int | None = None,
+    object_id: int | None = None,
+) -> set[int]:
+    """Номера программ, реально встреченные в данных (при необходимости — только
+    на выбранном канале/объекте). Пустой анализ даёт пустое множество: строки
+    редактора всё равно строятся от семи штатных слотов панели."""
+    seen: set[int] = set()
+    if analysis is None:
+        return seen
+
+    for cycle in analysis.cycles:
+        if channel is not None and cycle.channel != channel:
+            continue
+        if object_id is not None and cycle.object_id != object_id:
+            continue
+        seen.add(cycle.program_id)
+    return seen
+
+
+def build_program_scopes(
+    overrides: dict[str, dict[int, str]] | None = None,
+    analysis: core.AnalysisResult | None = None,
+) -> list[dict[str, Any]]:
+    """Области, доступные в переключателе редактора: «все объекты», каждый канал
+    и каждый объект из данных. Плюс области, которые уже есть в файле, даже если
+    их объекта в текущем источнике нет — иначе чужую запись нельзя ни увидеть,
+    ни убрать."""
+    overrides = overrides or {}
+    channel_labels = getattr(analysis, "channel_labels", None) or {}
+
+    channels: set[int] = set()
+    objects: set[tuple[int, int]] = set()
+    if analysis is not None:
+        for overview in analysis.overviews:
+            channels.add(overview.channel)
+            if overview.object_id > 0:
+                objects.add((overview.channel, overview.object_id))
+
+    for scope in overrides:
+        parsed = core.parse_program_scope_key(scope)
+        if parsed is None:
+            continue
+        scope_channel, scope_object_id = parsed
+        if scope_channel is None:
+            continue
+        channels.add(scope_channel)
+        if scope_object_id is not None:
+            objects.add((scope_channel, scope_object_id))
+
+    object_names = {
+        (overview.channel, overview.object_id): overview.object_name
+        for overview in (analysis.overviews if analysis is not None else [])
+    }
+
+    scopes: list[dict[str, Any]] = [
+        {
+            "scope": core.PROGRAM_SCOPE_ALL,
+            "label": "Все объекты",
+            "kind": "all",
+            "entry_count": len(overrides.get(core.PROGRAM_SCOPE_ALL, {})),
+        }
+    ]
+    for channel in sorted(channels):
+        scope = core.program_scope_key(channel)
+        scopes.append(
+            {
+                "scope": scope,
+                "label": channel_labels.get(channel) or f"Канал {channel}",
+                "kind": "channel",
+                "channel": channel,
+                "entry_count": len(overrides.get(scope, {})),
+            }
+        )
+        for scope_channel, object_id in sorted(objects):
+            if scope_channel != channel:
+                continue
+            object_scope = core.program_scope_key(channel, object_id)
+            object_name = object_names.get((channel, object_id)) or fallback_object_name(object_id)
+            scopes.append(
+                {
+                    "scope": object_scope,
+                    "label": object_name,
+                    "kind": "object",
+                    "channel": channel,
+                    "object_id": object_id,
+                    "entry_count": len(overrides.get(object_scope, {})),
+                }
+            )
+
+    return scopes
+
+
+def build_program_rows(
+    overrides: dict[str, dict[int, str]] | None = None,
+    analysis: core.AnalysisResult | None = None,
+    scope: str = core.PROGRAM_SCOPE_ALL,
+) -> list[dict[str, Any]]:
+    """Строки редактора для одной области.
+
+    `inherited_name` — то, что показывалось бы без собственной записи области
+    (родительская область или встроенное имя). UI берёт его как placeholder,
+    чтобы было видно, что именно наследуется и что даст «Сбросить»."""
+    overrides = overrides or {}
+    parsed = core.parse_program_scope_key(scope)
+    if parsed is None:
+        parsed = (None, None)
+        scope = core.PROGRAM_SCOPE_ALL
+    scope_channel, scope_object_id = parsed
+
+    own_entries = overrides.get(scope, {})
+    # Родительские области = цепочка без самой области.
+    if scope_channel is None:
+        parent_chain: tuple[str, ...] = ()
+    elif scope_object_id is None:
+        parent_chain = (core.PROGRAM_SCOPE_ALL,)
+    else:
+        parent_chain = (core.program_scope_key(scope_channel), core.PROGRAM_SCOPE_ALL)
+
+    seen = program_ids_seen(analysis, scope_channel, scope_object_id)
+    # Семь штатных программ панели показываем всегда — иначе назвать программу
+    # можно было бы только после того, как она хоть раз отработала.
+    program_ids = {program_id for program_id in core.PROGRAM_NAMES if program_id > 0}
+    program_ids |= {program_id for program_id in seen if program_id > 0}
+    program_ids |= {program_id for program_id in own_entries if program_id > 0}
+
+    rows: list[dict[str, Any]] = []
+    for program_id in sorted(program_ids):
+        inherited_name = core.fallback_program_name(program_id)
+        for parent_scope in parent_chain:
+            parent_name = overrides.get(parent_scope, {}).get(program_id)
+            if parent_name:
+                inherited_name = parent_name
+                break
+
+        own_name = own_entries.get(program_id, "")
+        rows.append(
+            {
+                "program_id": program_id,
+                "program_name": own_name or inherited_name,
+                "own_name": own_name,
+                "inherited_name": inherited_name,
+                "base_program_name": core.fallback_program_name(program_id),
+                "is_own_name": bool(own_name),
+                "is_seen": program_id in seen,
+            }
+        )
+
+    return rows
+
+
+def build_program_editor_payload(
+    overrides: dict[str, dict[int, str]] | None = None,
+    analysis: core.AnalysisResult | None = None,
+    scope: str = core.PROGRAM_SCOPE_ALL,
+) -> dict[str, Any]:
+    overrides = overrides or {}
+    if core.parse_program_scope_key(scope) is None:
+        scope = core.PROGRAM_SCOPE_ALL
+    return {
+        "scope": scope,
+        "scopes": build_program_scopes(overrides, analysis),
+        "program_rows": build_program_rows(overrides, analysis, scope),
+    }
 
 
 def build_wash_detail(analysis: core.AnalysisResult, key: str) -> dict[str, Any]:

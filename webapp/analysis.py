@@ -50,8 +50,10 @@ from webapp.cache import (
 from webapp.ftp_client import is_ftp_profile, materialize_ftp_sources
 from webapp.settings_store import (
     apply_object_name_overrides,
+    apply_program_name_overrides,
     load_app_settings,
     load_object_name_overrides,
+    load_program_name_overrides,
 )
 
 def is_ignored_workspace_dir(path: Path, ignored_paths: set[Path]) -> bool:
@@ -545,6 +547,8 @@ def run_workspace_job(
         scan_summary.skipped_db_files = skipped_db_files
         object_name_overrides = load_object_name_overrides(config.TEMP_ROOT)
         apply_object_name_overrides(analysis, object_name_overrides)
+        program_name_overrides = load_program_name_overrides(config.TEMP_ROOT)
+        apply_program_name_overrides(analysis, program_name_overrides)
 
         with state_lock:
             job = state.workspace_job
@@ -558,6 +562,7 @@ def run_workspace_job(
             state.analysis = analysis
             state.analysis_revision += 1
             state.object_name_overrides = object_name_overrides
+            state.program_name_overrides = program_name_overrides
             state.scan_summary = scan_summary
             state.error = None
             state.last_sync_ts = time.time()
@@ -606,6 +611,7 @@ def start_workspace_job(
         state.selected_root = None
         state.selected_display_root = ""
         state.object_name_overrides = {}
+        state.program_name_overrides = {}
         state.scan_summary = ScanSummary()
         clear_chart_payload_cache()
     state.error = None

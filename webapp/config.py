@@ -92,6 +92,14 @@ IGNORED_WORKSPACE_DIR_NAMES = frozenset(
 )
 OBJECT_NAME_OVERRIDES_FILENAME = core.OBJECT_NAMES_FILENAME
 OBJECT_NAME_OVERRIDES_VERSION = 1
+PROGRAM_NAME_OVERRIDES_FILENAME = core.PROGRAM_NAMES_FILENAME
+PROGRAM_NAME_OVERRIDES_VERSION = 1
+# Номер программы приходит из архива как есть. Верхнюю границу держим с запасом
+# к семи штатным слотам панели: панель могут перепрошить, и незнакомый номер
+# должен остаться переименуемым, а не отсекаться валидацией роута.
+PROGRAM_ID_MIN = 0
+PROGRAM_ID_MAX = 99
+PROGRAM_NAME_MAX_LEN = 120
 CHART_STYLE_SETTINGS_FILENAME = "wash_chart_styles.json"
 CHART_STYLE_SETTINGS_VERSION = 1
 FOLDER_SOURCE_SETTINGS_FILENAME = "wash_folder_source.json"

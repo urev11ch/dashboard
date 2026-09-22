@@ -1275,6 +1275,13 @@
     channelLabels: new Map(),
     washRowIndexesByObjectKey: new Map(),
     objectRows: [],
+    // Редактор названий: активная вкладка и состояние вкладки «Программы».
+    // programScope — область («*», «<канал>», «<канал>:<объект>»), programRows —
+    // строки этой области с сервера (там же считается наследование).
+    editorTab: "objects",
+    programScope: "*",
+    programScopes: [],
+    programRows: [],
     filteredRows: [],
     displayItems: [],
     displayOffsets: [0],
@@ -1777,6 +1784,7 @@
 
     applyWorkspaceMeta(payload);
     replaceObjectRows(payload?.object_rows);
+    replaceProgramScopes(payload?.program_scopes);
     replaceWashRows(payload?.wash_rows);
     fillChannelFilter();
     syncDateFilterBounds();
@@ -4152,6 +4160,203 @@
       .join("");
   }
 
+  // ---- редактор названий программ мойки -------------------------------
+  // Названия программ в архиве панели не хранятся — там только номер. Что этот
+  // номер значит, знает лишь пользователь, поэтому названия задаются здесь и
+  // ложатся в wash_program_names.json. Область («Все объекты» → канал → объект)
+  // нужна потому, что на одной станции набор программ у объектов обычно общий и
+  // расходится у единиц: без иерархии одни и те же семь названий пришлось бы
+  // вводить для каждого объекта заново.
+  const PROGRAM_SCOPE_ALL = "*";
+
+  const PROGRAM_SCOPE_HINTS = {
+    all: "Действует на все объекты — кроме тех, где задано своё название для канала или объекта.",
+    channel: "Переопределяет «Все объекты» для всех объектов этого канала.",
+    object: "Переопределяет канал и «Все объекты» только для этого объекта.",
+  };
+
+  function replaceProgramScopes(scopes) {
+    state.programScopes = Array.isArray(scopes) ? scopes.map((scope) => ({ ...scope })) : [];
+    // Источник могли переоткрыть, и прежней области в нём может не быть —
+    // иначе редактор открылся бы на области, которой нет в списке.
+    if (!state.programScopes.some((scope) => scope.scope === state.programScope)) {
+      state.programScope = PROGRAM_SCOPE_ALL;
+    }
+  }
+
+  function currentProgramScope() {
+    return (
+      state.programScopes.find((scope) => scope.scope === state.programScope) || {
+        scope: PROGRAM_SCOPE_ALL,
+        label: "Все объекты",
+        kind: "all",
+      }
+    );
+  }
+
+  async function requestProgramNames(url, options = {}) {
+    const response = await fetchWithTimeout(url, options);
+    if (!response.ok) {
+      let errorMessage = "Не удалось сохранить название программы.";
+      try {
+        const payload = await response.json();
+        if (payload?.detail) {
+          errorMessage = String(payload.detail);
+        }
+      } catch (_error) {
+        // Fall back to the generic message.
+      }
+      throw new Error(errorMessage);
+    }
+    return response.json();
+  }
+
+  function applyProgramEditorPayload(payload) {
+    if (!payload) {
+      return;
+    }
+    if (Array.isArray(payload.scopes)) {
+      state.programScopes = payload.scopes.map((scope) => ({ ...scope }));
+    }
+    if (typeof payload.scope === "string" && payload.scope) {
+      state.programScope = payload.scope;
+    }
+    if (Array.isArray(payload.program_rows)) {
+      state.programRows = payload.program_rows.map((row) => ({ ...row }));
+    }
+  }
+
+  async function loadProgramRows(scope = state.programScope) {
+    const payload = await requestProgramNames(
+      `/api/program-names?scope=${encodeURIComponent(scope)}`
+    );
+    applyProgramEditorPayload(payload);
+    return payload;
+  }
+
+  async function persistProgramName(scope, programId, name = "", mode = "set") {
+    return requestProgramNames("/api/program-name", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope, program_id: programId, name, mode }),
+    });
+  }
+
+  function renderProgramScopeChoices() {
+    if (!state.programScopes.length) {
+      return `
+        <button
+          type="button"
+          class="object-editor-choice is-selected"
+          data-program-scope="${escapeHtml(PROGRAM_SCOPE_ALL)}"
+        >Все объекты</button>
+      `;
+    }
+
+    return state.programScopes
+      .map((scope) => {
+        const isSelected = scope.scope === state.programScope;
+        const entryCount = Number(scope.entry_count || 0);
+        // Канал занимает строку целиком, его объекты идут под ним: плоский ряд
+        // «Канал 2», «Танк 1», «Танк 2», «Канал 3» не читается — непонятно, чей
+        // это объект.
+        const modifier =
+          scope.kind === "object"
+            ? " object-editor-choice--nested"
+            : scope.kind === "channel"
+              ? " object-editor-choice--channel"
+              : "";
+        const badge = entryCount ? `<span class="program-scope-badge">${entryCount}</span>` : "";
+        return `
+          <button
+            type="button"
+            class="object-editor-choice${modifier}${isSelected ? " is-selected" : ""}"
+            data-program-scope="${escapeHtml(scope.scope)}"
+            title="${escapeHtml(scope.label)}"
+          >${escapeHtml(scope.label)}${badge}</button>
+        `;
+      })
+      .join("");
+  }
+
+  function renderProgramEditorRows() {
+    if (!state.programRows.length) {
+      return '<div class="technical-empty">Программы не найдены.</div>';
+    }
+
+    return state.programRows
+      .map((row) => {
+        // В поле — только собственное название области. Унаследованное идёт
+        // в placeholder: так видно, что именно применится после «Сбросить».
+        const ownName = String(row.own_name || "");
+        const inherited = String(row.inherited_name || "");
+        const marks = [];
+        if (row.is_own_name) {
+          marks.push('<span class="program-row-mark program-row-mark--own">своё</span>');
+        } else {
+          marks.push(
+            `<span class="program-row-mark">наследует: ${escapeHtml(inherited)}</span>`
+          );
+        }
+        if (!row.is_seen) {
+          marks.push('<span class="program-row-mark program-row-mark--idle">нет в данных</span>');
+        }
+
+        return `
+          <form class="object-editor-row program-editor-row" data-program-editor-form>
+            <input type="hidden" name="program_id" value="${escapeHtml(row.program_id)}">
+            <div class="object-editor-row-meta">
+              <div class="object-editor-row-identity">
+                <span class="object-editor-token">Программа ${escapeHtml(row.program_id)}</span>
+              </div>
+              <div class="program-row-marks">${marks.join("")}</div>
+            </div>
+            <div class="object-editor-row-controls">
+              <input
+                class="object-editor-name-input"
+                type="text"
+                name="program_name"
+                value="${escapeHtml(ownName)}"
+                placeholder="${escapeHtml(inherited)}"
+                autocomplete="off"
+                spellcheck="false"
+              >
+            </div>
+            <div class="object-editor-row-actions">
+              <button type="submit" class="object-editor-row-button object-editor-row-button--primary">Сохранить</button>
+              <button
+                type="button"
+                class="ghost object-editor-row-button"
+                data-program-editor-reset
+                data-program-id="${escapeHtml(row.program_id)}"
+                ${row.is_own_name ? "" : "disabled"}
+              >
+                Сбросить
+              </button>
+            </div>
+          </form>
+        `;
+      })
+      .join("");
+  }
+
+  function renderProgramEditorPanel() {
+    const scope = currentProgramScope();
+    const hint = PROGRAM_SCOPE_HINTS[scope.kind] || PROGRAM_SCOPE_HINTS.all;
+    return `
+      <div class="program-editor-scope">
+        <span class="object-editor-label"><span>Область</span></span>
+        <div class="object-editor-choice-grid program-editor-scope-grid">
+          ${renderProgramScopeChoices()}
+        </div>
+        <p class="program-editor-hint">${escapeHtml(hint)}</p>
+      </div>
+      <div class="program-editor-rows" data-program-editor-rows>
+        ${renderProgramEditorRows()}
+      </div>
+    `;
+  }
+
   function closeAddObjectDialog() {
     const dialog = objectEditorRoot.querySelector("[data-object-editor-create]");
     if (dialog) {
@@ -4628,14 +4833,14 @@
     syncOverlayState();
     objectEditorRoot.innerHTML = `
       <div class="object-editor-backdrop" data-close-object-editor></div>
-      <section class="object-editor-panel" role="dialog" aria-modal="true" aria-label="Редактор названий объектов">
+      <section class="object-editor-panel" role="dialog" aria-modal="true" aria-label="Редактор названий">
         <header class="object-editor-header">
           <div>
-            <h2>Редактор объектов</h2>
-            <p class="object-editor-copy">Названия объектов по потокам.</p>
+            <h2>Редактор названий</h2>
+            <p class="object-editor-copy" data-editor-copy>Названия объектов по потокам.</p>
           </div>
           <div class="object-editor-header-actions">
-            <button type="button" class="chart-modal-icon-button chart-modal-icon-button--danger" data-close-object-editor aria-label="Закрыть редактор объектов" title="Закрыть">
+            <button type="button" class="chart-modal-icon-button chart-modal-icon-button--danger" data-close-object-editor aria-label="Закрыть редактор названий" title="Закрыть">
               <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
                 <path d="M5 5L15 15"></path>
                 <path d="M15 5L5 15"></path>
@@ -4643,9 +4848,15 @@
             </button>
           </div>
         </header>
-        <div class="object-editor-list" id="objectEditorList">${renderObjectEditorRows()}</div>
+        <div class="object-editor-tabs" role="tablist">
+          <button type="button" class="object-editor-tab is-active" data-editor-tab="objects" role="tab" aria-selected="true">Объекты</button>
+          <button type="button" class="object-editor-tab" data-editor-tab="programs" role="tab" aria-selected="false">Программы</button>
+        </div>
+        <div class="object-editor-list" id="objectEditorList" data-editor-panel="objects">${renderObjectEditorRows()}</div>
+        <div class="object-editor-list" id="programEditorList" data-editor-panel="programs" hidden></div>
         <footer class="object-editor-footer">
-          <button type="button" class="object-editor-toolbar-button object-editor-toolbar-button--success" data-open-add-object>Добавить объект</button>
+          <button type="button" class="object-editor-toolbar-button object-editor-toolbar-button--success" data-open-add-object data-editor-panel="objects">Добавить объект</button>
+          <button type="button" class="object-editor-toolbar-button object-editor-toolbar-button--success" data-program-editor-sync data-editor-panel="programs" hidden>Записать в файл</button>
         </footer>
         <div class="object-editor-create" data-object-editor-create hidden>
           <div class="object-editor-create-backdrop" data-close-add-object></div>
@@ -4697,7 +4908,76 @@
     });
 
     const listRoot = objectEditorRoot.querySelector("#objectEditorList");
+    const programRoot = objectEditorRoot.querySelector("#programEditorList");
     const addDialog = objectEditorRoot.querySelector("[data-object-editor-create]");
+
+    function renderProgramEditor() {
+      if (programRoot) {
+        programRoot.innerHTML = renderProgramEditorPanel();
+      }
+    }
+
+    function setProgramEditorBusy(busy) {
+      if (programRoot) {
+        programRoot.dataset.busy = busy ? "1" : "";
+      }
+    }
+
+    // Вкладка «Программы» тянет строки при первом открытии: областей и
+    // наследования на клиенте нет, их считает сервер.
+    let programRowsLoaded = false;
+
+    async function ensureProgramRows(force = false) {
+      if (programRowsLoaded && !force) {
+        return;
+      }
+      setProgramEditorBusy(true);
+      try {
+        await loadProgramRows(state.programScope);
+        programRowsLoaded = true;
+      } catch (error) {
+        showToast(
+          error instanceof Error ? error.message : "Не удалось загрузить названия программ.",
+          "error"
+        );
+      } finally {
+        setProgramEditorBusy(false);
+        renderProgramEditor();
+      }
+    }
+
+    function switchEditorTab(tab) {
+      const nextTab = tab === "programs" ? "programs" : "objects";
+      state.editorTab = nextTab;
+
+      objectEditorRoot.querySelectorAll("[data-editor-tab]").forEach((element) => {
+        const isActive = element.dataset.editorTab === nextTab;
+        element.classList.toggle("is-active", isActive);
+        element.setAttribute("aria-selected", isActive ? "true" : "false");
+      });
+      objectEditorRoot.querySelectorAll("[data-editor-panel]").forEach((element) => {
+        element.hidden = element.dataset.editorPanel !== nextTab;
+      });
+
+      const copy = objectEditorRoot.querySelector("[data-editor-copy]");
+      if (copy) {
+        copy.textContent =
+          nextTab === "programs"
+            ? "Названия программ мойки по областям."
+            : "Названия объектов по потокам.";
+      }
+
+      if (nextTab === "programs") {
+        renderProgramEditor();
+        ensureProgramRows();
+      }
+    }
+
+    objectEditorRoot.querySelectorAll("[data-editor-tab]").forEach((element) => {
+      element.addEventListener("click", () => switchEditorTab(element.dataset.editorTab));
+    });
+    switchEditorTab(state.editorTab);
+
     objectEditorRoot.querySelectorAll("[data-open-add-object]").forEach((element) => {
       element.addEventListener("click", openAddObjectDialog);
     });
@@ -4759,6 +5039,49 @@
         return;
       }
 
+      if (form.matches("[data-program-editor-form]")) {
+        const formData = new FormData(form);
+        const programId = Number(formData.get("program_id") || 0);
+        const programName = String(formData.get("program_name") || "").trim();
+        const submitButton = form.querySelector('button[type="submit"]');
+        const originalLabel = submitButton?.textContent || "Сохранить";
+
+        // Пустое поле — это не «сохранить пустоту», а отказ от собственного
+        // названия: то же, что «Сбросить». Иначе сервер вернул бы 400.
+        const mode = programName ? "set" : "reset";
+
+        if (submitButton) {
+          submitButton.disabled = true;
+          submitButton.textContent = "Сохраняю...";
+        }
+
+        try {
+          const payload = await persistProgramName(
+            state.programScope,
+            programId,
+            programName,
+            mode
+          );
+          applyProgramEditorPayload(payload);
+          renderProgramEditor();
+          // Журнал держит названия в строках: перечитываем данные, иначе список
+          // моек показывал бы прежнее название до следующего обновления.
+          await hydrateWorkspaceData({ keepUi: true });
+          showToast(mode === "set" ? "Название сохранено" : "Название сброшено", "success");
+        } catch (error) {
+          showToast(
+            error instanceof Error ? error.message : "Не удалось сохранить название программы.",
+            "error"
+          );
+        } finally {
+          if (submitButton) {
+            submitButton.disabled = false;
+            submitButton.textContent = originalLabel;
+          }
+        }
+        return;
+      }
+
       if (!form.matches("[data-object-editor-form]")) {
         return;
       }
@@ -4796,6 +5119,76 @@
     };
 
     objectEditorRoot.onclick = async (event) => {
+      const scopeButton = event.target.closest("[data-program-scope]");
+      if (scopeButton) {
+        const nextScope = String(scopeButton.dataset.programScope || PROGRAM_SCOPE_ALL);
+        if (nextScope !== state.programScope) {
+          state.programScope = nextScope;
+          // Перерисовываем сразу, чтобы выбор области не «залипал» до ответа;
+          // строки под ним обновит ensureProgramRows.
+          renderProgramEditor();
+          await ensureProgramRows(true);
+        }
+        return;
+      }
+
+      const programResetButton = event.target.closest("[data-program-editor-reset]");
+      if (programResetButton) {
+        const programId = Number(programResetButton.dataset.programId || 0);
+        const originalLabel = programResetButton.textContent || "Сбросить";
+        programResetButton.disabled = true;
+        programResetButton.textContent = "Сбрасываю...";
+
+        try {
+          const payload = await persistProgramName(state.programScope, programId, "", "reset");
+          applyProgramEditorPayload(payload);
+          renderProgramEditor();
+          await hydrateWorkspaceData({ keepUi: true });
+          showToast("Название сброшено", "success");
+        } catch (error) {
+          programResetButton.disabled = false;
+          programResetButton.textContent = originalLabel;
+          showToast(
+            error instanceof Error ? error.message : "Не удалось сбросить название программы.",
+            "error"
+          );
+        }
+        return;
+      }
+
+      const programSyncButton = event.target.closest("[data-program-editor-sync]");
+      if (programSyncButton) {
+        const originalLabel = programSyncButton.textContent || "Записать в файл";
+        programSyncButton.disabled = true;
+        programSyncButton.textContent = "Записываю...";
+
+        try {
+          const payload = await requestProgramNames("/api/program-names-file/sync", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ scope: state.programScope }),
+          });
+          applyProgramEditorPayload(payload);
+          renderProgramEditor();
+          showToast(
+            payload?.changed
+              ? `Записано в ${payload.file_path}`
+              : "Файл уже соответствует текущим названиям",
+            "success",
+            6000
+          );
+        } catch (error) {
+          showToast(
+            error instanceof Error ? error.message : "Не удалось записать файл названий программ.",
+            "error"
+          );
+        } finally {
+          programSyncButton.disabled = false;
+          programSyncButton.textContent = originalLabel;
+        }
+        return;
+      }
+
       const choiceButton = event.target.closest("[data-choice-group]");
       if (choiceButton) {
         const dialog = choiceButton.closest("[data-object-editor-create]");

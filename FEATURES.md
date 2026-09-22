@@ -222,8 +222,17 @@ FTP/папка → распаковка архивов (кэш) → анализ
   (белый список), соединение `mode=ro`, имя таблицы сверяется со списком таблиц
   базы — произвольный путь или SQL через параметры не подставить.
   Бэкенд — `webapp/db_browser.py`, роуты `/api/db-browser/{files,tables,rows}`.
-- **Редактор объектов** — переименование по паре канал:object_id
-  (`wash_object_names.json`), поля выровнены, кнопка «Добавить объект» внизу.
+- **Редактор названий** — две вкладки в одном окне.
+  - *Объекты* — переименование по паре канал:object_id
+    (`wash_object_names.json`), поля выровнены, кнопка «Добавить объект» внизу.
+  - *Программы* — названия программ мойки (`wash_program_names.json`). В архиве
+    панели названий нет, только номер программы, поэтому их задаёт пользователь.
+    Семь штатных слотов панели показываются всегда, номера, встреченные в
+    данных, добавляются сверху. Переключатель **области**: «Все объекты» →
+    канал → объект; частное перебивает общее, унаследованное название стоит в
+    placeholder, «Сбросить» возвращает его. Кнопка «Записать в файл»
+    материализует видимые названия для ручной правки или раздачи на другие
+    машины.
 - **Окно настроек** — в стиле System Settings macOS: слева боковая навигация
   разделов (активный синим, подсветка при наведении), справа контент. Разделы:
   Общие (результат мойки + нормативы концентрации + источник данных), FTP,
@@ -273,7 +282,8 @@ FTP/папка → распаковка архивов (кэш) → анализ
 ## Хранилище (per-user, рядом с приложением)
 - `datalog/` — скачанные архивы/`.db` (FTP-зеркала `datalog/<id>/ГГГГ-ММ/`).
 - `temp/` — настройки: `wash_app_settings.json`, `wash_chart_styles.json`,
-  `wash_folder_source.json`, `wash_ftp_sources.json`, `wash_object_names.json`.
+  `wash_folder_source.json`, `wash_ftp_sources.json`, `wash_object_names.json`,
+  `wash_program_names.json`.
 - Кэши анализа/архивов/графиков — очищаются при выходе.
 
 ## HTTP API (FastAPI)
@@ -287,6 +297,9 @@ FTP/папка → распаковка архивов (кэш) → анализ
   заголовки ответа `X-Export-Rows` и `X-Export-Missing` (сколько ключей не
   нашлось в текущем анализе).
 - Объекты: `POST /api/object-name`, `/api/object-names-file/sync`.
+- Программы: `GET /api/program-names?scope=<область>`,
+  `POST /api/program-name` (`{scope, program_id, name, mode}`, режимы
+  `set|reset|reset_scope`), `POST /api/program-names-file/sync`.
 - Настройки/стили: `GET|POST /api/settings`, `GET|POST /api/chart-styles`.
 - Сервис: `GET /api/diagnostics`, `GET /api/update-check`,
   `POST /api/update/download`, `GET /api/update/job`,

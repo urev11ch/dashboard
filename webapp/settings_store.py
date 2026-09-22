@@ -40,6 +40,11 @@ from webapp.config import (
     FTP_AUTO_REFRESH_MIN_MINUTES,
     OBJECT_NAME_OVERRIDES_FILENAME,
     OBJECT_NAME_OVERRIDES_VERSION,
+    PROGRAM_ID_MAX,
+    PROGRAM_ID_MIN,
+    PROGRAM_NAME_MAX_LEN,
+    PROGRAM_NAME_OVERRIDES_FILENAME,
+    PROGRAM_NAME_OVERRIDES_VERSION,
     RESULT_LABEL_CATEGORIES,
     RESULT_LABEL_DEFAULTS,
     RESULT_LABEL_MAX_LEN,
@@ -150,6 +155,113 @@ def apply_object_name_overrides(
     analysis.overviews = sorted(
         analysis.overviews, key=lambda item: (item.channel, item.object_name, item.start_ts)
     )
+
+
+# ---- названия программ мойки ------------------------------------------------
+# Хранилище — wash_program_names.json рядом с остальными настройками, структура
+# {"programs": {"<область>": {"<номер программы>": "название"}}}. Область читаем
+# и пишем строкой (core.program_scope_key), чтобы файл оставался читаемым руками.
+def program_name_overrides_path(root_path: Path) -> Path:
+    return root_path / PROGRAM_NAME_OVERRIDES_FILENAME
+
+
+def normalize_program_name_overrides(raw_programs: Any) -> dict[str, dict[int, str]]:
+    """JSON → {область: {номер: название}}. Негодные ключи и пустые названия
+    выбрасываем молча: это не потеря данных, а отсев мусора в чужой правке."""
+    if not isinstance(raw_programs, dict):
+        return {}
+
+    overrides: dict[str, dict[int, str]] = {}
+    for raw_scope, raw_entries in raw_programs.items():
+        scope = str(raw_scope).strip()
+        if core.parse_program_scope_key(scope) is None:
+            continue
+        if not isinstance(raw_entries, dict):
+            continue
+
+        entries: dict[int, str] = {}
+        for raw_program_id, raw_name in raw_entries.items():
+            try:
+                program_id = int(raw_program_id)
+            except (TypeError, ValueError):
+                continue
+            if not PROGRAM_ID_MIN <= program_id <= PROGRAM_ID_MAX:
+                continue
+
+            name = " ".join(str(raw_name or "").split())[:PROGRAM_NAME_MAX_LEN]
+            if not name:
+                continue
+            entries[program_id] = name
+
+        if entries:
+            overrides[scope] = entries
+
+    return overrides
+
+
+def load_program_name_overrides(root_path: Path | None) -> dict[str, dict[int, str]]:
+    if root_path is None:
+        return {}
+
+    payload = read_json_object(program_name_overrides_path(root_path), warn_on_corrupt=True)
+    return normalize_program_name_overrides(payload.get("programs"))
+
+
+def save_program_name_overrides(root_path: Path, overrides: dict[str, dict[int, str]]) -> None:
+    path = program_name_overrides_path(root_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    programs_payload = {
+        scope: {str(program_id): name for program_id, name in sorted(entries.items()) if name.strip()}
+        for scope, entries in sorted(overrides.items())
+        if entries
+    }
+    programs_payload = {scope: entries for scope, entries in programs_payload.items() if entries}
+
+    if not programs_payload:
+        # Пустой файл не держим: его отсутствие — валидное состояние «ничего не
+        # переименовано», и так же ведёт себя файл имён объектов.
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        return
+
+    atomic_write_json(
+        path,
+        {
+            "version": PROGRAM_NAME_OVERRIDES_VERSION,
+            "programs": programs_payload,
+        },
+    )
+
+
+def resolve_program_name(
+    channel: int,
+    object_id: int,
+    program_id: int,
+    overrides: dict[str, dict[int, str]] | None = None,
+) -> str:
+    return core.resolve_program_name(channel, object_id, program_id, overrides)
+
+
+def apply_program_name_overrides(
+    analysis: core.AnalysisResult | None,
+    overrides: dict[str, dict[int, str]],
+) -> None:
+    """Накладывает пользовательские названия на уже разобранный анализ.
+
+    Списки sorted_cycles/cycles_by_key/segments_by_cycle_key держат те же самые
+    объекты Cycle и Segment, поэтому правки видны и через них. Порядок overviews
+    не трогаем — в нём нет программы, в отличие от переименования объекта."""
+    if analysis is None:
+        return
+
+    for collection in (analysis.segments, analysis.cycles):
+        for item in collection:
+            item.program_name = core.resolve_program_name(
+                item.channel, item.object_id, item.program_id, overrides
+            )
 
 
 # ---- стили кривых графика (цвет + тип линии), общие для всех источников -----

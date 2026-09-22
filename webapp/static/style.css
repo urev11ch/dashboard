@@ -1703,7 +1703,9 @@ body.desktop-shell .object-editor-panel {
   border: 1px solid rgba(40, 58, 96, 0.12);
   box-shadow: var(--shadow);
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  /* Шапка, вкладки, список, футер. Списков два (объекты/программы), но скрытый
+     выпадает из потока — см. .object-editor-list[hidden]. */
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   gap: 14px;
 }
 
@@ -2483,6 +2485,151 @@ body.desktop-shell .object-editor-panel {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
+}
+
+/* ---- вкладки редактора названий и вкладка «Программы» -------------------- */
+/* У .object-editor-list и кнопок футера есть свой display, поэтому UA-правило
+   [hidden] их не скрывает — гасим явно, иначе скрытый список занял бы строку
+   грида панели, а обе кнопки футера показывались бы разом. */
+.object-editor-list[hidden],
+.object-editor-toolbar-button[hidden] {
+  display: none;
+}
+
+.object-editor-tabs {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.object-editor-tab {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.object-editor-tab:hover {
+  color: var(--text);
+  background: transparent;
+}
+
+.object-editor-tab.is-active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.object-editor-list[data-busy="1"] {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.program-editor-scope {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(40, 58, 96, 0.1);
+}
+
+.program-editor-scope-grid {
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  /* На станции с двумя десятками объектов список областей вытеснил бы сами
+     программы за пределы экрана — ограничиваем его высоту и скроллим. */
+  max-height: 216px;
+  overflow: auto;
+}
+
+.program-editor-scope-grid .object-editor-choice {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 10px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Канал — заголовок группы: занимает строку целиком, его объекты идут ниже и
+   помечены полоской слева. */
+.object-editor-choice--channel {
+  grid-column: 1 / -1;
+  justify-content: flex-start;
+  background: rgba(40, 58, 96, 0.05);
+}
+
+.object-editor-choice--nested {
+  border-left: 3px solid rgba(23, 87, 255, 0.28);
+}
+
+.program-scope-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(40, 58, 96, 0.1);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.object-editor-choice.is-selected .program-scope-badge {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.program-editor-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.program-editor-rows {
+  display: grid;
+  gap: 6px;
+}
+
+/* Колонка идентификатора фиксирована (180px), а унаследованное название бывает
+   длинным. Без min-width: 0 грид-элемент и флекс-элементы внутри не сжимаются
+   ниже min-content — подпись вылезала поверх поля ввода вместо многоточия. */
+.program-editor-row .object-editor-row-meta {
+  display: grid;
+  gap: 4px;
+  align-items: start;
+  min-width: 0;
+}
+
+.program-row-marks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.program-row-mark {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.program-row-mark--own {
+  color: var(--success-text);
+  font-weight: 700;
+}
+
+.program-row-mark--idle {
+  font-style: italic;
 }
 
 .chart-modal-backdrop {

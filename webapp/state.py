@@ -77,6 +77,9 @@ class AppState:
     analysis: core.AnalysisResult | None = None
     analysis_revision: int = 0
     object_name_overrides: dict[tuple[int, int], str] = field(default_factory=dict)
+    # Названия программ мойки: область («*», «<канал>», «<канал>:<объект>») →
+    # {номер программы: название}. См. settings_store.resolve_program_name.
+    program_name_overrides: dict[str, dict[int, str]] = field(default_factory=dict)
     error: str | None = None
     scan_summary: ScanSummary = field(default_factory=ScanSummary)
     workspace_job: WorkspaceJob | None = None
@@ -97,6 +100,7 @@ class AppStateSnapshot:
     selected_display_root: str
     pending_display_root: str
     object_name_overrides: dict[tuple[int, int], str]
+    program_name_overrides: dict[str, dict[int, str]]
     error: str | None
     scan_summary: ScanSummary
     workspace_job_payload: dict[str, Any]

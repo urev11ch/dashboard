@@ -117,6 +117,7 @@ from webapp.settings_store import (  # noqa: F401
     app_settings_path,
     apply_concentration_verdict,
     apply_object_name_overrides,
+    apply_program_name_overrides,
     chart_style_settings_path,
     evaluate_cycle_concentration,
     fallback_object_name,
@@ -125,19 +126,23 @@ from webapp.settings_store import (  # noqa: F401
     load_chart_style_settings,
     load_last_folder_path,
     load_object_name_overrides,
+    load_program_name_overrides,
     normalize_app_settings,
     normalize_chart_style_series,
     object_name_override_key,
     object_name_overrides_path,
+    program_name_overrides_path,
     parse_object_name_override_key,
     resolve_cycle_default_status,
     resolve_object_name,
+    resolve_program_name,
     resolve_result_kind,
     resolve_result_label,
     save_app_settings,
     save_chart_style_settings,
     save_last_folder_path,
     save_object_name_overrides,
+    save_program_name_overrides,
     update_app_settings,
 )
 # Дисковый и оперативный кэш анализа вынесены в webapp/cache.py. Каталоги кэша и
@@ -239,6 +244,9 @@ from webapp.analysis import (  # noqa: F401
 from webapp import views
 from webapp.views import (  # noqa: F401
     build_object_rows,
+    build_program_editor_payload,
+    build_program_rows,
+    build_program_scopes,
     build_scan_warnings,
     build_seed_object_name_overrides,
     build_summary_payload,
@@ -459,6 +467,7 @@ def reset_workspace() -> None:
     state.analysis = None
     state.analysis_revision += 1
     state.object_name_overrides = {}
+    state.program_name_overrides = {}
     state.error = None
     state.scan_summary = ScanSummary()
     state.connected_ftp_id = ""  # «Отключить»: снимаем пометку подключения
@@ -674,6 +683,9 @@ def workspace_data() -> JSONResponse:
         snapshot.analysis, snapshot.analysis_revision, snapshot.object_name_overrides
     )
     payload["object_rows"] = build_object_rows(snapshot.object_name_overrides, snapshot.analysis)
+    payload["program_scopes"] = build_program_scopes(
+        snapshot.program_name_overrides, snapshot.analysis
+    )
     return JSONResponse(payload)
 
 
@@ -927,6 +939,168 @@ def sync_object_names_file() -> JSONResponse:
         )
 
 
+
+
+# ---- названия программ мойки ------------------------------------------------
+# Источник данных для роутов не требуется: семь штатных программ панели известны
+# и без архива, а файл названий лежит в TEMP_ROOT рядом с прочими настройками.
+# Требовать открытый источник (как для переименования объекта) здесь незачем —
+# это мешало бы заполнить названия заранее.
+def normalized_program_scope(raw_scope: object) -> str:
+    scope = str(raw_scope or core.PROGRAM_SCOPE_ALL).strip()
+    if core.parse_program_scope_key(scope) is None:
+        raise HTTPException(status_code=400, detail="Некорректная область названий программ.")
+    return scope
+
+
+@app.get("/api/program-names")
+def get_program_names(scope: str = core.PROGRAM_SCOPE_ALL) -> JSONResponse:
+    resolved_scope = normalized_program_scope(scope)
+    with state_lock:
+        overrides = {
+            key: dict(entries) for key, entries in state.program_name_overrides.items()
+        }
+        analysis = state.analysis
+
+    return JSONResponse(build_program_editor_payload(overrides, analysis, resolved_scope))
+
+
+@app.post("/api/program-name")
+def update_program_name(payload: dict[str, Any] = Body(...)) -> JSONResponse:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Некорректное тело запроса.")
+
+    scope = normalized_program_scope(payload.get("scope"))
+    mode = str(payload.get("mode") or "set").strip().lower()
+    if mode not in {"set", "reset", "reset_scope"}:
+        raise HTTPException(status_code=400, detail="Некорректный режим сохранения программы.")
+
+    program_id = 0
+    if mode != "reset_scope":
+        try:
+            program_id = int(payload.get("program_id"))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400, detail="Не удалось определить номер программы."
+            ) from exc
+        if not config.PROGRAM_ID_MIN <= program_id <= config.PROGRAM_ID_MAX:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Номер программы должен быть в диапазоне от {config.PROGRAM_ID_MIN} "
+                    f"до {config.PROGRAM_ID_MAX}."
+                ),
+            )
+
+    normalized_name = " ".join(str(payload.get("name") or "").split())
+    if mode == "set":
+        if not normalized_name:
+            raise HTTPException(status_code=400, detail="Название программы не может быть пустым.")
+        if len(normalized_name) > config.PROGRAM_NAME_MAX_LEN:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Название программы не должно быть длиннее "
+                    f"{config.PROGRAM_NAME_MAX_LEN} символов."
+                ),
+            )
+
+    with state_lock:
+        overrides = {
+            key: dict(entries) for key, entries in state.program_name_overrides.items()
+        }
+        entries = overrides.get(scope, {})
+
+        if mode == "set":
+            entries[program_id] = normalized_name
+            overrides[scope] = entries
+        elif mode == "reset":
+            entries.pop(program_id, None)
+            if entries:
+                overrides[scope] = entries
+            else:
+                overrides.pop(scope, None)
+        else:
+            overrides.pop(scope, None)
+
+        try:
+            save_program_name_overrides(config.TEMP_ROOT, overrides)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Не удалось сохранить названия программ: {exc}"
+            ) from exc
+
+        state.program_name_overrides = overrides
+        if state.analysis is not None:
+            apply_program_name_overrides(state.analysis, overrides)
+            # Строки журнала кэшируются по ревизии анализа: без её сдвига список
+            # моек продолжил бы показывать прежнее название программы.
+            state.analysis_revision += 1
+        # Ответ собираем под тем же локом — иначе клиент может получить строки,
+        # не соответствующие только что сохранённой правке.
+        editor_payload = build_program_editor_payload(
+            state.program_name_overrides, state.analysis, scope
+        )
+
+    return JSONResponse({"ok": True, "mode": mode, **editor_payload})
+
+
+@app.post("/api/program-names-file/sync")
+def sync_program_names_file(payload: dict[str, Any] = Body(default=None)) -> JSONResponse:
+    """Материализует файл названий: записывает в выбранную область то, что сейчас
+    показывается. Дальше его можно править руками или раздать на другие машины."""
+    scope = normalized_program_scope((payload or {}).get("scope"))
+
+    with state_lock:
+        overrides = {
+            key: dict(entries) for key, entries in state.program_name_overrides.items()
+        }
+        path = program_name_overrides_path(config.TEMP_ROOT)
+        file_existed = path.exists()
+
+        rows = build_program_rows(overrides, state.analysis, scope)
+        entries = dict(overrides.get(scope, {}))
+        added_entry_count = 0
+        for row in rows:
+            program_id = int(row["program_id"])
+            if program_id in entries:
+                continue
+            entries[program_id] = str(row["program_name"])
+            added_entry_count += 1
+
+        next_overrides = dict(overrides)
+        if entries:
+            next_overrides[scope] = entries
+        changed = next_overrides != overrides or not file_existed
+
+        if changed:
+            try:
+                save_program_name_overrides(config.TEMP_ROOT, next_overrides)
+            except OSError as exc:
+                raise HTTPException(
+                    status_code=500, detail=f"Не удалось сохранить названия программ: {exc}"
+                ) from exc
+
+            state.program_name_overrides = next_overrides
+            if state.analysis is not None:
+                apply_program_name_overrides(state.analysis, next_overrides)
+                state.analysis_revision += 1
+
+        editor_payload = build_program_editor_payload(
+            state.program_name_overrides, state.analysis, scope
+        )
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "changed": changed,
+            "created": not file_existed,
+            "file_path": str(path),
+            "entry_count": len(state.program_name_overrides.get(scope, {})),
+            "added_entry_count": added_entry_count,
+            **editor_payload,
+        }
+    )
 
 
 @app.get("/api/chart-styles")

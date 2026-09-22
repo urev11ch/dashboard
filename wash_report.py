@@ -18,6 +18,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from webapp.io_utils import read_json_object
 
 OBJECT_NAMES_FILENAME = "wash_object_names.json"
+PROGRAM_NAMES_FILENAME = "wash_program_names.json"
 
 # Столбец времени — единственный с фиксированным именем; остальные панель пишет
 # как data_format_<i>, а что в них лежит — знает только по подписи в таблице
@@ -765,8 +766,82 @@ def load_object_name_overrides_for_db_files(
         merged_overrides.update(load_object_name_overrides_from_file(candidate))
     return merged_overrides
 
-def name_for_program(program_id: int) -> str:
+# ---- названия программ мойки ------------------------------------------------
+# Названия программ задаёт пользователь: в архиве панели лежит только номер
+# программы (data_format_<i> по подписи «Программа»), справочника имён там нет.
+# Область действия названия: "*" — все объекты, "<канал>" — весь канал,
+# "<канал>:<объект>" — конкретный объект. Иерархия нужна потому, что на станции
+# набор программ у объектов обычно общий и расходится у единиц: плоский ключ по
+# объекту заставлял бы вводить одни и те же семь названий для каждого объекта.
+PROGRAM_SCOPE_ALL = "*"
+
+def program_scope_key(channel: int | None = None, object_id: int | None = None) -> str:
+    if channel is None:
+        return PROGRAM_SCOPE_ALL
+    if object_id is None:
+        return str(channel)
+    return f"{channel}:{object_id}"
+
+def parse_program_scope_key(raw_key: str) -> tuple[int | None, int | None] | None:
+    """"*" → (None, None), "2" → (2, None), "2:5" → (2, 5). None — ключ негоден."""
+    text = str(raw_key).strip()
+    if text == PROGRAM_SCOPE_ALL:
+        return None, None
+
+    parts = text.split(":", 1)
+    try:
+        channel = int(parts[0])
+    except ValueError:
+        return None
+    if channel <= 0:
+        return None
+
+    if len(parts) == 1:
+        return channel, None
+
+    try:
+        object_id = int(parts[1])
+    except ValueError:
+        return None
+    if object_id < 0:
+        return None
+    return channel, object_id
+
+def program_scope_chain(channel: int, object_id: int) -> tuple[str, ...]:
+    """Порядок поиска названия — от частного к общему."""
+    return (
+        program_scope_key(channel, object_id),
+        program_scope_key(channel),
+        PROGRAM_SCOPE_ALL,
+    )
+
+def fallback_program_name(program_id: int) -> str:
+    """Встроенное название программы. Неизвестный номер не прячем за прочерком:
+    «Программа 9» в журнале — сигнал, что на объекте есть незаполненный слот."""
     return PROGRAM_NAMES.get(program_id, f"Программа {program_id}")
+
+def resolve_program_name(
+    channel: int,
+    object_id: int,
+    program_id: int,
+    overrides: Mapping[str, Mapping[int, str]] | None = None,
+) -> str:
+    for scope in program_scope_chain(channel, object_id):
+        name = (overrides or {}).get(scope, {}).get(program_id)
+        if name:
+            return name
+    return fallback_program_name(program_id)
+
+def name_for_program(program_id: int) -> str:
+    """Название на этапе разбора архива — всегда встроенное.
+
+    Пользовательские названия накладываются ПОСЛЕ анализа
+    (settings_store.apply_program_name_overrides), а не здесь: разобранный
+    DbAnalysisChunk целиком уезжает в дисковый кэш (webapp/cache.py), и если бы
+    имя запекалось при разборе, каждое переименование делало бы весь кэш
+    протухшим — пришлось бы бампать DB_ANALYSIS_CACHE_VERSION и перечитывать все
+    базы заново. Имена объектов не запекаются ровно по той же причине."""
+    return fallback_program_name(program_id)
 
 def name_for_process(process_id: int) -> str:
     return PROCESS_NAMES.get(process_id, f"Операция {process_id}")
