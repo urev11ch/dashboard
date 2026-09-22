@@ -182,13 +182,19 @@
     // Ручное подключение доступно всегда, а не только после неудачного скана:
     // панель за маршрутизатором скан не найдёт никогда, и прятать до него
     // единственный рабочий путь — значит прятать его навсегда.
+    // Кнопка работает спойлером — и раскрывает форму, и сворачивает обратно:
+    // раньше она умела только открывать, и убрать поля с экрана было нечем.
     const manualBtn = document.querySelector("[data-ftp-manual]");
-    const manualDetails = document.querySelector("[data-ftp-add]");
-    if (manualBtn && manualDetails) {
+    const manualPanel = document.querySelector("[data-ftp-add]");
+    if (manualBtn && manualPanel) {
       manualBtn.addEventListener("click", () => {
-        manualDetails.hidden = false;
-        manualDetails.open = true;
-        manualDetails.querySelector('[name="host"]')?.focus();
+        const willOpen = manualPanel.hidden;
+        manualPanel.hidden = !willOpen;
+        manualBtn.setAttribute("aria-expanded", willOpen ? "true" : "false");
+        manualBtn.classList.toggle("is-open", willOpen);
+        if (willOpen) {
+          manualPanel.querySelector('[name="host"]')?.focus();
+        }
       });
     }
 

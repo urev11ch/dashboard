@@ -289,10 +289,6 @@ code {
   flex-wrap: wrap;
 }
 
-.welcome-head-text {
-  min-width: 0;
-}
-
 /* Служебный заголовок, а не рекламный герой: clamp(34px…56px) с интерлиньяжем
    0.96 и сжатием −0.05em спорил со всем остальным интерфейсом, который построен
    на мелких радиусах и компактной типографике. */
@@ -301,12 +297,6 @@ code {
   font-size: 22px;
   line-height: 1.25;
   letter-spacing: -0.01em;
-}
-
-.welcome-subtitle {
-  margin: 4px 0 0;
-  color: var(--muted);
-  font-size: 13px;
 }
 
 /* Секции «Панели» и «Папка с архивами» видны одновременно: раньше они были
@@ -4194,21 +4184,43 @@ body.modal-export-mode .chart-print-document {
   background: var(--warn-bg);
   color: var(--warn);
 }
+/* Панель ручного подключения — спойлер: переключается кнопкой «Добавить
+   вручную» в шапке секции. Своего заголовка-переключателя у неё нет намеренно —
+   два переключателя на одну панель сбивают с толку. */
 .welcome-ftp-add {
   margin-top: 14px;
 }
-.welcome-ftp-add > summary {
-  cursor: pointer;
-  font-weight: 700;
-  color: var(--accent);
-  padding: 6px 0;
-  list-style: none;
-}
-.welcome-ftp-add > summary::-webkit-details-marker {
+
+.welcome-ftp-add[hidden] {
   display: none;
 }
-.welcome-ftp-add[open] > summary {
-  margin-bottom: 8px;
+
+.welcome-manual-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.welcome-manual-chevron {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 140ms ease;
+}
+
+.welcome-manual-toggle.is-open .welcome-manual-chevron {
+  transform: rotate(180deg);
+}
+
+/* Открытый спойлер — кнопка выглядит нажатой, иначе непонятно, чем свернуть. */
+.welcome-manual-toggle.is-open {
+  background: rgba(23, 87, 255, 0.1);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* ---- Просмотр содержимого базы ------------------------------------------ */

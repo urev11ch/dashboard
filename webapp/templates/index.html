@@ -29,10 +29,7 @@
   <main class="welcome-shell">
     <section class="welcome-card">
       <header class="welcome-head">
-        <div class="welcome-head-text">
-          <h1 class="welcome-title">OptiCIP Dashboard</h1>
-          <p class="welcome-subtitle">Журнал моек CIP-станции</p>
-        </div>
+        <h1 class="welcome-title">OptiCIP Dashboard</h1>
         <span class="welcome-version">Версия {{ app_version }}</span>
       </header>
 
@@ -40,7 +37,10 @@
         <div class="welcome-section-head">
           <span class="eyebrow">Панели</span>
           <div class="welcome-section-actions">
-            <button type="button" class="ghost" data-ftp-manual>Добавить вручную</button>
+            <button type="button" class="ghost welcome-manual-toggle" data-ftp-manual aria-expanded="false" aria-controls="manualPanel">
+              <svg class="welcome-manual-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"></path></svg>
+              Добавить вручную
+            </button>
             <button type="button" class="ftp-search-btn" data-ftp-discover>
               <svg class="ftp-search-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z"></path></svg>
               Найти панель
@@ -111,8 +111,7 @@
                  autocomplete="off" spellcheck="false">
         </div>
 
-        <details class="welcome-ftp-add" data-ftp-add hidden>
-          <summary>Подключение вручную</summary>
+        <div class="welcome-ftp-add" id="manualPanel" data-ftp-add hidden>
           <form method="post" action="/workspace/ftp-source/add" class="folder-form folder-form--ftp" data-ftp-add-form>
             <div class="welcome-ftp-panel">
             <div class="welcome-form-grid">
@@ -139,7 +138,7 @@
             </div>
             </div>
           </form>
-        </details>
+        </div>
       </section>
 
       <section class="welcome-section">

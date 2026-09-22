@@ -51,17 +51,25 @@ test("попап поиска: имя, «Пароль», «Добавить па
   await expect(modal.getByText(":21")).toHaveCount(0);
 });
 
-test("«Добавить вручную» доступна сразу и раскрывает форму", async ({ page }) => {
+test("«Добавить вручную» — спойлер: раскрывает и сворачивает форму", async ({ page }) => {
   await page.goto("/");
   // Панель за маршрутизатором скан не найдёт никогда, поэтому ручной путь
   // открыт с самого начала, а не только после неудачного поиска.
   const manual = page.locator("[data-ftp-manual]");
+  const form = page.locator("[data-ftp-add]");
   await expect(manual).toBeVisible();
+  await expect(form).toBeHidden();
+  await expect(manual).toHaveAttribute("aria-expanded", "false");
 
   await manual.click();
-  const form = page.locator("[data-ftp-add]");
   await expect(form).toBeVisible();
+  await expect(manual).toHaveAttribute("aria-expanded", "true");
   await expect(form.locator("button[type=submit]")).toHaveText("Добавить панель");
+
+  // Тем же нажатием сворачивается обратно — иначе убрать поля с экрана нечем.
+  await manual.click();
+  await expect(form).toBeHidden();
+  await expect(manual).toHaveAttribute("aria-expanded", "false");
 });
 
 test("пустой скан не прячет ручное подключение", async ({ page }) => {
