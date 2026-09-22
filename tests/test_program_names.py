@@ -112,7 +112,7 @@ def test_save_load_roundtrip(temp_root):
     overrides = {1: "Ополаскивание", 3: "Щёлочь + кислота"}
     app.save_program_name_overrides(temp_root, overrides)
 
-    path = app.program_name_overrides_path(temp_root)
+    path = app.settings_store.program_name_overrides_path(temp_root)
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["version"] == app.config.PROGRAM_NAME_OVERRIDES_VERSION
     # Номера программ в файле — строки: JSON другого ключа не умеет.
@@ -122,7 +122,7 @@ def test_save_load_roundtrip(temp_root):
 
 def test_save_empty_removes_file(temp_root):
     app.save_program_name_overrides(temp_root, {1: "x"})
-    path = app.program_name_overrides_path(temp_root)
+    path = app.settings_store.program_name_overrides_path(temp_root)
     assert path.exists()
 
     app.save_program_name_overrides(temp_root, {})
@@ -130,7 +130,7 @@ def test_save_empty_removes_file(temp_root):
 
 
 def test_load_ignores_corrupt_file(temp_root):
-    app.program_name_overrides_path(temp_root).write_text("{ not json", encoding="utf-8")
+    app.settings_store.program_name_overrides_path(temp_root).write_text("{ not json", encoding="utf-8")
     assert app.load_program_name_overrides(temp_root) == {}
 
 
@@ -232,7 +232,7 @@ def test_route_reset_drops_entry_and_file(temp_root):
     # Последняя запись убирает и сам файл — пустой файл не держим.
     app.update_program_name({"program_id": 4, "mode": "reset"})
     assert app.state.program_name_overrides == {}
-    assert not app.program_name_overrides_path(temp_root).exists()
+    assert not app.settings_store.program_name_overrides_path(temp_root).exists()
 
 
 def test_route_rejects_bad_input(temp_root):
@@ -255,34 +255,3 @@ def test_get_route_returns_rows(temp_root):
 
     row = next(row for row in payload["program_rows"] if row["program_id"] == 3)
     assert row["own_name"] == "Своё"
-
-
-def test_sync_route_materializes_visible_names(temp_root):
-    app.state.analysis = _analysis(cycles=[_cycle(program_id=3)])
-
-    payload = json.loads(app.sync_program_names_file().body)
-
-    assert payload["created"] is True
-    assert payload["changed"] is True
-    assert payload["added_entry_count"] == 7
-    # В файл легло ровно то, что показывалось: семь встроенных названий панели.
-    assert app.load_program_name_overrides(temp_root) == {
-        program_id: core.PROGRAM_NAMES[program_id] for program_id in range(1, 8)
-    }
-
-
-def test_sync_route_keeps_existing_names(temp_root):
-    app.update_program_name({"program_id": 3, "name": "Своё"})
-
-    payload = json.loads(app.sync_program_names_file().body)
-
-    assert payload["added_entry_count"] == 6
-    assert app.load_program_name_overrides(temp_root)[3] == "Своё"
-
-
-def test_sync_route_second_call_changes_nothing(temp_root):
-    app.sync_program_names_file()
-    payload = json.loads(app.sync_program_names_file().body)
-
-    assert payload["changed"] is False
-    assert payload["added_entry_count"] == 0

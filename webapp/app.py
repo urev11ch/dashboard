@@ -131,7 +131,6 @@ from webapp.settings_store import (  # noqa: F401
     normalize_chart_style_series,
     object_name_override_key,
     object_name_overrides_path,
-    program_name_overrides_path,
     parse_object_name_override_key,
     resolve_cycle_default_status,
     resolve_object_name,
@@ -1013,53 +1012,6 @@ def update_program_name(payload: dict[str, Any] = Body(...)) -> JSONResponse:
         program_rows = build_program_rows(state.program_name_overrides, state.analysis)
 
     return JSONResponse({"ok": True, "mode": mode, "program_rows": program_rows})
-
-
-@app.post("/api/program-names-file/sync")
-def sync_program_names_file() -> JSONResponse:
-    """Материализует файл названий: записывает то, что сейчас показывается.
-    Дальше его можно править руками или раздать на другие машины."""
-    with state_lock:
-        overrides = dict(state.program_name_overrides)
-        path = program_name_overrides_path(config.TEMP_ROOT)
-        file_existed = path.exists()
-
-        next_overrides = dict(overrides)
-        added_entry_count = 0
-        for row in build_program_rows(overrides, state.analysis):
-            program_id = int(row["program_id"])
-            if program_id in next_overrides:
-                continue
-            next_overrides[program_id] = str(row["program_name"])
-            added_entry_count += 1
-
-        changed = next_overrides != overrides or not file_existed
-        if changed:
-            try:
-                save_program_name_overrides(config.TEMP_ROOT, next_overrides)
-            except OSError as exc:
-                raise HTTPException(
-                    status_code=500, detail=f"Не удалось сохранить названия программ: {exc}"
-                ) from exc
-
-            state.program_name_overrides = next_overrides
-            if state.analysis is not None:
-                apply_program_name_overrides(state.analysis, next_overrides)
-                state.analysis_revision += 1
-
-        program_rows = build_program_rows(state.program_name_overrides, state.analysis)
-
-    return JSONResponse(
-        {
-            "ok": True,
-            "changed": changed,
-            "created": not file_existed,
-            "file_path": str(path),
-            "entry_count": len(state.program_name_overrides),
-            "added_entry_count": added_entry_count,
-            "program_rows": program_rows,
-        }
-    )
 
 
 @app.get("/api/chart-styles")

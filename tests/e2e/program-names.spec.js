@@ -56,7 +56,7 @@ test("переименование доезжает до журнала и де�
   await openProgramsTab(page);
   await programRow(page, 1).locator('input[name="program_name"]').fill("Ополаскивание ВВ");
   await programRow(page, 1).locator('button[type="submit"]').click();
-  await expect(programRow(page, 1).locator(".program-row-mark--own")).toHaveText("своё");
+  await expect(programRow(page, 1).locator("[data-program-editor-reset]")).toBeEnabled();
 
   await closeEditor(page);
   // Название общее: переименовались мойки всех объектов, где шла эта программа.
@@ -70,10 +70,10 @@ test("сброс возвращает встроенное название", as
 
   await programRow(page, 3).locator('input[name="program_name"]').fill("Щёлочь + кислота");
   await programRow(page, 3).locator('button[type="submit"]').click();
-  await expect(programRow(page, 3).locator(".program-row-mark--own")).toBeVisible();
+  await expect(programRow(page, 3).locator("[data-program-editor-reset]")).toBeEnabled();
 
   await programRow(page, 3).locator("[data-program-editor-reset]").click();
-  await expect(programRow(page, 3).locator(".program-row-mark--own")).toHaveCount(0);
+  await expect(programRow(page, 3).locator("[data-program-editor-reset]")).toBeDisabled();
   await expect(programRow(page, 3).locator('input[name="program_name"]')).toHaveValue("");
 
   await closeEditor(page);
@@ -88,12 +88,12 @@ test("пустое поле снимает своё название", async ({ 
 
   await programRow(page, 2).locator('input[name="program_name"]').fill("Своё");
   await programRow(page, 2).locator('button[type="submit"]').click();
-  await expect(programRow(page, 2).locator(".program-row-mark--own")).toBeVisible();
+  await expect(programRow(page, 2).locator("[data-program-editor-reset]")).toBeEnabled();
 
   // Пустое поле — отказ от своего названия, а не попытка сохранить пустоту.
   await programRow(page, 2).locator('input[name="program_name"]').fill("");
   await programRow(page, 2).locator('button[type="submit"]').click();
-  await expect(programRow(page, 2).locator(".program-row-mark--own")).toHaveCount(0);
+  await expect(programRow(page, 2).locator("[data-program-editor-reset]")).toBeDisabled();
   await expect(programRow(page, 2).locator('input[name="program_name"]')).toHaveAttribute(
     "placeholder",
     "Ополаскивание чистой водой"

@@ -4201,18 +4201,14 @@
         // placeholder: так видно, что именно вернёт «Сбросить».
         const ownName = String(row.own_name || "");
         const baseName = String(row.base_program_name || "");
-        const mark = row.is_custom_name
-          ? '<span class="program-row-mark program-row-mark--own">своё</span>'
-          : "";
 
         return `
-          <form class="object-editor-row program-editor-row" data-program-editor-form>
+          <form class="object-editor-row" data-program-editor-form>
             <input type="hidden" name="program_id" value="${escapeHtml(row.program_id)}">
             <div class="object-editor-row-meta">
               <div class="object-editor-row-identity">
                 <span class="object-editor-token">Программа ${escapeHtml(row.program_id)}</span>
               </div>
-              <div class="program-row-marks">${mark}</div>
             </div>
             <div class="object-editor-row-controls">
               <input
@@ -4740,9 +4736,8 @@
         </div>
         <div class="object-editor-list" id="objectEditorList" data-editor-panel="objects">${renderObjectEditorRows()}</div>
         <div class="object-editor-list" id="programEditorList" data-editor-panel="programs" hidden></div>
-        <footer class="object-editor-footer">
-          <button type="button" class="object-editor-toolbar-button object-editor-toolbar-button--success" data-open-add-object data-editor-panel="objects">Добавить объект</button>
-          <button type="button" class="object-editor-toolbar-button object-editor-toolbar-button--success" data-program-editor-sync data-editor-panel="programs" hidden>Записать в файл</button>
+        <footer class="object-editor-footer" data-editor-panel="objects">
+          <button type="button" class="object-editor-toolbar-button object-editor-toolbar-button--success" data-open-add-object>Добавить объект</button>
         </footer>
         <div class="object-editor-create" data-object-editor-create hidden>
           <div class="object-editor-create-backdrop" data-close-add-object></div>
@@ -5021,37 +5016,6 @@
             error instanceof Error ? error.message : "Не удалось сбросить название программы.",
             "error"
           );
-        }
-        return;
-      }
-
-      const programSyncButton = event.target.closest("[data-program-editor-sync]");
-      if (programSyncButton) {
-        const originalLabel = programSyncButton.textContent || "Записать в файл";
-        programSyncButton.disabled = true;
-        programSyncButton.textContent = "Записываю...";
-
-        try {
-          const payload = await requestProgramNames("/api/program-names-file/sync", {
-            method: "POST",
-          });
-          replaceProgramRows(payload?.program_rows);
-          renderProgramEditor();
-          showToast(
-            payload?.changed
-              ? `Записано в ${payload.file_path}`
-              : "Файл уже соответствует текущим названиям",
-            "success",
-            6000
-          );
-        } catch (error) {
-          showToast(
-            error instanceof Error ? error.message : "Не удалось записать файл названий программ.",
-            "error"
-          );
-        } finally {
-          programSyncButton.disabled = false;
-          programSyncButton.textContent = originalLabel;
         }
         return;
       }

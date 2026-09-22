@@ -2488,11 +2488,11 @@ body.desktop-shell .object-editor-panel {
 }
 
 /* ---- вкладки редактора названий и вкладка «Программы» -------------------- */
-/* У .object-editor-list и кнопок футера есть свой display, поэтому UA-правило
-   [hidden] их не скрывает — гасим явно, иначе скрытый список занял бы строку
-   грида панели, а обе кнопки футера показывались бы разом. */
+/* У .object-editor-list и .object-editor-footer есть свой display, поэтому
+   UA-правило [hidden] их не скрывает — гасим явно, иначе скрытый список занял бы
+   строку грида панели, а футер вкладки «Объекты» висел бы и на «Программах». */
 .object-editor-list[hidden],
-.object-editor-toolbar-button[hidden] {
+.object-editor-footer[hidden] {
   display: none;
 }
 
@@ -2527,34 +2527,6 @@ body.desktop-shell .object-editor-panel {
 .object-editor-list[data-busy="1"] {
   opacity: 0.6;
   pointer-events: none;
-}
-
-.program-editor-row .object-editor-row-meta {
-  display: grid;
-  gap: 4px;
-  align-items: start;
-  min-width: 0;
-}
-
-.program-row-marks {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  min-width: 0;
-}
-
-.program-row-mark {
-  min-width: 0;
-  color: var(--muted);
-  font-size: 11px;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.program-row-mark--own {
-  color: var(--success-text);
-  font-weight: 700;
 }
 
 .chart-modal-backdrop {
