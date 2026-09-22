@@ -4201,13 +4201,9 @@
         // placeholder: так видно, что именно вернёт «Сбросить».
         const ownName = String(row.own_name || "");
         const baseName = String(row.base_program_name || "");
-        const marks = [];
-        if (row.is_custom_name) {
-          marks.push('<span class="program-row-mark program-row-mark--own">своё</span>');
-        }
-        if (!row.is_seen) {
-          marks.push('<span class="program-row-mark program-row-mark--idle">нет в данных</span>');
-        }
+        const mark = row.is_custom_name
+          ? '<span class="program-row-mark program-row-mark--own">своё</span>'
+          : "";
 
         return `
           <form class="object-editor-row program-editor-row" data-program-editor-form>
@@ -4216,7 +4212,7 @@
               <div class="object-editor-row-identity">
                 <span class="object-editor-token">Программа ${escapeHtml(row.program_id)}</span>
               </div>
-              <div class="program-row-marks">${marks.join("")}</div>
+              <div class="program-row-marks">${mark}</div>
             </div>
             <div class="object-editor-row-controls">
               <input

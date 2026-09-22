@@ -2557,10 +2557,6 @@ body.desktop-shell .object-editor-panel {
   font-weight: 700;
 }
 
-.program-row-mark--idle {
-  font-style: italic;
-}
-
 .chart-modal-backdrop {
   position: absolute;
   inset: 0;

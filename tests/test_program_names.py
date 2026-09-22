@@ -174,7 +174,6 @@ def test_rows_always_cover_seven_panel_programs():
     rows = app.build_program_rows({}, None)
     assert [row["program_id"] for row in rows] == [1, 2, 3, 4, 5, 6, 7]
     assert all(row["is_custom_name"] is False for row in rows)
-    assert all(row["is_seen"] is False for row in rows)
 
 
 def test_rows_add_unknown_program_seen_in_data():
@@ -182,7 +181,6 @@ def test_rows_add_unknown_program_seen_in_data():
     rows = app.build_program_rows({}, analysis)
 
     row = next(row for row in rows if row["program_id"] == 9)
-    assert row["is_seen"] is True
     assert row["program_name"] == "Программа 9"
 
 
@@ -197,12 +195,12 @@ def test_rows_mark_custom_name_and_keep_builtin():
     assert row["base_program_name"] == core.PROGRAM_NAMES[3]
 
 
-def test_rows_mark_programs_absent_from_data():
-    analysis = _analysis(cycles=[_cycle(program_id=1)])
-    rows = {row["program_id"]: row for row in app.build_program_rows({}, analysis)}
+def test_rows_ignore_program_zero():
+    # Программа 0 — «Нет программы», в редакторе ей не место.
+    analysis = _analysis(cycles=[_cycle(program_id=0)])
+    rows = app.build_program_rows({}, analysis)
 
-    assert rows[1]["is_seen"] is True
-    assert rows[2]["is_seen"] is False
+    assert [row["program_id"] for row in rows] == [1, 2, 3, 4, 5, 6, 7]
 
 
 # --- роуты -------------------------------------------------------------------

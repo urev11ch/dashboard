@@ -332,8 +332,9 @@ def build_seed_object_name_overrides(
 
 
 def program_ids_seen(analysis: core.AnalysisResult | None) -> set[int]:
-    """Номера программ, реально встреченные в данных. Пустой анализ даёт пустое
-    множество: строки редактора всё равно строятся от семи штатных слотов."""
+    """Номера программ, встреченные в данных: нужны, чтобы к семи штатным слотам
+    панели добавить номера, которых в PROGRAM_NAMES нет, — иначе такую программу
+    нельзя было бы назвать. Пустой анализ даёт пустое множество."""
     if analysis is None:
         return set()
     return {cycle.program_id for cycle in analysis.cycles}
@@ -362,7 +363,6 @@ def build_program_rows(
                 "own_name": own_name,
                 "base_program_name": base_name,
                 "is_custom_name": bool(own_name),
-                "is_seen": program_id in seen,
             }
         )
 
