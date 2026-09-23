@@ -2,7 +2,7 @@
 REM ============================================================
 REM  Сборка OptiCIP Dashboard в один .exe (Windows).
 REM  Требуется Python 3.12 (64-bit) — та же версия, что на CI.
-REM  Результат: dist\OptiCIP-Dashboard.exe
+REM  Результат: dist\OptiCIP-Dashboard\ (OptiCIP-Dashboard.exe + _internal)
 REM  Если найден Inno Setup — ещё и installer_out\OptiCIP-Dashboard-Setup.exe
 REM ============================================================
 setlocal
@@ -58,7 +58,7 @@ if exist "%ISCC%" (
 )
 
 echo.
-echo Готово. Собранный файл: %cd%\dist\OptiCIP-Dashboard.exe
+echo Готово. Собранная папка: %cd%\dist\OptiCIP-Dashboard\
 goto :eof
 
 :nopython

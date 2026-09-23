@@ -45,7 +45,10 @@ build_windows.bat
 Скрипт создаёт изолированное окружение `.build-venv` (пересоздаёт, если оно от
 другой версии Python), ставит зависимости, запускает PyInstaller и — если на
 машине есть Inno Setup — собирает установщик. Результат:
-`dist\OptiCIP-Dashboard.exe`, `installer_out\OptiCIP-Dashboard-Setup.exe`.
+папка `dist\OptiCIP-Dashboard\` (`OptiCIP-Dashboard.exe` + `_internal\`) и
+`installer_out\OptiCIP-Dashboard-Setup.exe`. Сборка — onedir, а не один файл:
+onefile при каждом запуске распаковывал ~40 МБ во временную папку, и окно
+появлялось на несколько секунд позже.
 
 Вручную то же самое:
 

@@ -1,5 +1,5 @@
 ﻿; Inno Setup script for OptiCIP Dashboard.
-; Builds installer_out\OptiCIP-Dashboard-Setup.exe from dist\OptiCIP-Dashboard.exe.
+; Builds installer_out\OptiCIP-Dashboard-Setup.exe from dist\OptiCIP-Dashboard\ (onedir).
 ; Installs the app, creates shortcuts and silently installs the Microsoft Edge
 ; WebView2 Runtime if it is missing.
 
@@ -63,8 +63,15 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 ; сброс кэша иконок (ie4uinit в [Run]) где-то не сработает.
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
+[InstallDelete]
+; Сборка — папка (onedir): .exe + _internal\ с Python и библиотеками. Старую
+; _internal сносим перед копированием, чтобы от прошлой версии не оставались
+; библиотеки, которых в новой уже нет. Сам .exe (в т.ч. однофайловый от версий
+; до 1.1.41) перезаписывается новым с тем же именем.
+Type: filesandordirs; Name: "{app}\_internal"
+
 [Files]
-Source: "dist\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\OptiCIP-Dashboard\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; WebView2 evergreen bootstrapper (downloaded by CI before compiling the installer).
 Source: "MicrosoftEdgeWebview2Setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 

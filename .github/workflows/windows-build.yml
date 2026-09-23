@@ -102,8 +102,8 @@ jobs:
         # FastAPI-приложение, — но НЕ открывает окно (на раннере нет сессии
         # рабочего стола) и выходит кодом.
         #
-        # ЧТО ловит: распаковку onefile-бутлоадера, загрузку Python DLL (класс
-        # 64116b5), топ-левел импорты, collect_all(webview) и мост pythonnet/clr.
+        # ЧТО ловит: запуск бутлоадера из папки onedir, загрузку Python DLL
+        # (класс 64116b5), топ-левел импорты, бэкенды pywebview и мост pythonnet/clr.
         # То есть весь набор, который иначе всплывал бы только у оператора при
         # открытии окна.
         #
@@ -115,7 +115,7 @@ jobs:
         # Путь резолвим в абсолютный — Start-Process берёт рабочий каталог из
         # [Environment]::CurrentDirectory, а не из текущей локации PowerShell.
         run: |
-          $exe = (Resolve-Path "dist\OptiCIP-Dashboard.exe").Path
+          $exe = (Resolve-Path "dist\OptiCIP-Dashboard\OptiCIP-Dashboard.exe").Path
           $p = Start-Process $exe -ArgumentList '--selftest' -Wait -PassThru
           if ($p.ExitCode -ne 0) {
             Write-Error "Собранный .exe завершился с кодом $($p.ExitCode) — бинарник нерабочий, релиз останавливаем."
@@ -128,7 +128,7 @@ jobs:
         env:
           WINDOWS_PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
           WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
-        run: pwsh ./scripts/sign.ps1 -Path "dist/OptiCIP-Dashboard.exe"
+        run: pwsh ./scripts/sign.ps1 -Path "dist/OptiCIP-Dashboard/OptiCIP-Dashboard.exe"
 
       - name: Download WebView2 bootstrapper
         run: Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile "MicrosoftEdgeWebview2Setup.exe"
@@ -146,13 +146,19 @@ jobs:
           WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
         run: pwsh ./scripts/sign.ps1 -Path "installer_out/OptiCIP-Dashboard-Setup.exe"
 
+      - name: Pack portable zip
+        # Переносная версия без установки: та же папка onedir одним архивом
+        # (распаковать и запустить OptiCIP-Dashboard.exe). Раньше эту роль играл
+        # однофайловый .exe.
+        run: Compress-Archive -Path "dist\OptiCIP-Dashboard" -DestinationPath "installer_out\OptiCIP-Dashboard-portable.zip" -Force
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
           name: OptiCIP-Dashboard-windows
           path: |
-            dist/OptiCIP-Dashboard.exe
             installer_out/OptiCIP-Dashboard-Setup.exe
+            installer_out/OptiCIP-Dashboard-portable.zip
           if-no-files-found: error
 
       - name: Publish GitHub Release
@@ -165,7 +171,7 @@ jobs:
         run: |
           gh release create "${{ github.ref_name }}" `
             "installer_out/OptiCIP-Dashboard-Setup.exe" `
-            "dist/OptiCIP-Dashboard.exe" `
+            "installer_out/OptiCIP-Dashboard-portable.zip" `
             --repo "${{ github.repository }}" `
             --title "OptiCIP Dashboard ${{ steps.app_version.outputs.value }}" `
             --generate-notes

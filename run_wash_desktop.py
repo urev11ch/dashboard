@@ -514,7 +514,6 @@ def load_desktop_window_url(
     bridge: "DesktopBridge",
     window: "webview.Window",
     server: "DesktopServer",
-    api_token: str = "",
 ) -> None:
     logging.info("Waiting for desktop window before starting local UI")
     if not window.events.shown.wait(20):
@@ -522,11 +521,30 @@ def load_desktop_window_url(
         show_window_error(window, "Окно приложения не открылось за отведённое время.")
         return
 
-    # Loading-окно уже на экране — теперь поднимаем локальный сервер. Холодный
-    # старт может занять до 60 c (wait_until_ready), и всё это время пользователь
-    # видит сплэш, а не пустоту/«зависшее» приложение.
+    # Loading-окно уже на экране — теперь импортируем веб-приложение (FastAPI и
+    # весь webapp — самая долгая часть старта) и поднимаем локальный сервер.
+    # Раньше импорт шёл до создания окна, и на холодном старте окна не было
+    # несколько секунд.
     try:
-        server.start()
+        web_app = load_web_app()
+        logging.info("ASGI app imported successfully")
+        sync_autostart_from_settings()
+        # Взводим токен локального доступа: другой пользователь того же ПК (RDP/
+        # общий хост), дотянувшийся до 127.0.0.1:port, без него получит 403.
+        # Токен уходит в первичную навигацию окна (/?k=), ответ ставит cookie.
+        from webapp.app import arm_api_token
+
+        api_token = arm_api_token()
+        logging.info("Локальный токен доступа взведён")
+    except Exception as exc:
+        logging.exception("ASGI app import failed")
+        show_window_error(window, f"Не удалось загрузить web-интерфейс приложения.\n\n{exc}")
+        return
+
+    # Холодный старт сервера может занять до 60 c (wait_until_ready), и всё это
+    # время пользователь видит сплэш, а не пустоту/«зависшее» приложение.
+    try:
+        server.start(web_app)
         logging.info("Local UI server ready at %s", server.url)
     except Exception:
         logging.exception("Local UI server failed to start")
@@ -624,7 +642,7 @@ class DesktopServer:
     # (TOCTOU) — в этом случае пробуем ещё раз на новом порту.
     START_ATTEMPTS = 3
 
-    def __init__(self, web_app, host: str = HOST) -> None:
+    def __init__(self, web_app=None, host: str = HOST) -> None:
         self.web_app = web_app
         self.host = host
         # start() крутится в webview-потоке и может до 60 c висеть в
@@ -673,7 +691,15 @@ class DesktopServer:
     def url(self) -> str:
         return f"http://{self.host}:{self.port}"
 
-    def start(self) -> None:
+    def start(self, web_app=None) -> None:
+        # Приложение можно передать при старте: окно создаётся раньше, чем
+        # импортирован webapp (см. load_desktop_window_url).
+        if web_app is not None:
+            with self._lifecycle_lock:
+                if self._stop_requested:
+                    return
+                self.web_app = web_app
+                self._prepare(self.port)
         for attempt in range(1, self.START_ATTEMPTS + 1):
             with self._lifecycle_lock:
                 if self._stop_requested:
@@ -1630,7 +1656,7 @@ def run_selftest() -> int:
     заводских ПК («Failed to load Python DLL», 64116b5).
 
     Ключ --remove-autostart для этого не годится: он возвращает код ДО
-    `import webview`, поэтому проверяет только бутлоадер onefile, загрузку Python
+    `import webview`, поэтому проверяет только бутлоадер, загрузку Python
     DLL и топ-левел импорты. Сломанный `collect_all(webview)` или мост
     pythonnet/clr при этом прошёл бы CI и упал бы уже у оператора при открытии
     окна. Здесь мы дёргаем те же функции, что и обычный старт (см. main), но без
@@ -1718,31 +1744,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    try:
-        web_app = load_web_app()
-        logging.info("ASGI app imported successfully")
-        sync_autostart_from_settings()
-        # Взводим токен локального доступа: другой пользователь того же ПК (RDP/
-        # общий хост), дотянувшийся до 127.0.0.1:port, без него получит 403.
-        # Токен уходит в первичную навигацию окна (/?k=), ответ ставит cookie.
-        from webapp.app import arm_api_token
-
-        api_token = arm_api_token()
-        logging.info("Локальный токен доступа взведён")
-    except Exception as exc:
-        logging.exception("ASGI app import failed")
-        show_fatal_error(
-            "Не удалось загрузить web-интерфейс приложения.\n\n"
-            f"{exc}\n\n"
-            f"Лог: {LOG_PATH}"
-        )
-        return 1
-
-    # Сервер НЕ стартуем здесь: сначала показываем loading-окно, а старт сервера
-    # (блокирующий, до 60 c) уходит в load_desktop_window_url после события shown —
-    # иначе на холодном старте .exe окна нет несколько секунд. Ошибку старта там же
-    # показываем в уже открытом окне, а server.stop() гарантирует общий finally ниже.
-    server = DesktopServer(web_app)
+    # Ни веб-приложение, ни сервер здесь не грузим: сначала показываем
+    # loading-окно, а импорт webapp и старт сервера (блокирующий, до 60 c) уходят
+    # в load_desktop_window_url после события shown — иначе на холодном старте
+    # .exe окна нет несколько секунд. Ошибки там же показываем в уже открытом
+    # окне, а server.stop() гарантирует общий finally ниже.
+    server = DesktopServer()
 
     bridge = DesktopBridge()
     window = None
@@ -1775,7 +1782,7 @@ def main(argv: list[str] | None = None) -> int:
 
         webview.start(
             load_desktop_window_url,
-            args=(bridge, window, server, api_token),
+            args=(bridge, window, server),
             gui=resolve_gui_backend(),
             private_mode=False,
             storage_path=str(resolve_webview_storage_path()),

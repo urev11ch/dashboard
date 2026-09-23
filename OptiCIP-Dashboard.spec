@@ -2,14 +2,19 @@
 """PyInstaller spec for the OptiCIP Dashboard desktop build (Windows).
 
 Build:  pyinstaller --noconfirm OptiCIP-Dashboard.spec
-Output: dist/OptiCIP-Dashboard.exe  (single-file, windowed)
+Output: dist/OptiCIP-Dashboard/OptiCIP-Dashboard.exe + _internal/  (onedir, windowed)
+
+Onedir, а не onefile: onefile при КАЖДОМ запуске распаковывал ~40 МБ в
+%TEMP%\_MEI…, антивирус заново проверял всё распакованное, и окно появлялось
+через несколько секунд. Установщик и так кладёт приложение в Program Files —
+папка распаковывается один раз, при установке.
 
 Must be built ON Windows — PyInstaller does not cross-compile.
 """
 import os
 import re
 
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_submodules
 
 
 # --- version resource: single source of truth is webapp/__init__.py ------
@@ -83,12 +88,29 @@ hiddenimports = collect_submodules("uvicorn")
 # pythonnet bridge used by the WebView2/winforms backend and PDF export.
 hiddenimports += ["clr", "pythonnet"]
 
-# pywebview ships platform backends + data that are imported dynamically.
-for package in ("webview",):
-    pkg_datas, pkg_binaries, pkg_hidden = collect_all(package)
-    datas += pkg_datas
-    binaries += pkg_binaries
-    hiddenimports += pkg_hidden
+# pywebview: DLL WebView2 и js/ собирает его собственный хук (webview/__pyinstaller).
+# Бэкенды грузятся динамически — берём только Windows: winforms + edgechromium
+# (WebView2) и mshtml (запасной, если WebView2 не найден). Бэкенды других ОС
+# и их файлы в сборку не нужны.
+hiddenimports += [
+    "webview.platforms.winforms",
+    "webview.platforms.edgechromium",
+    "webview.platforms.mshtml",
+]
+WEBVIEW_FOREIGN_PLATFORMS = [
+    "webview.platforms.android",
+    "webview.platforms.cef",
+    "webview.platforms.cocoa",
+    "webview.platforms.gtk",
+    "webview.platforms.qt",
+]
+# Файлы pywebview под чужие платформы/архитектуры (сборка только x64).
+WEBVIEW_FOREIGN_FILES = ("pywebview-android.jar", "win-arm64", "win-x86", "WebBrowserInterop.x86.dll")
+
+
+def is_foreign_webview_file(entry) -> bool:
+    dest = entry[0].replace("\\", "/")
+    return dest.startswith("webview/") and any(part in dest for part in WEBVIEW_FOREIGN_FILES)
 
 # Optional app icon (drop a .ico at webapp/static/icon.ico to use it).
 icon_path = os.path.join("webapp", "static", "icon.ico")
@@ -107,24 +129,25 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=WEBVIEW_FOREIGN_PLATFORMS + ["tkinter"],
     noarchive=False,
 )
+a.datas = [entry for entry in a.datas if not is_foreign_webview_file(entry)]
+a.binaries = [entry for entry in a.binaries if not is_foreign_webview_file(entry)]
 
 pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name="OptiCIP-Dashboard",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     # UPX выключен намеренно: он ломает нативные DLL (pythonnet/WebView2) и резко
-    # увеличивает ложные срабатывания антивирусов на неподписанном onefile.
+    # увеличивает ложные срабатывания антивирусов на неподписанных бинарниках.
     # Плюс на CI UPX не установлен — с upx=True локальная и CI-сборка расходились.
     upx=False,
     upx_exclude=[],
@@ -137,4 +160,14 @@ exe = EXE(
     entitlements_file=None,
     icon=app_icon,
     version=version_file,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name="OptiCIP-Dashboard",
 )
