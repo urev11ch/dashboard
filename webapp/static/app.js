@@ -1520,40 +1520,24 @@
     return `${day}.${month}.${year} ${hours}:${minutes}:${seconds}`;
   }
 
-  // Epoch-секунды в том же формате и в таймзоне СЕРВЕРА — как format_ts на
-  // бэкенде. Сдвигаем метку на смещение сервера и читаем компоненты как UTC;
-  // без смещения (сервер его не отдал) — зона браузера, как раньше.
+  // Метка архива (epoch-секунды) в том же формате — как format_ts на бэкенде.
+  // Панель пишет в архив показания своих часов как UTC, поэтому компоненты
+  // читаем как UTC без сдвига на зону компьютера.
   function formatEpochSeconds(seconds) {
     const value = Number(seconds);
     if (!Number.isFinite(value)) {
       return "—";
     }
 
-    const useServerTz = state.serverTzOffsetMin !== null;
-    const date = new Date(value * 1000 + (useServerTz ? state.serverTzOffsetMin * 60000 : 0));
+    const date = new Date(value * 1000);
     if (Number.isNaN(date.getTime())) {
       return "—";
     }
 
     const pad = (part) => String(part).padStart(2, "0");
-    const [year, month, day, hours, minutes, secs] = useServerTz
-      ? [
-          date.getUTCFullYear(),
-          date.getUTCMonth() + 1,
-          date.getUTCDate(),
-          date.getUTCHours(),
-          date.getUTCMinutes(),
-          date.getUTCSeconds(),
-        ]
-      : [
-          date.getFullYear(),
-          date.getMonth() + 1,
-          date.getDate(),
-          date.getHours(),
-          date.getMinutes(),
-          date.getSeconds(),
-        ];
-    return `${pad(day)}.${pad(month)}.${year} ${pad(hours)}:${pad(minutes)}:${pad(secs)}`;
+    return `${pad(date.getUTCDate())}.${pad(date.getUTCMonth() + 1)}.${date.getUTCFullYear()} ${pad(
+      date.getUTCHours()
+    )}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`;
   }
 
   function buildSearchBlob(row) {
@@ -1881,10 +1865,11 @@
     return `${year}-${month}-${day}`;
   }
 
-  // Ключ дня (YYYY-MM-DD) в таймзоне СЕРВЕРА: строки списка приходят с start_day,
-  // который сервер формирует в своей зоне (format_day_key). В вебе зоны браузера
+  // Ключ дня (YYYY-MM-DD) для «сейчас» по часам СЕРВЕРА — они же часы панели.
+  // start_day строк — день по часам панели (format_day_key). В вебе зоны браузера
   // и сервера могут не совпадать — тогда «Сегодня» пустел или ехал на сутки.
   // Если сервер не отдал tz_offset_min, считаем по зоне браузера, как раньше.
+  // Только для настоящего времени (Date.now()), не для меток архива.
   function getServerDateKey(value = new Date()) {
     const date = value instanceof Date ? value : new Date(value);
     if (state.serverTzOffsetMin === null) {
@@ -1898,7 +1883,8 @@
     return `${year}-${month}-${day}`;
   }
 
-  // Начало серверных суток (epoch, секунды) для ключа дня YYYY-MM-DD.
+  // Начало суток YYYY-MM-DD в шкале меток архива (epoch, секунды): метки — это
+  // часы панели, записанные как UTC, поэтому полночь панели — это Date.UTC.
   function getServerDayStartTs(dayKey) {
     const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dayKey || ""));
     if (!parts) {
@@ -1906,11 +1892,7 @@
     }
 
     const [, year, month, day] = parts;
-    if (state.serverTzOffsetMin === null) {
-      return new Date(Number(year), Number(month) - 1, Number(day)).getTime() / 1000;
-    }
-
-    return Date.UTC(Number(year), Number(month) - 1, Number(day)) / 1000 - state.serverTzOffsetMin * 60;
+    return Date.UTC(Number(year), Number(month) - 1, Number(day)) / 1000;
   }
 
   function getPeriodPresetStartTs() {

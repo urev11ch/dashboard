@@ -9,7 +9,7 @@ import os
 import re
 import sqlite3
 from bisect import bisect_left, bisect_right
-from datetime import datetime
+from datetime import datetime, timezone
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -796,7 +796,25 @@ def name_for_program(program_id: int) -> str:
 def name_for_process(process_id: int) -> str:
     return PROCESS_NAMES.get(process_id, f"Операция {process_id}")
 
+def panel_datetime(timestamp: float) -> datetime:
+    """Метка архива как время на часах панели (naive datetime).
+
+    Weintek пишет в `time@timestamp` показания своих часов без таймзоны: 11:00
+    на панели лежит в архиве как 11:00 UTC. Поэтому метку читаем как UTC и
+    никакого смещения не прибавляем — иначе в Москве мойка в 11:00 показывалась
+    бы в 14:00."""
+    return datetime.fromtimestamp(timestamp, timezone.utc).replace(tzinfo=None)
+
 def format_ts(timestamp: float) -> str:
+    """Метка архива (время панели) строкой."""
+    try:
+        return panel_datetime(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+    except (OverflowError, OSError, ValueError):
+        return "н/д"
+
+def format_local_ts(timestamp: float) -> str:
+    """Настоящее epoch-время (time.time()) в зоне компьютера — для событий самого
+    приложения: синхронизация, очистка. К меткам архива не применять."""
     try:
         return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
     except (OverflowError, OSError, ValueError):

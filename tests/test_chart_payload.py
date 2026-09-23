@@ -28,13 +28,6 @@ def test_downsample_short_series_untouched():
     assert _downsample_points(points) == points
 
 
-def test_tz_offset_survives_broken_timestamp():
-    # Битая метка времени в архиве (1e30) не должна давать 500 на графике.
-    offset = chart_payload._tz_offset_minutes(1e30)
-    assert isinstance(offset, int)
-    assert offset == chart_payload._tz_offset_minutes(1_700_000_000.0)
-
-
 def test_payload_meta_with_broken_cycle_start(monkeypatch):
     sample = core.Sample(
         ts=1_700_000_000.0,
@@ -69,7 +62,8 @@ def test_payload_meta_with_broken_cycle_start(monkeypatch):
 
     payload = chart_payload.build_cycle_chart_payload(None, cycle)
     assert payload["has_data"] is True
-    assert isinstance(payload["meta"]["tz_offset_min"], int)
+    # Метки архива — время панели: график не получает смещения зоны сервера.
+    assert "tz_offset_min" not in payload["meta"]
 
     # Значения метрик график не правит: концентрация уже сведена к общему виду
     # на разборе строки архива.

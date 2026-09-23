@@ -103,14 +103,17 @@ def atomic_write_json(path: Path, payload: Any) -> None:
 
 
 def local_tz_offset_min() -> int:
-    """Смещение зоны сервера в минутах (с учётом летнего времени). Клиент считает
-    границы суток по нему: `start_day` формируется в зоне сервера, а не браузера."""
+    """Смещение зоны сервера в минутах (с учётом летнего времени). Клиенту оно
+    нужно только чтобы перевести «сейчас» в часы панели (кнопка «Сегодня» и
+    периоды): сами метки архива уже в времени панели и не сдвигаются."""
     offset = datetime.now().astimezone().utcoffset()
     return int(offset.total_seconds() // 60) if offset is not None else 0
 
 
 def format_day_key(timestamp: float) -> str:
+    """Ключ дня метки архива — по часам панели (метка уже в её времени, см.
+    wash_report.panel_datetime), поэтому gmtime, а не localtime."""
     try:
-        return time.strftime("%Y-%m-%d", time.localtime(timestamp))
+        return time.strftime("%Y-%m-%d", time.gmtime(timestamp))
     except (OverflowError, OSError, ValueError):
         return ""

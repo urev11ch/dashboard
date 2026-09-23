@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 import textwrap
-from datetime import datetime, timedelta
 from typing import Any
 
 import wash_report as core
@@ -95,18 +94,6 @@ def _format_segment_label(segment: core.Segment, index: int) -> str:
     return textwrap.fill(label, width=26, break_long_words=False)
 
 
-def _tz_offset_minutes(timestamp: float) -> int:
-    """Смещение локальной таймзоны сервера от UTC в минутах. Битая метка
-    времени в архиве не должна ронять график: берём смещение «сейчас»."""
-    try:
-        offset = datetime.fromtimestamp(timestamp).astimezone().utcoffset()
-    except (OverflowError, OSError, ValueError):
-        offset = None
-    if offset is None:
-        offset = datetime.now().astimezone().utcoffset() or timedelta(0)
-    return int(offset.total_seconds() // 60)
-
-
 def build_cycle_chart_payload(
     analysis: core.AnalysisResult,
     cycle: core.Cycle,
@@ -183,9 +170,5 @@ def build_cycle_chart_payload(
             "start": round(cycle.start_ts * 1000),
             "end": round(cycle.end_ts * 1000),
             "point_count": len(cycle_samples),
-            # Смещение локальной таймзоны сервера от UTC в минутах на момент
-            # начала мойки: фронтенд форматирует время на графике так же,
-            # как таблицы (format_ts в таймзоне сервера).
-            "tz_offset_min": _tz_offset_minutes(cycle.start_ts),
         },
     }

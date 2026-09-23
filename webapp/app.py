@@ -1119,7 +1119,7 @@ def get_diagnostics() -> JSONResponse:
         {
             "source_kind": source_kind,
             "display_root": display_root,
-            "last_sync": core.format_ts(last_sync) if last_sync else "",
+            "last_sync": core.format_local_ts(last_sync) if last_sync else "",
             "counts": {
                 "cycles": summary["cycle_count"],
                 "objects": summary["object_count"],
@@ -1133,7 +1133,7 @@ def get_diagnostics() -> JSONResponse:
             },
             "datalog": {
                 "size_bytes": datalog_size_bytes_cached(),
-                "last_cleanup": core.format_ts(last_cleanup) if last_cleanup else "",
+                "last_cleanup": core.format_local_ts(last_cleanup) if last_cleanup else "",
                 "retention_enabled": settings["archive_retention_enabled"],
                 "retention_days": settings["archive_retention_days"],
             },

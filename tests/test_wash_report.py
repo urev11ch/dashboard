@@ -158,6 +158,26 @@ def test_format_ts_handles_bad_timestamp():
     assert core.format_ts(10**30) == "н/д"
 
 
+def test_format_ts_is_panel_time_regardless_of_server_tz(monkeypatch):
+    # Панель пишет свои часы как UTC: 11:00 на панели = 11:00 в журнале,
+    # в какой бы зоне ни работал компьютер (раньше в Москве выходило 14:00).
+    import time
+
+    from webapp.io_utils import format_day_key
+
+    monkeypatch.setenv("TZ", "Europe/Moscow")
+    time.tzset()
+    try:
+        ts = 1_783_940_400.0  # 2026-07-13 11:00:00 по часам панели
+        assert core.format_ts(ts) == "2026-07-13 11:00:00"
+        assert core.panel_datetime(ts).hour == 11
+        # 23:00 12.07 панели — ещё 12-е (со сдвигом +3 ч уехало бы на 13-е)
+        assert format_day_key(1_783_897_200.0) == "2026-07-12"
+    finally:
+        monkeypatch.delenv("TZ")
+        time.tzset()
+
+
 def _make_archive_db(path, rows):
     """Создаёт минимальный архив панели с таблицей data."""
     connection = sqlite3.connect(str(path))

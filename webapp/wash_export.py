@@ -37,10 +37,11 @@ EXPORT_COLUMNS: tuple[Column, ...] = (
 
 
 def _local_datetime(timestamp: float) -> datetime | str:
-    """Метка времени в зоне сервера. Битую метку (архивы это умеют) отдаём
-    строкой «н/д»: пустая ячейка выглядела бы как «данных не выгрузили»."""
+    """Метка архива по часам панели, без сдвига на зону компьютера. Битую метку
+    (архивы это умеют) отдаём строкой «н/д»: пустая ячейка выглядела бы как
+    «данных не выгрузили»."""
     try:
-        return datetime.fromtimestamp(timestamp)
+        return core.panel_datetime(timestamp)
     except (OverflowError, OSError, ValueError):
         return core.format_ts(timestamp)
 

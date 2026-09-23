@@ -215,53 +215,35 @@
     return `${value.toFixed(2)} ${unit}`.trim();
   }
 
-  // Смещение таймзоны сервера (meta.tz_offset_min, восток — плюс) в минутах.
-  // null — поля нет, форматируем в таймзоне браузера, как раньше.
-  function resolveTzOffsetMin(payload) {
-    const value = payload?.meta?.tz_offset_min;
-    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  // Метки архива Weintek — это время на часах панели, записанное как UTC
+  // (таймзоны у панели нет). Читаем их как UTC без сдвига: сдвиг на зону
+  // компьютера показывал мойку в 11:00 как 14:00.
+  const PANEL_TIME_FORMAT = new Intl.DateTimeFormat("ru-RU", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    timeZone: "UTC",
+  });
+  const PANEL_DATE_FORMAT = new Intl.DateTimeFormat("ru-RU", { timeZone: "UTC" });
+  const PANEL_DAY_MONTH_FORMAT = new Intl.DateTimeFormat("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone: "UTC",
+  });
+
+  function formatTime(timestamp) {
+    return PANEL_TIME_FORMAT.format(timestamp);
   }
 
-  function formatTime(timestamp, tzOffsetMin = null) {
-    if (tzOffsetMin !== null) {
-      // Сдвигаем epoch на смещение сервера и читаем как UTC — метки совпадают
-      // с таблицами, отформатированными сервером в его таймзоне.
-      return new Intl.DateTimeFormat("ru-RU", {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        timeZone: "UTC",
-      }).format(new Date(timestamp + tzOffsetMin * 60000));
-    }
-    return new Date(timestamp).toLocaleTimeString("ru-RU", {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-  }
-
-  function formatTimeAxisLabel(timestamp, domainStart, domainEnd, tzOffsetMin = null) {
-    const useServerTz = tzOffsetMin !== null;
-    const shift = useServerTz ? tzOffsetMin * 60000 : 0;
-    const tzOptions = useServerTz ? { timeZone: "UTC" } : {};
-    const dateFormatter = new Intl.DateTimeFormat("ru-RU", tzOptions);
-    const timeFormatter = new Intl.DateTimeFormat("ru-RU", {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      ...tzOptions,
-    });
-
+  function formatTimeAxisLabel(timestamp, domainStart, domainEnd) {
     const datePart =
-      dateFormatter.format(domainStart + shift) === dateFormatter.format(domainEnd + shift)
+      PANEL_DATE_FORMAT.format(domainStart) === PANEL_DATE_FORMAT.format(domainEnd)
         ? ""
-        : new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "2-digit", ...tzOptions }).format(
-            timestamp + shift
-          );
+        : PANEL_DAY_MONTH_FORMAT.format(timestamp);
 
     return datePart
-      ? `${datePart}\n${timeFormatter.format(timestamp + shift)}`
-      : timeFormatter.format(timestamp + shift);
+      ? `${datePart}\n${PANEL_TIME_FORMAT.format(timestamp)}`
+      : PANEL_TIME_FORMAT.format(timestamp);
   }
 
   function getTickPrecision(step) {
@@ -666,7 +648,6 @@
       const domainStart =
         styledPayload.meta?.start ?? firstSeriesWithPoints?.points?.[0]?.[0] ?? 0;
       const domainEnd = Math.max(styledPayload.meta?.end ?? domainStart, domainStart + 1000);
-      const tzOffsetMin = resolveTzOffsetMin(styledPayload);
       const scaleX = (timestamp) => {
         const ratio = (timestamp - domainStart) / Math.max(domainEnd - domainStart, 1);
         return chartLayout.left + ratio * plotWidth;
@@ -960,7 +941,7 @@
             "font-weight": 700,
             "text-anchor": anchor,
           },
-          formatTimeAxisLabel(timestamp, domainStart, domainEnd, tzOffsetMin),
+          formatTimeAxisLabel(timestamp, domainStart, domainEnd),
           container.classList.contains("chart-host--modal") ? 15 : 13
         );
       });
@@ -1208,7 +1189,7 @@
         hoverLine.setAttribute("x2", lineX);
         hoverLine.setAttribute("opacity", 1);
 
-        const tooltipRows = [`<strong>${formatTime(nearestTimestamp, tzOffsetMin)}</strong>`];
+        const tooltipRows = [`<strong>${formatTime(nearestTimestamp)}</strong>`];
         styledPayload.series.forEach((series, seriesIndex) => {
           const pointIndex = series.points?.length
             ? findNearestPointIndex(series.points, nearestTimestamp)
