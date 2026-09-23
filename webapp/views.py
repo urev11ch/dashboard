@@ -41,7 +41,7 @@ from webapp.settings_store import (
     resolve_object_name,
 )
 from webapp.ftp_registry import list_ftp_sources_public
-from webapp.ftp_client import ftp_profile_stats
+from webapp.ftp_client import ftp_profile_stats, is_ftp_profile
 from webapp.chart_payload import SERIES_CONFIG
 
 def resolve_workspace_input_value(
@@ -553,6 +553,13 @@ def page_context(request: Request, snapshot: AppStateSnapshot) -> dict[str, Any]
             # hasWorkspace = показан ли wash-экран (в меню он false, даже если
             # рабочая область загружена) — по нему wash-JS решает, стартовать ли.
             "hasWorkspace": wash_visible,
+            # Для папки фоновый опрос обновлений не нужен (app.js); раньше ради
+            # этого поля грузилась вся диагностика.
+            "sourceKind": (
+                "none"
+                if selected_root is None
+                else "ftp" if is_ftp_profile(selected_root) else "folder"
+            ),
             "displayRoot": workspace_payload["display_root"],
             "summary": workspace_payload["summary"],
             "error": workspace_payload["error"],

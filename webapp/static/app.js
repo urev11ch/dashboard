@@ -31,6 +31,82 @@
       .finally(() => clearTimeout(timer));
   }
 
+  // Ошибка ответа сервера: текст из `detail` (так отвечает бэкенд), иначе запасной.
+  async function responseError(response, fallback) {
+    let message = fallback || `Сервер ответил ошибкой ${response.status}.`;
+    try {
+      const payload = await response.json();
+      if (payload?.detail) {
+        message = String(payload.detail);
+      }
+    } catch (_error) {
+      // Тело не JSON — остаётся запасной текст.
+    }
+    return new Error(message);
+  }
+
+  // Единый JSON-запрос к API: таймаут, проверка статуса, разбор ответа.
+  // Самодостаточен (только fetch) — его зовут и экраны до гейта hasWorkspace.
+  async function apiJson(url, { method = "GET", body, timeout, errorMessage } = {}) {
+    const options = { method, headers: { Accept: "application/json" } };
+    if (body !== undefined) {
+      options.headers["Content-Type"] = "application/json";
+      options.body = JSON.stringify(body);
+    }
+    if (timeout !== undefined) {
+      options.timeout = timeout;
+    }
+    const response = await fetchWithTimeout(url, options);
+    if (!response.ok) {
+      throw await responseError(response, errorMessage);
+    }
+    return response.json();
+  }
+
+  // Скачать установщик и запустить установку — общее для автообновления при
+  // старте, кнопки стартового экрана и панели в настройках. Самодостаточно (без
+  // state): стартовый экран зовёт его до гейта. onJob получает каждый статус
+  // скачивания; isCancelled() → true прекращает опрос (скачивание на сервере
+  // продолжится и подхватится повторным запуском). Потолок опроса ≈20 минут
+  // (500 мс × 2400): залипший в "running" бэкенд не опрашиваем вечно.
+  async function downloadAndInstallUpdate({ onJob = () => {}, isCancelled = () => false } = {}) {
+    const started = await apiJson("/api/update/download", {
+      method: "POST",
+      timeout: 20000,
+      errorMessage: "Не удалось начать скачивание.",
+    });
+    let job = started?.job || null;
+    if (job) {
+      onJob(job);
+    }
+    for (let ticks = 0; ; ticks += 1) {
+      if (ticks >= 2400) {
+        throw new Error("Скачивание не завершилось за отведённое время.");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      if (isCancelled()) {
+        return false;
+      }
+      job = await apiJson("/api/update/job", {
+        timeout: 15000,
+        errorMessage: "Не удалось получить статус скачивания.",
+      });
+      onJob(job);
+      if (!job || job.status !== "running") {
+        break;
+      }
+    }
+    if (!job || job.status !== "ready") {
+      throw new Error(job?.error || "Не удалось скачать обновление.");
+    }
+    // Отказ от UAC приходит сюда же: приложение остаётся работать.
+    const result = await window.pywebview.api.install_update();
+    if (!result?.ok) {
+      throw new Error(result?.error || "Не удалось запустить установщик.");
+    }
+    return true;
+  }
+
   const folderPickerButtons = Array.from(document.querySelectorAll("[data-folder-picker]"));
   const folderDefaultButtons = Array.from(document.querySelectorAll("[data-folder-default]"));
   // Подписи результата мойки (ключи/значения по умолчанию совпадают с сервером).
@@ -51,14 +127,13 @@
   function formatNormValue(value) {
     return value === null || value === undefined || value === "" ? "" : String(value);
   }
-  // Должно совпадать с LINE_STYLE_OPTIONS в wash-chart.js и CHART_LINE_STYLE_IDS на сервере.
-  const CHART_LINE_STYLE_OPTIONS = [
-    { id: "solid", label: "Сплошная" },
-    { id: "dashed", label: "Штриховая" },
-    { id: "dashdot", label: "Штрих-пунктир" },
-    { id: "dotted", label: "Точечная" },
-    { id: "longdash", label: "Длинный штрих" },
-  ];
+  // Стили линий, экранирование и проверка цвета — из wash-chart.js (грузится
+  // раньше app.js); список стилей должен совпадать с CHART_LINE_STYLE_IDS на сервере.
+  const {
+    LINE_STYLE_OPTIONS: CHART_LINE_STYLE_OPTIONS,
+    escapeHtml,
+    isValidHexColor: isValidHexColorLike,
+  } = window.WashChart;
   const initialJobStatus =
     appState.jobStatus && typeof appState.jobStatus === "object"
       ? appState.jobStatus
@@ -73,12 +148,7 @@
       return;
     }
 
-    if (typeof form.requestSubmit === "function") {
-      form.requestSubmit();
-      return;
-    }
-
-    form.submit();
+    form.requestSubmit();
   }
 
   async function requestFolderPath(initialPath = "") {
@@ -213,80 +283,35 @@
     // подключение (веб-просмотр / графики) — отдельным шагом по «Подключиться».
     const openConnectDialog = (panel) => {
       const displayName = panelDisplayName(panel);
-      const dialog = document.createElement("dialog");
-      dialog.className = "ftp-connect-modal";
-
-      const form = document.createElement("form");
-      form.method = "post";
-      form.action = "/workspace/ftp-source/add";
-      form.className = "ftp-connect-form";
-      for (const [name, value] of [
-        ["host", panel.host],
-        // panel.port может отсутствовать (панель опознана по MAC без ответа на
-        // :21) — иначе в форму попадала строка "undefined". Discovery сканирует
-        // порт 21, он же дефолт FTP.
-        ["port", String(panel.port || 21)],
-        ["path", "/datalog"],
-        ["passive", "on"],
-        ["web_scheme", panel.web_scheme || ""],
-      ]) {
-        const hidden = document.createElement("input");
-        hidden.type = "hidden";
-        hidden.name = name;
-        hidden.value = value;
-        form.append(hidden);
-      }
-
-      const title = document.createElement("div");
-      title.className = "ftp-connect-title";
-      // textContent (не innerHTML): имя — недоверенные данные из сети.
-      title.textContent = displayName;
-
-      const nameLabel = document.createElement("label");
-      nameLabel.className = "ftp-connect-field";
-      nameLabel.append(document.createTextNode("Название панели"));
-      const nameInput = document.createElement("input");
-      nameInput.type = "text";
-      nameInput.name = "label";
-      nameInput.value = displayName; // «Weintek cMT-3C6F», можно поправить
-      nameInput.autocomplete = "off";
-      nameLabel.append(nameInput);
-
-      const passLabel = document.createElement("label");
-      passLabel.className = "ftp-connect-field";
-      passLabel.append(document.createTextNode("Пароль"));
-      const passInput = document.createElement("input");
-      passInput.type = "password";
-      passInput.name = "password";
-      passInput.required = true;
-      passInput.placeholder = "111111";
-      passInput.autocomplete = "current-password";
-      passLabel.append(passInput);
-
-      const actions = document.createElement("div");
-      actions.className = "ftp-connect-actions";
-      const cancel = document.createElement("button");
-      cancel.type = "button";
-      cancel.className = "ghost";
-      cancel.textContent = "Отмена";
-      cancel.addEventListener("click", () => dialog.close());
-      const add = document.createElement("button");
-      add.type = "submit";
-      add.textContent = "Добавить панель";
-      actions.append(cancel, add);
-
-      form.append(title, nameLabel, passLabel, actions);
-      dialog.append(form);
-      // Клик по подложке (вне формы) закрывает окно.
-      dialog.addEventListener("click", (event) => {
-        if (event.target === dialog) {
-          dialog.close();
-        }
+      openFormDialog({
+        action: "/workspace/ftp-source/add",
+        // Имя — недоверенные данные из сети: openFormDialog пишет его textContent.
+        title: displayName,
+        hidden: [
+          ["host", panel.host],
+          // panel.port может отсутствовать (панель опознана по MAC без ответа на
+          // :21) — иначе в форму попадала строка "undefined". Discovery сканирует
+          // порт 21, он же дефолт FTP.
+          ["port", String(panel.port || 21)],
+          ["path", "/datalog"],
+          ["passive", "on"],
+          ["web_scheme", panel.web_scheme || ""],
+        ],
+        fields: [
+          // «Weintek cMT-3C6F», можно поправить
+          { label: "Название панели", name: "label", value: displayName },
+          {
+            label: "Пароль",
+            name: "password",
+            type: "password",
+            required: true,
+            placeholder: "111111",
+            autocomplete: "current-password",
+            focus: true,
+          },
+        ],
+        submitLabel: "Добавить панель",
       });
-      dialog.addEventListener("close", () => dialog.remove());
-      document.body.append(dialog);
-      dialog.showModal();
-      passInput.focus();
     };
 
     const renderResults = (panels) => {
@@ -394,8 +419,6 @@
   // Один запрос UAC остаётся: установщик пишет в Program Files. Убрать его
   // можно лишь per-user установкой (P0-3 в ROADMAP).
   function initAutoUpdate() {
-    const AUTO_UPDATE_POLL_MAX_TICKS = 2400; // ≈20 минут по 500 мс
-
     const showBanner = (text) => {
       let banner = document.querySelector("[data-auto-update-banner]");
       if (!banner) {
@@ -412,18 +435,6 @@
       document.querySelector("[data-auto-update-banner]")?.remove();
     };
 
-    async function getJson(resource, options) {
-      const response = await fetchWithTimeout(resource, {
-        headers: { Accept: "application/json" },
-        timeout: 15000,
-        ...options,
-      });
-      if (!response.ok) {
-        throw new Error(`request-failed:${resource}`);
-      }
-      return response.json();
-    }
-
     async function run() {
       // Мост pywebview ставит установщик и закрывает окно; в браузере автообновление
       // невозможно в принципе.
@@ -432,48 +443,31 @@
       }
 
       try {
-        const payload = await getJson("/api/settings");
+        const payload = await apiJson("/api/settings", { timeout: 15000 });
         const settings = payload && typeof payload.settings === "object" ? payload.settings : {};
         if (settings.auto_update_enabled === false) {
           return;
         }
 
-        const info = await getJson("/api/update-check");
+        const info = await apiJson("/api/update-check", { timeout: 15000 });
         if (!info || !info.update_available || !info.installable) {
           return;
         }
 
         showBanner(`Обновление ${info.latest}: скачиваю…`);
-        await getJson("/api/update/download", { method: "POST", timeout: 20000 });
-
-        let ticks = 0;
-        let job = null;
-        while (true) {
-          await new Promise((resolve) => setTimeout(resolve, 500));
-          job = await getJson("/api/update/job");
-          if (!job || job.status !== "running") {
-            break;
-          }
-          if (job.total > 0) {
-            const pct = Math.min(100, Math.round((job.downloaded / job.total) * 100));
-            showBanner(`Обновление ${info.latest}: скачиваю… ${pct}%`);
-          }
-          if (++ticks >= AUTO_UPDATE_POLL_MAX_TICKS) {
-            throw new Error("Скачивание не завершилось за отведённое время.");
-          }
-        }
-        if (!job || job.status !== "ready") {
-          throw new Error(job?.error || "Не удалось скачать обновление.");
-        }
-
-        showBanner(`Обновление ${info.latest}: устанавливаю, приложение перезапустится…`);
-        const result = await window.pywebview.api.install_update();
-        if (!result?.ok) {
-          // Сюда же приходит отказ от UAC: приложение остаётся работать, и это
-          // нормальный исход — молча убираем баннер, не пугая оператора ошибкой.
-          throw new Error(result?.error || "Установка не запущена.");
-        }
+        await downloadAndInstallUpdate({
+          onJob: (job) => {
+            if (job.status !== "running") {
+              showBanner(`Обновление ${info.latest}: устанавливаю, приложение перезапустится…`);
+            } else if (job.total > 0) {
+              const pct = Math.min(100, Math.round((job.downloaded / job.total) * 100));
+              showBanner(`Обновление ${info.latest}: скачиваю… ${pct}%`);
+            }
+          },
+        });
       } catch (_error) {
+        // Сюда же приходит отказ от UAC: приложение остаётся работать, и это
+        // нормальный исход — молча убираем баннер, не пугая оператора ошибкой.
         hideBanner();
       }
     }
@@ -518,14 +512,7 @@
       button.textContent = "Проверяю…";
       setStatus("");
       try {
-        const response = await fetchWithTimeout("/api/update-check", {
-          headers: { Accept: "application/json" },
-          timeout: 15000,
-        });
-        if (!response.ok) {
-          throw new Error("update-check-failed");
-        }
-        const data = await response.json();
+        const data = await apiJson("/api/update-check", { timeout: 15000 });
         if (data.update_available && canInstall(data)) {
           mode = "install"; // та же кнопка превращается в «Установить обновление»
           setStatus(`Доступно обновление ${data.latest}.`);
@@ -550,44 +537,14 @@
     async function runInstall() {
       setStatus("Скачиваю обновление…");
       try {
-        const started = await fetchWithTimeout("/api/update/download", {
-          method: "POST",
-          timeout: 20000,
-        });
-        if (!started.ok) {
-          const detail = await started.json().catch(() => ({}));
-          throw new Error(detail.detail || "Не удалось начать скачивание.");
-        }
-        let ticks = 0;
-        while (true) {
-          await new Promise((resolve) => setTimeout(resolve, 500));
-          const jobResp = await fetchWithTimeout("/api/update/job", {
-            headers: { Accept: "application/json" },
-            timeout: 15000,
-          });
-          if (!jobResp.ok) {
-            throw new Error("Не удалось получить статус скачивания.");
-          }
-          const job = await jobResp.json();
-          if (!job || job.status !== "running") {
-            if (!job || job.status !== "ready") {
-              throw new Error(job?.error || "Не удалось скачать обновление.");
+        await downloadAndInstallUpdate({
+          onJob: (job) => {
+            if (job.status === "running" && job.total > 0) {
+              const pct = Math.min(100, Math.round((job.downloaded / job.total) * 100));
+              setStatus(`Скачиваю обновление… ${pct}%`);
             }
-            break;
-          }
-          if (job.total > 0) {
-            const pct = Math.min(100, Math.round((job.downloaded / job.total) * 100));
-            setStatus(`Скачиваю обновление… ${pct}%`);
-          }
-          // Потолок ≈20 минут (500 мс × 2400) — не крутим опрос вечно.
-          if (++ticks >= 2400) {
-            throw new Error("Скачивание не завершилось за отведённое время.");
-          }
-        }
-        const result = await window.pywebview.api.install_update();
-        if (!result?.ok) {
-          throw new Error(result?.error || "Не удалось запустить установщик.");
-        }
+          },
+        });
         setStatus("Запускаю установку — приложение закроется…");
         // Успех: приложение закроется — кнопку в исходное не возвращаем.
       } catch (error) {
@@ -681,32 +638,61 @@
   // Диалог переименования сохранённой панели: поле имени → сабмит на
   // /workspace/ftp-source/rename (форма, серверный редирект на /).
   function openRenameDialog(sourceId, label) {
+    openFormDialog({
+      action: "/workspace/ftp-source/rename",
+      title: "Название панели",
+      hidden: [["source_id", sourceId]],
+      fields: [{ label: "Название", name: "label", value: label || "", required: true, focus: true, select: true }],
+      submitLabel: "Сохранить",
+    });
+  }
+
+  // Модальная форма с обычным POST-сабмитом (серверный редирект на /): заголовок,
+  // скрытые поля, видимые поля и «Отмена / <submitLabel>». Клик по подложке
+  // закрывает окно. Тексты — только через textContent/value: могут прийти из сети.
+  function openFormDialog({ action, title, hidden = [], fields = [], submitLabel }) {
     const dialog = document.createElement("dialog");
     dialog.className = "ftp-connect-modal";
     const form = document.createElement("form");
     form.method = "post";
-    form.action = "/workspace/ftp-source/rename";
+    form.action = action;
     form.className = "ftp-connect-form";
 
-    const sid = document.createElement("input");
-    sid.type = "hidden";
-    sid.name = "source_id";
-    sid.value = sourceId;
+    for (const [name, value] of hidden) {
+      const input = document.createElement("input");
+      input.type = "hidden";
+      input.name = name;
+      input.value = value;
+      form.append(input);
+    }
 
-    const title = document.createElement("div");
-    title.className = "ftp-connect-title";
-    title.textContent = "Название панели";
+    const titleEl = document.createElement("div");
+    titleEl.className = "ftp-connect-title";
+    titleEl.textContent = title;
+    form.append(titleEl);
 
-    const nameLabel = document.createElement("label");
-    nameLabel.className = "ftp-connect-field";
-    nameLabel.append(document.createTextNode("Название"));
-    const nameInput = document.createElement("input");
-    nameInput.type = "text";
-    nameInput.name = "label";
-    nameInput.value = label || "";
-    nameInput.autocomplete = "off";
-    nameInput.required = true;
-    nameLabel.append(nameInput);
+    let focusInput = null;
+    let selectFocused = false;
+    for (const field of fields) {
+      const label = document.createElement("label");
+      label.className = "ftp-connect-field";
+      label.append(document.createTextNode(field.label));
+      const input = document.createElement("input");
+      input.type = field.type || "text";
+      input.name = field.name;
+      input.value = field.value || "";
+      input.autocomplete = field.autocomplete || "off";
+      input.required = Boolean(field.required);
+      if (field.placeholder) {
+        input.placeholder = field.placeholder;
+      }
+      label.append(input);
+      form.append(label);
+      if (field.focus) {
+        focusInput = input;
+        selectFocused = Boolean(field.select);
+      }
+    }
 
     const actions = document.createElement("div");
     actions.className = "ftp-connect-actions";
@@ -715,12 +701,12 @@
     cancel.className = "ghost";
     cancel.textContent = "Отмена";
     cancel.addEventListener("click", () => dialog.close());
-    const save = document.createElement("button");
-    save.type = "submit";
-    save.textContent = "Сохранить";
-    actions.append(cancel, save);
+    const submit = document.createElement("button");
+    submit.type = "submit";
+    submit.textContent = submitLabel;
+    actions.append(cancel, submit);
+    form.append(actions);
 
-    form.append(sid, title, nameLabel, actions);
     dialog.append(form);
     dialog.addEventListener("click", (event) => {
       if (event.target === dialog) {
@@ -730,8 +716,10 @@
     dialog.addEventListener("close", () => dialog.remove());
     document.body.append(dialog);
     dialog.showModal();
-    nameInput.focus();
-    nameInput.select();
+    focusInput?.focus();
+    if (selectFocused) {
+      focusInput.select();
+    }
   }
 
   // Кнопка «Изменить» у сохранённой панели → диалог переименования.
@@ -896,12 +884,8 @@
     return Math.max(12, Math.min(100, (current / total) * 100));
   }
 
-  async function fetchWorkspaceJobStatus() {
-    const response = await fetchWithTimeout("/api/workspace-job");
-    if (!response.ok) {
-      throw new Error("workspace-job-status-failed");
-    }
-    return response.json();
+  function fetchWorkspaceJobStatus() {
+    return apiJson("/api/workspace-job");
   }
 
   function isTerminalWorkspaceJobStatus(status) {
@@ -1119,13 +1103,6 @@
       startStream() || startPollingFallback();
     }
 
-    window.addEventListener("beforeunload", () => {
-      closeStream();
-      if (pollTimer) {
-        window.clearTimeout(pollTimer);
-      }
-    });
-
     return {
       ensureMonitoring() {
         if (!startStream()) {
@@ -1199,25 +1176,13 @@
       }
     });
 
-    window.addEventListener("beforeunload", () => {
+    // Для папки поллер не запускаем: фоновые обновления бывают только у FTP.
+    if (appState.sourceKind === "folder") {
       stopped = true;
       stop();
-    });
-
-    // Тип источника отдаёт только /api/diagnostics: для папки поллер не запускаем.
-    // Если диагностика недоступна — ведём себя как раньше и опрашиваем.
-    void fetchDiagnostics()
-      .then((data) => {
-        if (String(data?.source_kind || "") === "folder") {
-          stopped = true;
-          stop();
-          return;
-        }
-        schedule();
-      })
-      .catch(() => {
-        schedule();
-      });
+    } else {
+      schedule();
+    }
   })();
 
   // Стартовые высоты строки/заголовка дня (см. .wash-row / .wash-day-header в
@@ -1233,8 +1198,6 @@
   const DEFAULT_PERIOD_PRESET = "7d";
   // Пресет → сколько календарных суток показываем, считая сегодняшние.
   const PERIOD_PRESET_DAYS = { "7d": 7, "30d": 30 };
-  // Потолок опроса /api/update/job: 500 мс × 2400 ≈ 20 минут.
-  const UPDATE_POLL_MAX_TICKS = 2400;
   const state = {
     washRows: [],
     channelLabels: new Map(),
@@ -1257,7 +1220,6 @@
     // Обновление: последний ответ /api/update-check и состояние скачивания.
     updateInfo: null,
     updateJob: null,
-    updateTimer: null,
     // Защёлка «скачивание/установка уже идёт»: disabled у кнопки живёт лишь до
     // ближайшей перерисовки панели, а она перерисовывается на каждом опросе.
     updateBusy: false,
@@ -1266,11 +1228,10 @@
     rowHeight: WASH_LIST_ROW_HEIGHT_FALLBACK,
     headerHeight: WASH_LIST_HEADER_HEIGHT_FALLBACK,
   };
-  const fluidWashListQuery =
-    typeof window.matchMedia === "function" ? window.matchMedia(WASH_LIST_FLUID_LAYOUT_QUERY) : null;
+  const fluidWashListQuery = window.matchMedia(WASH_LIST_FLUID_LAYOUT_QUERY);
 
   function isWashListVirtualized() {
-    return !fluidWashListQuery?.matches;
+    return !fluidWashListQuery.matches;
   }
   const detailCache = new Map();
   const detailRequestCache = new Map();
@@ -1365,6 +1326,21 @@
   dbBrowserRoot.hidden = true;
   document.body.append(dbBrowserRoot);
 
+  // Модальные окна в порядке закрытия по Escape (верхнее — первым). Один список
+  // для Escape, «/» и класса modal-open: раньше их перечисляли в трёх местах
+  // вручную, и браузер БД выпал из одного из них.
+  const OVERLAYS = [
+    [dbBrowserRoot, closeDbBrowser],
+    [diagnosticsRoot, closeDiagnostics],
+    [settingsRoot, closeSettings],
+    [objectEditorRoot, closeObjectEditor],
+    [modalRoot, closeChartModal],
+  ];
+
+  function topOverlay() {
+    return OVERLAYS.find(([root]) => !root.hidden) || null;
+  }
+
   // ---- Тосты (всплывающие уведомления) ----------------------------------
   // toastRoot создаётся в начале IIFE (до гейта) — см. выше.
   function showToast(message, type = "info", duration = 4000) {
@@ -1452,7 +1428,6 @@
         start();
       }
     });
-    window.addEventListener("beforeunload", stop);
 
     start();
   }
@@ -1483,17 +1458,6 @@
       /* localStorage может быть недоступен — просто применяем к текущей сессии */
     }
     applyWashResultVisibility();
-  }
-
-  // Экранирование как в wash-chart.js: включая одинарную кавычку (&#39;) —
-  // данные пользовательские, разметка собирается строками.
-  function escapeHtml(value) {
-    return String(value ?? "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#39;");
   }
 
   function badgeClass(status, kind) {
@@ -1707,12 +1671,8 @@
     }
   }
 
-  async function fetchWorkspaceData() {
-    const response = await fetchWithTimeout("/api/workspace-data");
-    if (!response.ok) {
-      throw new Error("workspace-data-request-failed");
-    }
-    return response.json();
+  function fetchWorkspaceData() {
+    return apiJson("/api/workspace-data");
   }
 
   function applyWorkspacePayload(payload, { resetScroll = false } = {}) {
@@ -1764,21 +1724,11 @@
     return payload;
   }
 
-  async function startWorkspaceRefresh() {
-    const response = await fetchWithTimeout("/api/workspace/refresh", { method: "POST" });
-    if (!response.ok) {
-      let errorMessage = "Не удалось запустить обновление.";
-      try {
-        const payload = await response.json();
-        if (payload?.detail) {
-          errorMessage = String(payload.detail);
-        }
-      } catch (_error) {
-        // Fall back to the generic message.
-      }
-      throw new Error(errorMessage);
-    }
-    return response.json();
+  function startWorkspaceRefresh() {
+    return apiJson("/api/workspace/refresh", {
+      method: "POST",
+      errorMessage: "Не удалось запустить обновление.",
+    });
   }
 
   function renderObjectEditorChannelChoices(selectedValue = 1) {
@@ -1838,22 +1788,22 @@
     });
   }
 
-  function syncSortButtons() {
-    const currentValue = String(sortOrder.value || "date_desc");
-    document.querySelectorAll("[data-sort-value]").forEach((button) => {
-      const isActive = String(button.dataset.sortValue || "") === currentValue;
+  // Группа кнопок-переключателей: активна та, чей data-атрибут равен value.
+  function markActiveButton(dataKey, value) {
+    const attribute = `data-${dataKey.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`)}`;
+    document.querySelectorAll(`[${attribute}]`).forEach((button) => {
+      const isActive = String(button.dataset[dataKey] || "") === String(value || "");
       button.classList.toggle("is-active", isActive);
       button.setAttribute("aria-pressed", isActive ? "true" : "false");
     });
   }
 
+  function syncSortButtons() {
+    markActiveButton("sortValue", sortOrder.value || "date_desc");
+  }
+
   function syncChannelButtons() {
-    const currentValue = String(channelFilter.value || "");
-    document.querySelectorAll("[data-channel-value]").forEach((button) => {
-      const isActive = String(button.dataset.channelValue || "") === currentValue;
-      button.classList.toggle("is-active", isActive);
-      button.setAttribute("aria-pressed", isActive ? "true" : "false");
-    });
+    markActiveButton("channelValue", channelFilter.value);
   }
 
   function getLocalDateKey(value = new Date()) {
@@ -1913,9 +1863,7 @@
   }
 
   function syncPeriodPresetButtons() {
-    periodPresetButtons.forEach((button) => {
-      button.classList.toggle("is-active", button.dataset.periodPreset === state.activePeriodPreset);
-    });
+    markActiveButton("periodPreset", state.activePeriodPreset);
   }
 
   function getAvailableDateBounds() {
@@ -2373,77 +2321,47 @@
     return lo;
   }
 
-  async function getDetail(key) {
-    if (detailCache.has(key)) {
-      return detailCache.get(key);
+  // Кэшированный GET: готовый ответ из LRU-кэша, иначе общий запрос в полёте
+  // (повторные вызовы ждут тот же промис). Пока ответ летел, данные могли
+  // обновиться (фоновый FTP) и кэши — очиститься: устаревший ответ в новый кэш
+  // не кладём.
+  function cachedGet(cache, requests, limit, key, url) {
+    if (cache.has(key)) {
+      return Promise.resolve(cache.get(key));
     }
-
-    if (detailRequestCache.has(key)) {
-      return detailRequestCache.get(key);
+    if (requests.has(key)) {
+      return requests.get(key);
     }
 
     const generation = workspaceDataGeneration;
-    const request = fetchWithTimeout(`/api/wash-details?key=${encodeURIComponent(key)}`)
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error("wash-details-request-failed");
-        }
-        return response.json();
-      })
+    const request = apiJson(url)
       .then((payload) => {
-        // Пока ответ летел, данные могли обновиться (фоновый FTP) и кэши —
-        // очиститься: устаревший ответ в новый кэш не кладём.
         if (generation === workspaceDataGeneration) {
-          setBoundedCacheEntry(detailCache, key, payload, DETAIL_CACHE_LIMIT);
+          setBoundedCacheEntry(cache, key, payload, limit);
         }
         return payload;
       })
       .finally(() => {
         // Только свой запрос: после инвалидации по этому ключу мог стартовать новый.
-        if (detailRequestCache.get(key) === request) {
-          detailRequestCache.delete(key);
+        if (requests.get(key) === request) {
+          requests.delete(key);
         }
       });
 
-    detailRequestCache.set(key, request);
+    requests.set(key, request);
     return request;
   }
 
-  async function getChartPayload(url) {
+  function getDetail(key) {
+    const url = `/api/wash-details?key=${encodeURIComponent(key)}`;
+    return cachedGet(detailCache, detailRequestCache, DETAIL_CACHE_LIMIT, key, url);
+  }
+
+  function getChartPayload(url) {
     if (!url) {
-      throw new Error("wash-chart-url-missing");
+      return Promise.reject(new Error("wash-chart-url-missing"));
     }
-
-    if (chartPayloadCache.has(url)) {
-      return chartPayloadCache.get(url);
-    }
-
-    if (chartPayloadRequestCache.has(url)) {
-      return chartPayloadRequestCache.get(url);
-    }
-
-    const generation = workspaceDataGeneration;
-    const request = fetchWithTimeout(url)
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error("chart-data-request-failed");
-        }
-        return response.json();
-      })
-      .then((payload) => {
-        if (generation === workspaceDataGeneration) {
-          setBoundedCacheEntry(chartPayloadCache, url, payload, CHART_PAYLOAD_CACHE_LIMIT);
-        }
-        return payload;
-      })
-      .finally(() => {
-        if (chartPayloadRequestCache.get(url) === request) {
-          chartPayloadRequestCache.delete(url);
-        }
-      });
-
-    chartPayloadRequestCache.set(url, request);
-    return request;
+    return cachedGet(chartPayloadCache, chartPayloadRequestCache, CHART_PAYLOAD_CACHE_LIMIT, url, url);
   }
 
   function prefetchChartPayload(url) {
@@ -2516,34 +2434,12 @@
     return { channel: 1, objectId: 1 };
   }
 
-  async function persistObjectName(channel, objectId, name = "", mode = "set") {
-    const response = await fetchWithTimeout("/api/object-name", {
+  function persistObjectName(channel, objectId, name = "", mode = "set") {
+    return apiJson("/api/object-name", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        channel,
-        object_id: objectId,
-        name,
-        mode,
-      }),
+      body: { channel, object_id: objectId, name, mode },
+      errorMessage: "Не удалось сохранить новое название объекта.",
     });
-
-    if (!response.ok) {
-      let errorMessage = "Не удалось сохранить новое название объекта.";
-      try {
-        const payload = await response.json();
-        if (payload?.detail) {
-          errorMessage = String(payload.detail);
-        }
-      } catch (_error) {
-        // Fall back to the generic message.
-      }
-      throw new Error(errorMessage);
-    }
-
-    return response.json();
   }
 
   function applyObjectNameToWashData(channel, objectId, objectName) {
@@ -2718,21 +2614,11 @@
   }
 
   function syncOverlayState() {
-    const hasVisibleOverlay =
-      !modalRoot.hidden ||
-      !objectEditorRoot.hidden ||
-      !settingsRoot.hidden ||
-      !diagnosticsRoot.hidden ||
-      !dbBrowserRoot.hidden;
-    document.body.classList.toggle("modal-open", hasVisibleOverlay);
+    document.body.classList.toggle("modal-open", topOverlay() !== null);
   }
 
-  async function fetchDiagnostics() {
-    const response = await fetchWithTimeout("/api/diagnostics", { headers: { Accept: "application/json" } });
-    if (!response.ok) {
-      throw new Error("diagnostics-fetch-failed");
-    }
-    return response.json();
+  function fetchDiagnostics() {
+    return apiJson("/api/diagnostics");
   }
 
   function closeDiagnostics() {
@@ -3085,33 +2971,17 @@
   }
 
   async function fetchAppSettings() {
-    const response = await fetchWithTimeout("/api/settings", { headers: { Accept: "application/json" } });
-    if (!response.ok) {
-      throw new Error("settings-fetch-failed");
-    }
-    const payload = await response.json();
+    const payload = await apiJson("/api/settings");
     return payload && typeof payload.settings === "object" ? payload.settings : {};
   }
 
   async function saveAppSettings(patch) {
-    const response = await fetchWithTimeout("/api/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ settings: patch }),
-    });
-    if (!response.ok) {
-      throw new Error("settings-save-failed");
-    }
-    const payload = await response.json();
+    const payload = await apiJson("/api/settings", { method: "POST", body: { settings: patch } });
     return payload && typeof payload.settings === "object" ? payload.settings : patch;
   }
 
   async function fetchChartStyles() {
-    const response = await fetchWithTimeout("/api/chart-styles", { headers: { Accept: "application/json" } });
-    if (!response.ok) {
-      throw new Error("chart-styles-fetch-failed");
-    }
-    const payload = await response.json();
+    const payload = await apiJson("/api/chart-styles");
     return {
       series: payload && typeof payload.series === "object" ? payload.series : {},
       defaults: Array.isArray(payload?.defaults) ? payload.defaults : [],
@@ -3119,15 +2989,7 @@
   }
 
   async function saveChartStyles(series) {
-    const response = await fetchWithTimeout("/api/chart-styles", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ series }),
-    });
-    if (!response.ok) {
-      throw new Error("chart-styles-save-failed");
-    }
-    const payload = await response.json();
+    const payload = await apiJson("/api/chart-styles", { method: "POST", body: { series } });
     return payload && typeof payload.series === "object" ? payload.series : series;
   }
 
@@ -3162,10 +3024,6 @@
       .join("");
   }
 
-  function isValidHexColorLike(value) {
-    return /^#[0-9a-f]{6}$/i.test(String(value || ""));
-  }
-
   async function openSettings(initialPage = "general") {
     if (!modalRoot.hidden) {
       closeChartModal();
@@ -3177,22 +3035,19 @@
     settingsRoot.hidden = false;
     syncOverlayState();
 
-    let settings = { ftp_auto_refresh_enabled: true, ftp_auto_refresh_minutes: 5, default_folder_path: "" };
-    try {
-      settings = { ...settings, ...(await fetchAppSettings()) };
-    } catch (_error) {
-      // Не удалось получить настройки — показываем значения по умолчанию.
-    }
-    if (openId !== settingsOpenId) {
-      return;
-    }
-
-    let chartStyles = { series: {}, defaults: [] };
-    try {
-      chartStyles = await fetchChartStyles();
-    } catch (_error) {
-      // Стили графика недоступны — секцию покажем пустой.
-    }
+    // Оба запроса параллельно. Сбой любого не мешает открыть окно: настройки
+    // покажем со значениями по умолчанию, секцию стилей графика — пустой.
+    const [loadedSettings, loadedChartStyles] = await Promise.all([
+      fetchAppSettings().catch(() => ({})),
+      fetchChartStyles().catch(() => null),
+    ]);
+    const settings = {
+      ftp_auto_refresh_enabled: true,
+      ftp_auto_refresh_minutes: 5,
+      default_folder_path: "",
+      ...loadedSettings,
+    };
+    let chartStyles = loadedChartStyles || { series: {}, defaults: [] };
 
     // Пользователь мог закрыть окно (или открыть заново), пока грузились
     // настройки: старый ответ не должен перетирать свежую панель.
@@ -3694,11 +3549,7 @@
         stopCleanupTimer();
         cleanupConfirmOk.disabled = true;
         try {
-          const response = await fetchWithTimeout("/api/archives/cleanup", { method: "POST" });
-          if (!response.ok) {
-            throw new Error("cleanup-failed");
-          }
-          const data = await response.json();
+          const data = await apiJson("/api/archives/cleanup", { method: "POST" });
           showToast(
             `Удалено файлов: ${data.removed || 0}, освобождено ${formatBytes(data.freed_bytes || 0)}`,
             "success"
@@ -3767,11 +3618,7 @@
       chartCacheClear.addEventListener("click", async () => {
         chartCacheClear.disabled = true;
         try {
-          const response = await fetchWithTimeout("/api/chart-cache/clear", { method: "POST" });
-          if (!response.ok) {
-            throw new Error("clear-failed");
-          }
-          const data = await response.json();
+          const data = await apiJson("/api/chart-cache/clear", { method: "POST" });
           showToast(`Кэш графиков очищен (файлов: ${data.removed || 0}).`, "success");
         } catch (_error) {
           showToast("Не удалось очистить кэш графиков.", "error");
@@ -3874,11 +3721,7 @@
   // Результат всегда озвучиваем: пользователь нажал и ждёт ответа.
   async function checkForUpdates() {
     try {
-      const response = await fetchWithTimeout("/api/update-check", { headers: { Accept: "application/json" } });
-      if (!response.ok) {
-        throw new Error("update-check-failed");
-      }
-      const data = await response.json();
+      const data = await apiJson("/api/update-check", { timeout: 15000 });
       state.updateInfo = data;
       renderUpdatePanel();
       if (data.update_available) {
@@ -3972,16 +3815,6 @@
     `;
   }
 
-  async function pollUpdateJob() {
-    const response = await fetchWithTimeout("/api/update/job", { headers: { Accept: "application/json" } });
-    if (!response.ok) {
-      throw new Error("update-job-failed");
-    }
-    state.updateJob = await response.json();
-    renderUpdatePanel();
-    return state.updateJob;
-  }
-
   async function startUpdateInstall() {
     // Повторный вход запрещён: бэкенд отбивает второй POST только пока job в
     // "running", а после "ready" — качает установщик заново и поднимает второй
@@ -3997,49 +3830,16 @@
     // повторным «Установить» (бэкенд вернёт готовую задачу).
     const settingsOpenAtStart = settingsOpenId;
     try {
-      const response = await fetchWithTimeout("/api/update/download", { method: "POST" });
-      if (!response.ok) {
-        const detail = await response.json().catch(() => ({}));
-        throw new Error(detail.detail || "Не удалось начать скачивание.");
+      const installed = await downloadAndInstallUpdate({
+        onJob: (job) => {
+          state.updateJob = job;
+          renderUpdatePanel();
+        },
+        isCancelled: () => settingsOpenId !== settingsOpenAtStart,
+      });
+      if (installed) {
+        showToast("Запускаю установку — приложение закроется.", "info", 8000);
       }
-      state.updateJob = (await response.json()).job;
-      renderUpdatePanel();
-
-      // Опрос до завершения. Таймер снимаем на beforeunload и при закрытии
-      // настроек (см. ниже).
-      let ticks = 0;
-      while (true) {
-        await new Promise((resolve) => {
-          state.updateTimer = window.setTimeout(resolve, 500);
-        });
-        if (settingsOpenId !== settingsOpenAtStart) {
-          return;  // настройки закрыли — поллер и авто-установку прекращаем
-        }
-        const job = await pollUpdateJob();
-        if (!job || job.status !== "running") {
-          break;
-        }
-        ticks += 1;
-        // Потолок ≈20 минут (500 мс × 2400): установщик — десятки мегабайт, на
-        // тонком канале качается долго, но залипший в "running" бэкенд не должен
-        // опрашиваться вечно.
-        if (ticks >= UPDATE_POLL_MAX_TICKS) {
-          throw new Error("Скачивание не завершилось за отведённое время.");
-        }
-      }
-
-      const job = state.updateJob;
-      if (!job || job.status !== "ready") {
-        throw new Error(job?.error || "Не удалось скачать обновление.");
-      }
-
-      const result = await window.pywebview.api.install_update();
-      if (!result?.ok) {
-        // Отказ от UAC приходит сюда: приложение осталось живым, обновление не
-        // установлено. Панель обязана показать причину и дать повтор.
-        throw new Error(result?.error || "Не удалось запустить установщик.");
-      }
-      showToast("Запускаю установку — приложение закроется.", "info", 8000);
     } catch (error) {
       // Любой сбой (таймаут fetch, обрыв, не-200, отказ от UAC) обязан
       // перевести панель в "error": ветка "running" рисует прогресс-бар БЕЗ
@@ -4111,28 +3911,11 @@
     state.programRows = Array.isArray(rows) ? rows.map((row) => ({ ...row })) : [];
   }
 
-  async function requestProgramNames(url, options = {}) {
-    const response = await fetchWithTimeout(url, options);
-    if (!response.ok) {
-      let errorMessage = "Не удалось сохранить название программы.";
-      try {
-        const payload = await response.json();
-        if (payload?.detail) {
-          errorMessage = String(payload.detail);
-        }
-      } catch (_error) {
-        // Fall back to the generic message.
-      }
-      throw new Error(errorMessage);
-    }
-    return response.json();
-  }
-
-  async function persistProgramName(programId, name = "", mode = "set") {
-    return requestProgramNames("/api/program-name", {
+  function persistProgramName(programId, name = "", mode = "set") {
+    return apiJson("/api/program-name", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ program_id: programId, name, mode }),
+      body: { program_id: programId, name, mode },
+      errorMessage: "Не удалось сохранить название программы.",
     });
   }
 
@@ -4353,26 +4136,13 @@
     return escapeHtml(value);
   }
 
-  async function loadDbBrowserTables(path) {
-    const response = await fetchWithTimeout(
-      `/api/db-browser/tables?path=${encodeURIComponent(path)}`,
-      { headers: { Accept: "application/json" } }
-    );
-    if (!response.ok) {
-      throw new Error("tables-failed");
-    }
-    return response.json();
+  function loadDbBrowserTables(path) {
+    return apiJson(`/api/db-browser/tables?path=${encodeURIComponent(path)}`);
   }
 
-  async function loadDbBrowserRows(path, table, offset, limit) {
+  function loadDbBrowserRows(path, table, offset, limit) {
     const query = new URLSearchParams({ path, table, offset: String(offset), limit: String(limit) });
-    const response = await fetchWithTimeout(`/api/db-browser/rows?${query}`, {
-      headers: { Accept: "application/json" },
-    });
-    if (!response.ok) {
-      throw new Error("rows-failed");
-    }
-    return response.json();
+    return apiJson(`/api/db-browser/rows?${query}`);
   }
 
   function renderDbBrowserFileOptions() {
@@ -4760,7 +4530,9 @@
       }
       setProgramEditorBusy(true);
       try {
-        const payload = await requestProgramNames("/api/program-names");
+        const payload = await apiJson("/api/program-names", {
+          errorMessage: "Не удалось загрузить названия программ.",
+        });
         replaceProgramRows(payload?.program_rows);
         programRowsLoaded = true;
       } catch (error) {
@@ -5250,16 +5022,14 @@
   }
 
   function isAnyOverlayOpen() {
-    return [modalRoot, printRoot, objectEditorRoot, settingsRoot, diagnosticsRoot, dbBrowserRoot].some(
-      (root) => root && !root.hidden
-    );
+    return !printRoot.hidden || topOverlay() !== null;
   }
 
   function focusWashRowByKey(key) {
     if (!key) {
       return false;
     }
-    const escaped = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(key) : key;
+    const escaped = CSS.escape(key);
     const element = washList.querySelector(`.wash-row[data-key="${escaped}"]`);
     if (!element) {
       return false;
@@ -5319,25 +5089,7 @@
 
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
-      if (!dbBrowserRoot.hidden) {
-        closeDbBrowser();
-        return;
-      }
-      if (!diagnosticsRoot.hidden) {
-        closeDiagnostics();
-        return;
-      }
-      if (!settingsRoot.hidden) {
-        closeSettings();
-        return;
-      }
-      if (!objectEditorRoot.hidden) {
-        closeObjectEditor();
-        return;
-      }
-      if (!modalRoot.hidden) {
-        closeChartModal();
-      }
+      topOverlay()?.[1]();
       return;
     }
 
@@ -5408,13 +5160,6 @@
   // виртуализации — кэш отрисованного окна сбрасываем, чтобы высоты перемерились.
   // Дебаунс: во время перетаскивания рамки resize сыплется десятками в секунду,
   // а нам достаточно перемерить строки один раз, когда размер устоялся.
-  // Опрос скачивания обновления переживал бы закрытие окна: снимаем таймер.
-  window.addEventListener("beforeunload", () => {
-    if (state.updateTimer) {
-      window.clearTimeout(state.updateTimer);
-      state.updateTimer = null;
-    }
-  });
 
   let resizeDebounceTimer = 0;
   window.addEventListener("resize", () => {
@@ -5425,18 +5170,10 @@
     }, 120);
   });
 
-  if (fluidWashListQuery) {
-    const handleFluidLayoutChange = () => {
-      invalidateRenderedWashWindow();
-      scheduleVirtualizedWashList();
-    };
-    if (typeof fluidWashListQuery.addEventListener === "function") {
-      fluidWashListQuery.addEventListener("change", handleFluidLayoutChange);
-    } else if (typeof fluidWashListQuery.addListener === "function") {
-      // Safari < 14.
-      fluidWashListQuery.addListener(handleFluidLayoutChange);
-    }
-  }
+  fluidWashListQuery.addEventListener("change", () => {
+    invalidateRenderedWashWindow();
+    scheduleVirtualizedWashList();
+  });
 
   document.querySelectorAll("[data-sort-value]").forEach((button) => {
     button.addEventListener("click", () => {

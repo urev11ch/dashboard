@@ -45,8 +45,10 @@
     return LINE_STYLE_OPTIONS.find((option) => option.id === id) || LINE_STYLE_OPTIONS[0];
   }
 
+  // Общий для обоих скриптов (app.js берёт его из window.WashChart). null и
+  // undefined — пустая строка, а не «null» в разметке.
   function escapeHtml(value) {
-    return String(value)
+    return String(value ?? "")
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
@@ -1287,6 +1289,10 @@
       mount,
       hydrate: hydrateSeriesStylesFromServer,
       setSeriesStyles,
+      // Общие с app.js помощники: один источник вместо копий «должно совпадать».
+      escapeHtml,
+      isValidHexColor,
+      LINE_STYLE_OPTIONS,
     };
   }
 
