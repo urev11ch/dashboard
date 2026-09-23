@@ -18,7 +18,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
-from contextlib import closing, nullcontext
+from contextlib import closing
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Callable
@@ -1570,22 +1570,21 @@ def request_background_shutdown() -> threading.Thread | None:
     ThreadPoolExecutor, чьи воркеры — не daemon: интерпретатор на выходе ждёт их
     в atexit-хуке, и без отмены процесс висит после закрытия окна."""
     try:
-        from webapp import app as webapp_module
-        from webapp.state import ACTIVE_JOB_STATUSES
+        # Поток загрузчика живёт в webapp.state (его пишет analysis.py), а не в
+        # webapp.app: раньше искали там, получали None и не ждали его вовсе.
+        from webapp import state as state_module
     except Exception:
-        logging.exception("Не удалось получить webapp.app для остановки фоновых задач")
+        logging.exception("Не удалось получить webapp.state для остановки фоновых задач")
         return None
 
     try:
-        lock = getattr(webapp_module, "state_lock", None)
-        state = getattr(webapp_module, "state", None)
-        with lock if lock is not None else nullcontext():
-            job = getattr(state, "workspace_job", None) if state is not None else None
-            if job is not None and getattr(job, "status", "") in ACTIVE_JOB_STATUSES:
+        with state_module.state_lock:
+            job = state_module.state.workspace_job
+            if job is not None and job.status in state_module.ACTIVE_JOB_STATUSES:
                 job.cancel_requested = True
                 job.status = "cancelling"
                 logging.info("Отменяю фоновую загрузку рабочей области при выходе")
-        thread = getattr(webapp_module, "_workspace_job_thread", None)
+            thread = state_module._workspace_job_thread
     except Exception:
         logging.exception("Не удалось отменить фоновую загрузку рабочей области")
         return None

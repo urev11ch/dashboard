@@ -37,28 +37,21 @@ from webapp import config
 # неймспейс app.py, чтобы существующий код (и тесты, патчащие app.<КОНСТАНТА>)
 # продолжали видеть их как app.<ИМЯ>.
 from webapp.config import *  # noqa: F401,F403
-from webapp.config import _RESULT_CATEGORY_BY_DEFAULT  # noqa: F401 (underscore не берётся *)
 # Защищённое хранение паролей вынесено в webapp/secrets_store.py. Тесты, которым
 # нужно подменить keyring, патчат app.secrets_store._keyring_store/_keyring_fetch.
 from webapp import secrets_store
-from webapp.secrets_store import protect_secret, unprotect_secret, _keyring_delete  # noqa: F401
+from webapp.secrets_store import protect_secret, unprotect_secret  # noqa: F401
 # Обнаружение панелей в локальной сети вынесено в webapp/discovery.py. Тесты
 # патчат его символы как app.discovery.<имя>.
 from webapp import discovery
 # Глобальное состояние и локи вынесены в webapp/state.py и разделяются между
 # app.py и сервисными модулями (updates и т. д.) как один и тот же объект.
-from webapp import state as state_module
 from webapp.state import (  # noqa: F401
     ACTIVE_JOB_STATUSES,
     AppState,
-    AppStateSnapshot,
     ScanSummary,
     UpdateJob,
     WorkspaceJob,
-    analysis_cache_lock,
-    app_settings_lock,
-    archive_cache_lock,
-    chart_payload_cache_lock,
     state,
     state_lock,
 )
@@ -73,37 +66,23 @@ from webapp.archives import extract_archive_dbs, safe_archive_member_path
 # Просмотр сырого содержимого `.db` (список таблиц, страницы строк).
 from webapp import db_browser
 # Мелкие утилиты ввода-вывода/форматирования вынесены в webapp/io_utils.py.
-from webapp import io_utils
 from webapp.io_utils import (  # noqa: F401
-    atomic_write_bytes,
-    atomic_write_json,
-    atomic_write_text,
-    format_day_key,
     format_file_list,
-    format_source_label,
-    local_tz_offset_min,
 )
 # Реестр FTP-подключений вынесен в webapp/ftp_registry.py; реэкспортируем API —
 # роуты/оркестрация и тесты обращаются как app.<имя>. TEMP_ROOT/DATALOG_ROOT
 # реестр читает через config, поэтому тесты его каталогов патчат app.config.*.
-from webapp import ftp_registry
 from webapp.ftp_registry import (  # noqa: F401
     apply_ftp_url_payload,
     connection_to_config,
     create_ftp_workspace,
     delete_ftp_connection,
     find_ftp_connection,
-    format_ftp_display_label,
     ftp_connection_id,
-    ftp_sources_lock,
-    ftp_sources_path,
     list_ftp_sources_public,
     load_ftp_sources_registry,
     normalize_ftp_connection_settings,
-    normalize_ftp_host,
-    normalize_ftp_path,
     purge_deleted_profile_dirs,
-    remove_ftp_profile_dir,
     rename_ftp_connection,
     save_ftp_sources_registry,
     upsert_ftp_connection,
@@ -125,16 +104,10 @@ from webapp.settings_store import (  # noqa: F401
     load_app_settings,
     load_chart_style_settings,
     load_last_folder_path,
-    load_object_name_overrides,
     load_program_name_overrides,
     normalize_app_settings,
     normalize_chart_style_series,
-    object_name_override_key,
-    object_name_overrides_path,
-    parse_object_name_override_key,
-    resolve_cycle_default_status,
     resolve_object_name,
-    resolve_program_name,
     resolve_result_kind,
     resolve_result_label,
     save_app_settings,
@@ -150,34 +123,23 @@ from webapp.settings_store import (  # noqa: F401
 # и роуты зовут их как app.<имя>, а тесты патчат load/save_cached_*/prune на app.
 from webapp import cache
 from webapp.cache import (  # noqa: F401
-    archive_cache_key,
-    cache_entry_size_bytes,
-    cache_hmac_key,
-    cleanup_expired_cache_entries,
-    cleanup_stale_archive_cache,
     cleanup_stale_db_analysis_cache,
     cleanup_stale_disk_caches,
     cleanup_stale_workspace_cache,
     clear_all_chart_caches,
     clear_chart_payload_cache,
-    chart_payload_disk_cache_key,
     chart_payload_disk_cache_path,
     db_analysis_cache_key,
     db_analysis_cache_path,
-    extract_archive_dbs_cached,
     get_cached_chart_payload,
-    is_protected_cache_entry,
     load_cached_chart_payload_disk,
     load_cached_db_analysis,
     load_cached_workspace_analysis,
     load_pickle_cache,
-    make_sample_loader,
     path_cache_signature,
     prune_analysis_cache,
-    prune_archive_cache,
     prune_cache_root,
     remember_cache_key,
-    remove_cache_entry,
     save_cached_chart_payload_disk,
     save_cached_db_analysis,
     save_cached_workspace_analysis,
@@ -186,7 +148,6 @@ from webapp.cache import (  # noqa: F401
     touch_cache_entry,
     workspace_analysis_cache_key,
     workspace_analysis_cache_path,
-    ws_samples_path,
 )
 # FTP-клиент (подключение, загрузка зеркала, ретеншн, синхронизация) вынесен в
 # webapp/ftp_client.py. DATALOG_ROOT он читает через config → тесты патчат
@@ -194,22 +155,17 @@ from webapp.cache import (  # noqa: F401
 # app.ftp_client.open_ftp_connection (его зовёт download_ftp_files внутри модуля).
 from webapp import ftp_client
 from webapp.ftp_client import (  # noqa: F401
-    FtpSyncResult,
     archive_month_folder,
     build_local_archive_index,
     cleanup_old_archives,
-    datalog_has_archives,
     datalog_size_bytes_cached,
-    directory_size_bytes,
     download_ftp_files,
     is_ftp_connection_lost,
     is_ftp_profile,
-    iter_tree_files,
     materialize_ftp_sources,
     open_ftp_connection,
     _ftp_list_entries,
     _ftp_relative_target,
-    _ftp_walk_files,
     _is_archive_or_db_name,
     _parse_ftp_timestamp,
     _parse_mdtm_reply,
@@ -223,15 +179,7 @@ from webapp import analysis
 from webapp.analysis import (  # noqa: F401
     analyze_db_files_incremental,
     build_job_completion_message,
-    discover_db_files,
-    finish_workspace_job_cancelled,
-    finish_workspace_job_failed,
     ftp_auto_refresh_loop,
-    is_ignored_workspace_dir,
-    job_cancel_requested,
-    push_job_progress,
-    resolve_db_analysis_workers,
-    run_workspace_job,
     serialize_job,
     start_workspace_job,
     trigger_ftp_auto_refresh,
@@ -245,28 +193,22 @@ from webapp.views import (  # noqa: F401
     build_object_rows,
     build_program_rows,
     build_scan_warnings,
-    build_seed_object_name_overrides,
     build_summary_payload,
     build_wash_detail,
-    build_wash_rows,
     build_wash_rows_cached,
     build_workspace_payload,
     capture_state_snapshot,
     chart_style_defaults,
     concentration_verdicts_cached,
-    copy_scan_summary,
     find_cycle,
     page_context,
-    parse_cycle_key,
     require_analysis,
     resolve_default_folder_path,
     resolve_workspace_input_value,
 )
-from webapp.chart_payload import SERIES_CONFIG, build_cycle_chart_payload
+from webapp.chart_payload import build_cycle_chart_payload
 # Выгрузка журнала моек в .xlsx (сборка строк + книга).
-from webapp import wash_export
 from webapp.wash_export import (  # noqa: F401
-    EXPORT_COLUMNS,
     build_export_rows,
     build_export_workbook,
     export_filename,
@@ -901,43 +843,6 @@ def update_object_name(payload: dict[str, Any] = Body(...)) -> JSONResponse:
     )
 
 
-@app.post("/api/object-names-file/sync")
-def sync_object_names_file() -> JSONResponse:
-    with state_lock:
-        analysis = require_analysis()
-
-        existing_overrides = dict(state.object_name_overrides)
-        path = object_name_overrides_path(config.TEMP_ROOT)
-        file_existed = path.exists()
-        next_overrides = build_seed_object_name_overrides(analysis, existing_overrides)
-        added_entry_count = len(set(next_overrides.keys()) - set(existing_overrides.keys()))
-        changed = next_overrides != existing_overrides or not file_existed
-
-        if changed:
-            try:
-                save_object_name_overrides(config.TEMP_ROOT, next_overrides)
-            except OSError as exc:
-                raise HTTPException(status_code=500, detail=f"Не удалось сохранить файл переименований: {exc}") from exc
-
-            state.object_name_overrides = next_overrides
-            apply_object_name_overrides(analysis, next_overrides)
-            state.analysis_revision += 1
-
-        return JSONResponse(
-            {
-                "ok": True,
-                "changed": changed,
-                "created": not file_existed,
-                "file_path": str(path),
-                "entry_count": len(next_overrides),
-                "added_entry_count": added_entry_count,
-                "object_rows": build_object_rows(state.object_name_overrides, state.analysis),
-            }
-        )
-
-
-
-
 # ---- названия программ мойки ------------------------------------------------
 # Источник данных для роутов не требуется: семь штатных программ панели известны
 # и без архива, а файл названий лежит в TEMP_ROOT рядом с прочими настройками.
@@ -1366,16 +1271,19 @@ def wash_chart_data(key: str) -> JSONResponse:
         analysis_revision = state.analysis_revision
         analysis_cache_key = analysis.analysis_cache_key
 
-    cached_payload = get_cached_chart_payload(analysis_revision, key)
+    # График от имён объектов/программ не зависит, поэтому кэш в памяти держим
+    # по самому анализу: переименование (сдвиг ревизии) его не сбрасывает.
+    memory_cache_id = analysis_cache_key or f"revision:{analysis_revision}"
+    cached_payload = get_cached_chart_payload(memory_cache_id, key)
     if cached_payload is not None:
         return JSONResponse(cached_payload)
 
     cached_payload = load_cached_chart_payload_disk(analysis_cache_key, key)
     if cached_payload is not None:
-        set_cached_chart_payload(analysis_revision, key, cached_payload)
+        set_cached_chart_payload(memory_cache_id, key, cached_payload)
         return JSONResponse(cached_payload)
 
     payload = build_cycle_chart_payload(analysis, cycle)
-    set_cached_chart_payload(analysis_revision, key, payload)
+    set_cached_chart_payload(memory_cache_id, key, payload)
     save_cached_chart_payload_disk(analysis_cache_key, key, payload)
     return JSONResponse(payload)

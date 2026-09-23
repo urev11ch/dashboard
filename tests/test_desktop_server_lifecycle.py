@@ -138,3 +138,26 @@ def test_bind_window_subscribes_to_closed():
     bridge.bind_window(window)
 
     assert window.events.closed.handlers == [bridge._on_main_window_closed]
+
+
+def test_background_shutdown_finds_loader_thread(monkeypatch):
+    # Поток загрузчика хранится в webapp.state; раньше его искали в webapp.app,
+    # получали None, и выход не ждал фоновую загрузку.
+    import threading
+    import types
+
+    from webapp import state as state_module
+
+    release = threading.Event()
+    thread = threading.Thread(target=release.wait, daemon=True)
+    thread.start()
+    job = types.SimpleNamespace(status="running", cancel_requested=False)
+    monkeypatch.setattr(state_module, "_workspace_job_thread", thread)
+    monkeypatch.setattr(state_module.state, "workspace_job", job)
+    try:
+        assert desktop.request_background_shutdown() is thread
+        assert job.cancel_requested is True
+        assert job.status == "cancelling"
+    finally:
+        release.set()
+        thread.join(1)

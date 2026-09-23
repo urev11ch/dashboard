@@ -651,8 +651,8 @@ def cleanup_stale_disk_caches() -> None:
     prune_analysis_cache()
 
 
-def get_cached_chart_payload(analysis_revision: int, key: str) -> dict[str, Any] | None:
-    cache_key = (analysis_revision, key)
+def get_cached_chart_payload(analysis_id: str, key: str) -> dict[str, Any] | None:
+    cache_key = (analysis_id, key)
     with chart_payload_cache_lock:
         payload = chart_payload_cache.get(cache_key)
         if payload is None:
@@ -661,8 +661,8 @@ def get_cached_chart_payload(analysis_revision: int, key: str) -> dict[str, Any]
         return payload
 
 
-def set_cached_chart_payload(analysis_revision: int, key: str, payload: dict[str, Any]) -> None:
-    cache_key = (analysis_revision, key)
+def set_cached_chart_payload(analysis_id: str, key: str, payload: dict[str, Any]) -> None:
+    cache_key = (analysis_id, key)
     with chart_payload_cache_lock:
         chart_payload_cache[cache_key] = payload
         chart_payload_cache.move_to_end(cache_key)

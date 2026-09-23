@@ -353,14 +353,6 @@ code {
   flex: 0 0 auto;
 }
 
-.welcome-copy {
-  margin-top: 20px;
-  max-width: 700px;
-  color: var(--muted);
-  font-size: 17px;
-  line-height: 1.7;
-}
-
 /* Футер карточки: версия слева, «Проверить обновления» справа. Отделён тонкой
    линией, тон приглушённый — служебная строка, не основное действие. */
 .welcome-footer {
@@ -376,13 +368,6 @@ code {
 .welcome-version {
   font-size: 12px;
   color: var(--muted);
-}
-.welcome-update {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
 }
 .welcome-update-status {
   font-size: 12px;
@@ -411,38 +396,6 @@ code {
   flex-wrap: wrap;
 }
 
-.welcome-source-grid {
-  margin-top: 28px;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 18px;
-}
-
-/* Без собственного фона и рамки: панель уже лежит внутри welcome-card, и своя
-   подложка давала коробку в коробке (а для FTP — ещё и третью, welcome-ftp-panel).
-   Разделяет режимы сегментный переключатель выше, обводка для этого не нужна. */
-.welcome-source-panel {
-  padding: 0;
-}
-
-.welcome-source-panel[hidden] {
-  display: none;
-}
-
-.welcome-source-title {
-  margin-top: 10px;
-  font-size: 24px;
-  line-height: 1.05;
-  letter-spacing: -0.04em;
-}
-
-.welcome-source-copy {
-  margin-top: 12px;
-  color: var(--muted);
-  font-size: 14px;
-  line-height: 1.65;
-}
-
 .welcome-form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -468,181 +421,6 @@ code {
 .folder-form--ftp .welcome-form-grid label:nth-child(3),
 .folder-form--ftp .welcome-form-grid label:nth-child(4) {
   grid-column: span 1;
-}
-
-.welcome-ftp-hint {
-  display: grid;
-  gap: 6px;
-  padding: 12px 14px;
-  border-radius: calc(var(--radius-control) + 2px);
-  background: rgba(23, 87, 255, 0.06);
-  border: 1px solid rgba(23, 87, 255, 0.12);
-}
-
-.welcome-ftp-hint strong {
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.welcome-ftp-hint span {
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.55;
-}
-
-.welcome-password-block {
-  display: grid;
-  gap: 8px;
-}
-
-.welcome-password-block label {
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.welcome-password-block label span {
-  display: block;
-  margin-bottom: 0;
-}
-
-.welcome-password-input {
-  width: 100%;
-}
-
-.welcome-advanced-panel {
-  border: 1px dashed rgba(40, 58, 96, 0.18);
-  border-radius: calc(var(--radius-control) + 2px);
-  background: rgba(255, 255, 255, 0.72);
-}
-
-.welcome-advanced-panel[open] {
-  border-style: solid;
-  background: rgba(255, 255, 255, 0.92);
-}
-
-.welcome-advanced-toggle-button {
-  list-style: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 14px;
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  cursor: pointer;
-  user-select: none;
-}
-
-.welcome-advanced-toggle-button::-webkit-details-marker {
-  display: none;
-}
-
-.welcome-advanced-toggle-button::after {
-  content: "+";
-  margin-left: auto;
-  width: 22px;
-  height: 22px;
-  display: inline-grid;
-  place-items: center;
-  border-radius: 999px;
-  background: rgba(23, 87, 255, 0.08);
-  color: var(--accent);
-  font-size: 15px;
-  font-weight: 800;
-  line-height: 1;
-}
-
-.welcome-advanced-panel[open] .welcome-advanced-toggle-button::after {
-  content: "-";
-}
-
-.welcome-advanced-panel-body {
-  display: grid;
-  gap: 10px;
-  padding: 0 14px 14px;
-}
-
-.welcome-advanced-panel-body label {
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.welcome-advanced-panel-body label span {
-  display: block;
-  margin-bottom: 8px;
-}
-
-.welcome-advanced-copy {
-  margin: 0;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.folder-actions--ftp {
-  align-items: center;
-  justify-content: space-between;
-}
-
-.welcome-ftp-action-copy {
-  max-width: 420px;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.55;
-}
-
-.welcome-json-input {
-  min-height: 180px;
-  resize: vertical;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.55;
-}
-
-.welcome-hints {
-  margin-top: 30px;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-}
-
-.hint-card {
-  padding: 18px 20px;
-  border-radius: var(--radius-panel);
-  background: var(--panel-soft);
-  border: 1px solid var(--line);
-}
-
-.hint-card span {
-  display: inline-flex;
-  margin-bottom: 10px;
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-}
-
-.hint-card strong {
-  display: block;
-  font-size: 16px;
-}
-
-.hint-card p {
-  margin-top: 8px;
-  color: var(--muted);
-  font-size: 14px;
-  line-height: 1.6;
-}
-
-.dashboard-shell {
-  height: 100vh;
-  display: grid;
-  grid-template-columns: 360px minmax(0, 1fr);
-  overflow: hidden;
 }
 
 .wash-screen {
@@ -695,8 +473,7 @@ code {
   justify-content: flex-end;
 }
 
-.screen-header-buttons form,
-.workspace-picker-form {
+.screen-header-buttons form {
   margin: 0;
 }
 
@@ -970,38 +747,6 @@ code {
   border-color: var(--accent-strong);
 }
 
-.sidebar {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-  padding: 28px 22px;
-  background: rgba(241, 245, 236, 0.9);
-  border-right: 1px solid var(--line);
-  backdrop-filter: blur(14px);
-  height: 100vh;
-  overflow: auto;
-}
-
-.sidebar-top {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.sidebar-path {
-  margin-top: 8px;
-  font-size: 14px;
-  font-weight: 700;
-  line-height: 1.5;
-  word-break: break-word;
-}
-
-.sidebar-stats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
 .stat-pill {
   display: inline-flex;
   align-items: center;
@@ -1017,13 +762,7 @@ code {
   text-transform: uppercase;
 }
 
-.sidebar-controls {
-  display: grid;
-  gap: 10px;
-}
-
-.wash-list-panel,
-.plot-card {
+.wash-list-panel {
   background: var(--panel);
   border: 1px solid rgba(40, 58, 96, 0.1);
   box-shadow: var(--shadow);
@@ -1042,13 +781,6 @@ code {
 .wash-list-panel--full {
   padding: 0;
   overflow: hidden;
-}
-
-.panel-title {
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
 }
 
 .wash-list {
@@ -1230,29 +962,7 @@ body.wash-result-hidden [data-wash-result-row] {
   text-overflow: ellipsis;
 }
 
-.wash-entry {
-  height: auto;
-  display: grid;
-  gap: 6px;
-  padding: 14px 16px;
-  text-align: left;
-  border-radius: var(--radius-panel);
-  background: rgba(255, 255, 255, 0.72);
-  color: var(--text);
-  box-shadow: none;
-}
-
-.wash-entry:hover,
-.wash-entry.active {
-  background: rgba(23, 87, 255, 0.08);
-  color: var(--text);
-}
-
 .wash-entry-time,
-.wash-entry-meta,
-.detail-subtitle,
-.plot-meta,
-.operation-meta,
 .technical-empty {
   color: var(--muted);
   font-size: 11px;
@@ -1286,12 +996,6 @@ body.wash-result-hidden [data-wash-result-row] {
   color: #4a5565;
 }
 
-.wash-entry-meta {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
 .badge {
   display: inline-flex;
   align-items: center;
@@ -1320,98 +1024,11 @@ body.wash-result-hidden [data-wash-result-row] {
   color: var(--warn);
 }
 
-.main-panel {
-  padding: 32px;
-  height: 100vh;
-  overflow: auto;
-}
-
-.main-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 18px;
-  align-items: flex-end;
-  margin-bottom: 24px;
-}
-
-.main-header h1 {
-  margin-top: 10px;
-  font-size: clamp(28px, 3vw, 42px);
-  line-height: 0.98;
-  letter-spacing: -0.05em;
-}
-
-.header-meta {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.detail-root {
-  min-height: calc(100vh - 150px);
-}
-
-.detail-layout {
-  display: grid;
-  gap: 22px;
-}
-
-.plot-card {
-  border-radius: var(--radius-panel);
-  padding: 22px;
-  position: sticky;
-  top: 0;
-  z-index: 2;
-}
-
-.card-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  align-items: flex-start;
-}
-
 .detail-title {
   font-size: 28px;
   font-weight: 800;
   line-height: 1.02;
   letter-spacing: -0.04em;
-}
-
-.detail-subtitle {
-  margin-top: 6px;
-}
-
-.plot-meta {
-  margin-top: 16px;
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.plot-actions {
-  margin-top: 14px;
-  display: flex;
-  justify-content: flex-end;
-}
-
-.plot-meta span {
-  padding: 8px 10px;
-  border-radius: var(--radius-tag);
-  background: var(--tag-bg);
-}
-
-.plot-frame {
-  margin-top: 18px;
-  border-radius: var(--radius-panel);
-  overflow: hidden;
-  background: #ffffff;
-  min-height: 620px;
-  border: 1px solid var(--line);
-  position: relative;
 }
 
 .chart-host {
@@ -1450,34 +1067,6 @@ body.wash-result-hidden [data-wash-result-row] {
   display: block;
   min-height: 0;
   text-rendering: geometricPrecision;
-}
-
-.wash-chart-x-axis {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 8px;
-  padding-top: 10px;
-  padding-bottom: 8px;
-}
-
-.wash-chart-x-axis-label {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1.35;
-  white-space: nowrap;
-}
-
-.wash-chart-x-axis-label.is-start {
-  justify-self: start;
-}
-
-.wash-chart-x-axis-label.is-middle {
-  justify-self: center;
-}
-
-.wash-chart-x-axis-label.is-end {
-  justify-self: end;
 }
 
 .wash-chart-legend {
@@ -1983,75 +1572,6 @@ body.desktop-shell .object-editor-panel {
   fill: currentColor;
 }
 
-.settings-body {
-  display: grid;
-  gap: 8px;
-  padding: 2px 4px 2px 2px;
-  overflow: auto;
-  min-height: 0;
-}
-
-/* Раскрывающиеся секции (аккордеон) на базе <details>/<summary>. */
-.settings-section {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-panel);
-  background: rgba(255, 255, 255, 0.6);
-  overflow: hidden;
-}
-
-.settings-section-title {
-  list-style: none;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin: 0;
-  padding: 12px 14px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
-  user-select: none;
-  -webkit-user-select: none;
-}
-
-.settings-section-title::-webkit-details-marker {
-  display: none;
-}
-
-.settings-section-title::after {
-  content: "";
-  width: 7px;
-  height: 7px;
-  flex: none;
-  border-right: 1.5px solid var(--muted);
-  border-bottom: 1.5px solid var(--muted);
-  transform: rotate(45deg);
-  transition: transform 140ms ease;
-}
-
-.settings-section[open] > .settings-section-title::after {
-  transform: rotate(-135deg);
-}
-
-.settings-section-title:hover {
-  background: rgba(23, 87, 255, 0.04);
-}
-
-.settings-section-body {
-  display: grid;
-  gap: 12px;
-  padding: 4px 14px 14px;
-}
-
-/* Компактные поля ввода в настройках */
-.settings-body input[type="text"],
-.settings-body input[type="number"],
-.settings-body select {
-  font-size: 13px;
-  padding: 9px 12px;
-}
-
 .settings-option input[type="number"] {
   width: 96px;
   min-width: 0;
@@ -2236,11 +1756,6 @@ body.desktop-shell .object-editor-panel {
   line-height: 1.6;
 }
 
-.object-editor-toolbar {
-  display: flex;
-  justify-content: flex-end;
-}
-
 .object-editor-list {
   min-height: 0;
   overflow: auto;
@@ -2308,10 +1823,6 @@ body.desktop-shell .object-editor-panel {
   font-weight: 500;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-}
-
-.object-editor-label--compact {
-  max-width: none;
 }
 
 .object-editor-label--grow {
@@ -2713,10 +2224,6 @@ body.desktop-shell .object-editor-panel {
   color: #fff;
 }
 
-.chart-modal-actions--compact {
-  align-self: start;
-}
-
 .chart-modal-summary-card {
   width: 100%;
   border-radius: 18px;
@@ -2762,16 +2269,6 @@ body.desktop-shell .object-editor-panel {
 .chart-modal-panel .detail-title {
   font-size: 20px;
   line-height: 1;
-}
-
-.chart-modal-panel .detail-subtitle {
-  margin-top: 2px;
-  font-size: 12px;
-}
-
-.chart-modal-panel .plot-meta span {
-  padding: 5px 8px;
-  font-size: 11px;
 }
 
 .chart-modal-panel .badge {
@@ -2868,11 +2365,6 @@ body.desktop-shell .object-editor-panel {
   flex: none;
 }
 
-.chart-host--modal .wash-chart-x-axis {
-  padding-top: 10px;
-  padding-bottom: 8px;
-}
-
 .chart-host--modal .wash-chart-legend {
   padding: 0 14px 10px;
   gap: 12px 20px;
@@ -2949,64 +2441,6 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.detail-bottom-grid {
-  display: grid;
-  grid-template-columns: minmax(280px, 0.8fr) minmax(0, 1.2fr) minmax(280px, 0.8fr);
-  gap: 16px;
-  align-items: start;
-}
-
-.info-list {
-  margin-top: 14px;
-}
-
-.info-row,
-.operation-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: baseline;
-  padding: 11px 0;
-  border-bottom: 1px solid var(--line);
-}
-
-.info-row span,
-.operation-name,
-.related-name {
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.info-row strong {
-  max-width: 58%;
-  text-align: right;
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.related-row {
-  width: 100%;
-  height: auto;
-  display: grid;
-  gap: 4px;
-  margin-bottom: 10px;
-  padding: 12px 14px;
-  text-align: left;
-  border-radius: var(--radius-panel);
-  background: rgba(255, 255, 255, 0.9);
-  color: var(--text);
-  box-shadow: none;
-}
-
-.related-row:last-child {
-  margin-bottom: 0;
-}
-
-.related-row:hover {
-  background: rgba(23, 87, 255, 0.08);
-  color: var(--text);
 }
 
 .notice.error {
@@ -3229,55 +2663,6 @@ body.desktop-shell:not(.window-maximized) .chart-modal-mini-title {
   background: #ffffff;
   font-family: var(--font-sans);
   break-inside: avoid;
-}
-
-.chart-print-header {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10mm;
-  align-items: center;
-  padding-bottom: 2mm;
-  border-bottom: 1px solid #cfd8d3;
-}
-
-.chart-print-kicker,
-.chart-print-stamp span {
-  color: #5d6a63;
-  font-family: var(--font-mono);
-  font-size: 7.5pt;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.chart-print-title-block h1 {
-  margin: 1mm 0 0;
-  max-width: 190mm;
-  color: #111a16;
-  font-size: 14pt;
-  line-height: 1.1;
-  letter-spacing: 0;
-}
-
-.chart-print-title-block p {
-  margin-top: 1mm;
-  color: #3a463f;
-  font-size: 9pt;
-  font-weight: 700;
-  line-height: 1.3;
-}
-
-.chart-print-stamp {
-  min-width: 40mm;
-  text-align: right;
-}
-
-.chart-print-stamp strong {
-  display: block;
-  margin-top: 0.8mm;
-  color: #111a16;
-  font-size: 9.5pt;
-  line-height: 1.25;
 }
 
 /* Карточка-сводка повторяет вид окна просмотра графика
@@ -3512,13 +2897,6 @@ body.modal-export-mode .chart-print-document {
     padding: 16px;
   }
 
-  .dashboard-shell,
-  .detail-bottom-grid,
-  .welcome-hints,
-  .welcome-source-grid {
-    grid-template-columns: 1fr;
-  }
-
   .list-toolbar {
     grid-template-columns: 1fr;
   }
@@ -3542,14 +2920,6 @@ body.modal-export-mode .chart-print-document {
 
   .folder-form--ftp .welcome-form-grid {
     grid-template-columns: 1fr;
-  }
-
-  .folder-actions--ftp {
-    align-items: stretch;
-  }
-
-  .welcome-ftp-action-copy {
-    max-width: none;
   }
 
   .wash-screen,
@@ -3590,32 +2960,6 @@ body.modal-export-mode .chart-print-document {
     height: auto;
     min-height: 69px;
     padding: 16px;
-  }
-
-  .sidebar {
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-    height: auto;
-    overflow: visible;
-  }
-
-  .main-panel {
-    padding-top: 20px;
-    height: auto;
-    overflow: visible;
-  }
-
-  .dashboard-shell {
-    height: auto;
-    overflow: visible;
-  }
-
-  .plot-card {
-    position: static;
-  }
-
-  .plot-frame {
-    min-height: 420px;
   }
 
   .chart-modal-panel {
@@ -3759,49 +3103,26 @@ body.modal-export-mode .chart-print-document {
   }
 
   .welcome-shell,
-  .main-panel,
-  .sidebar,
   .wash-screen {
     padding: 18px;
   }
 
   .welcome-card,
-  .plot-card,
   .wash-list-panel {
     border-radius: var(--radius-panel);
   }
 
   .folder-actions,
-  .main-header,
-  .card-head,
   .chart-modal-header,
   .screen-header,
-  .screen-header-buttons,
-  .info-row,
-  .operation-row {
+  .screen-header-buttons {
     grid-template-columns: 1fr;
     display: grid;
-  }
-
-  .welcome-advanced-toggle-button::after {
-    margin-left: 0;
-  }
-
-  .plot-frame {
-    min-height: 260px;
   }
 
   .chart-host,
   .wash-chart-svg {
     min-height: 0;
-  }
-
-  .plot-actions {
-    justify-content: stretch;
-  }
-
-  .plot-actions button {
-    width: 100%;
   }
 
   .chart-modal-panel {
@@ -3920,9 +3241,6 @@ body.modal-export-mode .chart-print-document {
 }
 
 /* Сохранённые FTP-панели на экране выбора источника */
-.ftp-saved {
-  margin-top: 6px;
-}
 .ftp-source-list {
   list-style: none;
   margin: 8px 0 0;
@@ -4013,13 +3331,6 @@ body.modal-export-mode .chart-print-document {
   font-size: 16px;
   font-weight: 600;
 }
-.ftp-connect-sub {
-  font-size: 12px;
-  color: var(--muted);
-  font-family: var(--font-mono);
-  margin-top: -6px;
-  overflow-wrap: anywhere;
-}
 .ftp-connect-field {
   display: grid;
   gap: 5px;
@@ -4034,19 +3345,6 @@ body.modal-export-mode .chart-print-document {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 4px;
-}
-/* Кнопка действия (WebView/Графики) в попапе панели — во всю ширину. */
-.ftp-connect-web {
-  width: 100%;
-}
-/* Разделитель между действиями в попапе. */
-.ftp-connect-divider {
-  margin-top: 4px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--muted);
-  border-top: 1px solid var(--line);
-  padding-top: 12px;
 }
 /* Сетка, а не flex: колонка с именем обязана ужиматься до многоточия. На flex
    она держала min-content, и «Weintek cMT-3C6F» переносился на две строки. */

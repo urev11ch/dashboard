@@ -1717,7 +1717,6 @@
 
   function applyWorkspacePayload(payload, { resetScroll = false } = {}) {
     appState.hasWorkspace = Boolean(payload?.has_analysis);
-    appState.hasAnalysis = Boolean(payload?.has_analysis);
     appState.displayRoot = String(payload?.display_root || "");
     appState.summary = payload?.summary || {};
     appState.error = String(payload?.error || "");
@@ -5251,7 +5250,7 @@
   }
 
   function isAnyOverlayOpen() {
-    return [modalRoot, printRoot, objectEditorRoot, settingsRoot, diagnosticsRoot].some(
+    return [modalRoot, printRoot, objectEditorRoot, settingsRoot, diagnosticsRoot, dbBrowserRoot].some(
       (root) => root && !root.hidden
     );
   }

@@ -15,7 +15,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from webapp.io_utils import read_json_object
 
 OBJECT_NAMES_FILENAME = "wash_object_names.json"
 PROGRAM_NAMES_FILENAME = "wash_program_names.json"
@@ -698,73 +697,6 @@ def preflight_db_file(db_path: Path) -> int:
 
 def fallback_object_name(object_id: int) -> str:
     return f"Объект {object_id}"
-
-def object_name_override_key(channel: int, object_id: int) -> str:
-    return f"{channel}:{object_id}"
-
-def parse_object_name_override_key(raw_key: str) -> tuple[int, int] | None:
-    parts = str(raw_key).split(":", 1)
-    if len(parts) != 2:
-        return None
-
-    try:
-        channel = int(parts[0])
-        object_id = int(parts[1])
-    except ValueError:
-        return None
-
-    if channel <= 0 or object_id < 0:
-        return None
-    return channel, object_id
-
-def load_object_name_overrides_from_file(path: Path) -> dict[tuple[int, int], str]:
-    # Общий помощник инкапсулирует чтение JSON-объекта: нет файла → {} (обычный
-    # первый запуск), битый/не-объект → {} с предупреждением в лог, чтобы потеря
-    # ВСЕХ пользовательских имён объектов не прошла молча.
-    payload = read_json_object(path, warn_on_corrupt=True)
-
-    raw_objects = payload.get("objects")
-    if not isinstance(raw_objects, dict):
-        return {}
-
-    overrides: dict[tuple[int, int], str] = {}
-    for raw_key, raw_value in raw_objects.items():
-        parsed_key = parse_object_name_override_key(str(raw_key))
-        if parsed_key is None:
-            continue
-
-        value = str(raw_value or "").strip()
-        if not value:
-            continue
-        overrides[parsed_key] = value
-
-    return overrides
-
-def find_nearest_object_names_file(db_path: Path) -> Path | None:
-    for parent in [db_path.parent, *db_path.parents]:
-        candidate = parent / OBJECT_NAMES_FILENAME
-        if candidate.is_file():
-            return candidate.resolve()
-    return None
-
-def load_object_name_overrides_for_db_files(
-    db_files: Sequence[Path],
-    *,
-    object_names_file: Path | str | None = None,
-) -> dict[tuple[int, int], str]:
-    if object_names_file is not None:
-        explicit_path = Path(object_names_file).expanduser().resolve()
-        return load_object_name_overrides_from_file(explicit_path)
-
-    merged_overrides: dict[tuple[int, int], str] = {}
-    seen_files: set[Path] = set()
-    for db_path in db_files:
-        candidate = find_nearest_object_names_file(db_path.resolve())
-        if candidate is None or candidate in seen_files:
-            continue
-        seen_files.add(candidate)
-        merged_overrides.update(load_object_name_overrides_from_file(candidate))
-    return merged_overrides
 
 # ---- названия программ мойки ------------------------------------------------
 # Названия программ задаёт пользователь: в архиве панели лежит только номер

@@ -202,8 +202,6 @@ FTP_CONNECTION_ID_RE = re.compile(r"^[0-9a-f]{12}$")
 # Папка удаляемого профиля: пока рабочий поток мог держать в ней файлы, она
 # переименовывается в `<id>.deleted-<uuid>` и удаляется отложенно.
 DELETED_PROFILE_DIR_RE = re.compile(r"\.deleted-[0-9a-f]{32}$")
-# Сколько ждём завершения рабочего потока перед удалением папки профиля.
-PROFILE_DELETE_JOIN_TIMEOUT_SECONDS = 30.0
 # Штатная учётка выгрузки истории у Weintek (EasyBuilder Pro, Chapter 32):
 # всегда `uploadhis`, пароль — [history upload password] панели, заводской 111111.
 # Имя в приложении не редактируется — подключение = IP + PORT + PASS.
@@ -231,8 +229,6 @@ FTP_DISCOVERY_MAX_NETWORKS = 4
 # отдавать дженерик Pure-FTPd без этих слов). Опознаётся только для сортировки/
 # пометки; в список попадают все FTP-хосты.
 FTP_WEINTEK_HINTS = ("weintek", "cmt", "easybuilder", "ftpdmini", "hmi")
-# Папки данных на панели (Data Sampling / алармы / рецепты).
-FTP_WEINTEK_MARKER_DIRS = ("datalog", "eventlog", "recipe")
 # Надёжное опознание панели — по её веб-интерфейсу EasyWeb: GET / отдаёт
 # SPA-оболочку cMT с этими маркерами. Работает БЕЗ FTP-пароля и при TLS, поэтому
 # это основной признак панели (баннер FTP — лишь мягкий запасной). Пробуем и
@@ -249,7 +245,6 @@ HTTP_EASYWEB_MARKERS = ("easywebconfig", "icon-weintek", "<title>cmt</title>")
 WEINTEK_MAC_PREFIXES = ("00:0c:26",)
 
 PORTABLE_ENV_VAR = "OPTICIP_PORTABLE"
-APP_DATA_SUBDIRS = ("datalog", "temp")
 
 # Строки, трактуемые как «ложь/выключено» (env-флаги, поле passive из формы).
 # Пустую строку сюда НЕ включаем: parse_bool_flag отдаёт default ещё до проверки

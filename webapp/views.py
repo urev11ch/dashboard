@@ -267,8 +267,13 @@ def concentration_verdicts_cached(
     settings: dict[str, Any],
 ) -> dict[str, dict[str, Any] | None]:
     """Вердикты концентрации по cycle_key с кэшем. Сэмплы читаются только при
-    промахе (смена анализа или концентрационных настроек)."""
-    key = (analysis_revision, _concentration_settings_signature(settings))
+    промахе (смена анализа или концентрационных настроек).
+
+    Ключ — сам анализ (analysis_cache_key), а не analysis_revision: ревизия
+    растёт и при переименовании объекта/программы, а от имён вердикт не
+    зависит — иначе каждое переименование перечитывало с диска все мойки."""
+    analysis_identity = analysis.analysis_cache_key or ("revision", analysis_revision)
+    key = (analysis_identity, _concentration_settings_signature(settings))
     with _conc_verdicts_cache_lock:
         if _conc_verdicts_cache["key"] == key:
             return _conc_verdicts_cache["verdicts"]
@@ -358,19 +363,6 @@ def build_object_rows(
         )
 
     return rows
-
-
-def build_seed_object_name_overrides(
-    analysis: core.AnalysisResult,
-    overrides: dict[tuple[int, int], str] | None = None,
-) -> dict[tuple[int, int], str]:
-    seeded = dict(overrides or {})
-    for overview in sorted(analysis.overviews, key=lambda item: (item.channel, item.object_id, item.start_ts)):
-        key = (overview.channel, overview.object_id)
-        if key in seeded:
-            continue
-        seeded[key] = str(overview.object_name or "").strip() or fallback_object_name(overview.object_id)
-    return seeded
 
 
 def program_ids_seen(analysis: core.AnalysisResult | None) -> set[int]:
@@ -561,7 +553,6 @@ def page_context(request: Request, snapshot: AppStateSnapshot) -> dict[str, Any]
             # hasWorkspace = показан ли wash-экран (в меню он false, даже если
             # рабочая область загружена) — по нему wash-JS решает, стартовать ли.
             "hasWorkspace": wash_visible,
-            "hasAnalysis": analysis is not None,
             "displayRoot": workspace_payload["display_root"],
             "summary": workspace_payload["summary"],
             "error": workspace_payload["error"],

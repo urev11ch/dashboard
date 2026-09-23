@@ -48,28 +48,6 @@ def resolve_runtime_root() -> Path:
     return Path.home() / ".local" / "state" / LINUX_RUNTIME_DIRNAME
 
 
-def _resolve_windows_default_workspace_candidates() -> list[Path]:
-    candidates: list[Path] = [
-        Path(r"C:\Program Files\EBpro\HMI_memory\datalog"),
-    ]
-
-    for env_var in ("ProgramFiles", "ProgramFiles(x86)"):
-        base_dir = str(os.environ.get(env_var) or "").strip()
-        if not base_dir:
-            continue
-        candidates.append(Path(base_dir) / "EBpro" / "HMI_memory" / "datalog")
-
-    unique_candidates: list[Path] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        key = str(candidate).lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        unique_candidates.append(candidate)
-    return unique_candidates
-
-
 def _resolve_posix_cache_root() -> Path:
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Caches" / APP_DIRNAME
@@ -144,19 +122,3 @@ def resolve_log_root() -> Path:
     if sys.platform == "win32":
         return resolve_runtime_root() / "logs"
     return _resolve_posix_state_root() / "logs"
-
-
-def resolve_default_workspace_root() -> Path:
-    home = Path.home()
-
-    if sys.platform == "win32":
-        for candidate in _resolve_windows_default_workspace_candidates():
-            if candidate.exists():
-                return candidate
-
-        for dirname in ("Documents", "Desktop"):
-            candidate = home / dirname
-            if candidate.exists():
-                return candidate
-
-    return home

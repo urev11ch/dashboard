@@ -306,7 +306,7 @@ FTP/папка → распаковка архивов (кэш) → анализ
 - Выгрузка: `POST /api/wash-export` (тело `{"keys": [...]}`) → `.xlsx`;
   заголовки ответа `X-Export-Rows` и `X-Export-Missing` (сколько ключей не
   нашлось в текущем анализе).
-- Объекты: `POST /api/object-name`, `/api/object-names-file/sync`.
+- Объекты: `POST /api/object-name`.
 - Программы: `GET /api/program-names`, `POST /api/program-name`
   (`{program_id, name, mode}`, режимы `set|reset`).
 - Настройки/стили: `GET|POST /api/settings`, `GET|POST /api/chart-styles`.

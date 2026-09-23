@@ -132,7 +132,7 @@ def test_unavailable_samples_do_not_overwrite_existing_check_reason():
 def test_concentration_verdicts_cache_reuse(monkeypatch):
     # O1: вердикты концентрации кэшируются по (revision, концентрационные настройки).
     # Смена НЕ-концентрационной настройки (метки/тумблер) НЕ должна перечитывать
-    # сэмплы; смена нормы/допуска/ревизии — должна.
+    # сэмплы; смена нормы/допуска/анализа — должна.
     import types
 
     calls = {"n": 0}
@@ -146,7 +146,7 @@ def test_concentration_verdicts_cache_reuse(monkeypatch):
     app.views._conc_verdicts_cache["key"] = None
     app.views._conc_verdicts_cache["verdicts"] = {}
 
-    analysis = types.SimpleNamespace(sorted_cycles=["a", "b"])
+    analysis = types.SimpleNamespace(sorted_cycles=["a", "b"], analysis_cache_key="ws-1")
     base = {
         "concentration_eval_enabled": True,
         "concentration_norms": {"alkali": 2.0},
@@ -165,9 +165,16 @@ def test_concentration_verdicts_cache_reuse(monkeypatch):
     app.concentration_verdicts_cached(analysis, 1, {**base, "concentration_tolerance_percent": 15.0})
     assert calls["n"] == 2
 
-    # смена ревизии — пересчёт
+    # смена ревизии (переименование объекта/программы) — вердикт от имён не
+    # зависит, пересчёта нет
+    app.concentration_verdicts_cached(analysis, 1, base)
     calls["n"] = 0
     app.concentration_verdicts_cached(analysis, 2, base)
+    assert calls["n"] == 0
+
+    # другой анализ (новые архивы) — пересчёт
+    other = types.SimpleNamespace(sorted_cycles=["a", "b"], analysis_cache_key="ws-2")
+    app.concentration_verdicts_cached(other, 2, base)
     assert calls["n"] == 2
 
     # выключено — пустой словарь, сэмплы не читаются
