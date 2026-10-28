@@ -32,7 +32,18 @@
 9. **Диагностика/логи в UI** (просмотр `desktop.log`, статус фоновых задач).
 
 ## P3 — Тех-долг и качество
-10. **Разбить `app.js`** (~4.6k строк) на модули, как бэкенд.
+10. **Разбить `app.js`** (~5.3k строк) на модули, как бэкенд. Шаг 0 готов: файл переехал в
+    `static/js/main.js` и грузится как ES-модуль; `/static/js/*` отдаётся с `Cache-Control: no-cache`,
+    чтобы вложенные `import` (без `?v=`) не залипали в кэше WebView2 после обновления.
+    Шаг 1 готов: `js/core/` — `api.js`, `toast.js`, `format.js` (+ тесты Vitest).
+    Шаг 2 готов: стартовый экран (`welcome/`), `updates.js`, `job-status.js`, `core/desktop.js`,
+    `core/dialogs.js`, `core/clock.js`.
+    Шаг 3 готов: `db-browser.js`, `settings/diagnostics.js`, `core/overlays.js`; удалено мёртвое окно
+    `diagnosticsRoot`. Шаг 4 готов: `object-editor.js`, `settings/index.js`, `settings/chart-styles.js`,
+    `core/app-state.js`. Шаг 5 готов: `wash-modal.js`, `export.js`. Шаг 6 готов: `workspace/` (store,
+    cache, wash-list, result-visibility); модули окон импортируют состояние напрямую, через init —
+    только корни окон, beforeOpen, hydrateWorkspaceData и mountChart. Разбиение завершено; возможное
+    продолжение — вынести загрузку данных и клавиатуру из main.js, разбить openSettings по разделам.
 11. **CI кросс-платформенно** (часть тестов by-design падает на Windows — вынести).
 
 ---

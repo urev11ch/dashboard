@@ -353,7 +353,31 @@ FTP/папка → распаковка архивов (кэш) → анализ
 - `wash_export.py` — строки выгрузки журнала (`EXPORT_COLUMNS`) и книга.
 - `xlsx_writer.py` — минимальный писатель .xlsx (без внешних зависимостей).
 - `templates/index.html` — разметка (welcome / wash-screen).
-- `static/app.js` — весь UI (список, модалки, настройки, тосты, часы…).
+- `static/js/main.js` — весь UI (список, модалки, настройки, тосты, часы…). ES-модуль
+  (бывший `app.js`), разбивается на соседние модули в `static/js/` — см. ROADMAP.
+- `static/js/core/` — общие модули без зависимостей от состояния: `api.js` (fetch с
+  таймаутом, `apiJson`), `toast.js` (`showToast`, `runHandler`), `format.js` (даты, размеры,
+  концентрации — под Vitest, `tests/js/format.test.js`), `dialogs.js` (модальные POST-формы),
+  `desktop.js` (шапка окна, выбор папок через pywebview), `clock.js` (часы), `overlays.js`
+  (реестр модальных окон: порядок закрытия по Escape и класс `modal-open`; список задаёт `main.js`).
+- `static/js/db-browser.js` — просмотр сырых таблиц `.db`.
+- `static/js/object-editor.js` — редактор названий объектов и программ.
+- `static/js/wash-modal.js` — окно мойки: сводка, график (`mountChart`), соседние мойки.
+- `static/js/workspace/` — журнал моек: `store.js` (`state`, подписи потоков, индексы строк;
+  без DOM — под Vitest, `tests/js/store.test.js`), `cache.js` (кэши деталей/графика с
+  поколениями), `wash-list.js` (фильтры, периоды, сортировка, виртуализированный список),
+  `result-visibility.js` (показ колонки «Результат»).
+- `static/js/export.js` — печать и PDF (общий `printRoot`), выгрузка журнала в XLSX.
+- `static/js/settings/` — окно настроек: `index.js` (разделы и панель обновлений),
+  `chart-styles.js` (стили кривых), `diagnostics.js` (раздел «Диагностика»).
+- `static/js/core/app-state.js` — `appState` (данные страницы от сервера, общий объект).
+- Модули окон получают зависимости от `main.js` через `init…(root, deps)`: корневой
+  элемент (порядок окон в DOM задаёт наложение), `beforeOpen` и функции журнала моек.
+- `static/js/welcome/` — стартовый экран: `ftp-discovery.js` (поиск панелей),
+  `panels.js` (сохранённые панели, переход «графики ↔ WebView»).
+- `static/js/updates.js` — автообновление при старте и кнопка на стартовом экране.
+- `static/js/job-status.js` — плашка фоновой задачи (SSE + откат на опрос); действия с
+  рабочей областью по завершении получает от `main.js` параметром.
 - `static/wash-chart.js` — рендер SVG-графика, стили кривых.
 - `static/style.css` — стили.
 

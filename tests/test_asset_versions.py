@@ -24,7 +24,7 @@ def _refs():
 def test_template_has_static_refs():
     # Страховка от «зелёного» теста при сломанном регекспе или переезде шаблона.
     files = {m.group("file") for m in _refs()}
-    assert {"style.css", "app.js", "washjournal-icon.svg"} <= files
+    assert {"style.css", "js/main.js", "washjournal-icon.svg"} <= files
 
 
 @pytest.mark.parametrize("match", _refs(), ids=lambda m: m.group("file"))
@@ -32,3 +32,27 @@ def test_every_static_ref_is_versioned(match):
     assert match.group("suffix"), (
         f"{match.group('file')} подключён без ?v= — браузер закэширует его навсегда"
     )
+
+
+def _static_response(path):
+    import asyncio
+
+    import webapp.app as app
+
+    static = app._StaticFiles(directory=str(app.STATIC_DIR))
+    scope = {"type": "http", "method": "GET", "headers": []}
+    return asyncio.run(static.get_response(path, scope))
+
+
+def test_js_modules_are_revalidated():
+    # Вложенные import модулей грузятся без ?v= — без no-cache WebView2 после
+    # обновления подсунул бы старый модуль из кэша.
+    response = _static_response("js/main.js")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-cache"
+
+
+def test_other_static_keeps_default_caching():
+    response = _static_response("style.css")
+    assert response.status_code == 200
+    assert "cache-control" not in response.headers

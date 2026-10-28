@@ -818,12 +818,131 @@ def is_local_panel_url(url: str) -> bool:
     return host in _saved_panel_hosts()
 
 
+def _is_allowed_panel_frame_url(url: str) -> bool:
+    """Фреймы страницы панели: кроме адресов панели — локальные схемы без сети
+    (about:srcdoc, data:) и blob: от самой панели."""
+    if url.startswith(("about:", "data:")):
+        return True
+    if url.startswith("blob:"):
+        return is_local_panel_url(url[len("blob:"):])
+    return is_local_panel_url(url)
+
+
+def _guard_panel_navigation(window) -> None:
+    """Не даёт окну панели уйти с адресов панели.
+
+    is_local_panel_url проверяет только стартовый URL, а движок работает с
+    --ignore-certificate-errors: редирект, ссылка или iframe EasyWeb (либо
+    подменённый в цеховой сети ответ) загрузили бы внешний https без проверки
+    сертификата. Поэтому каждую навигацию — и страницы, и фреймов — сверяем тем
+    же фильтром и отменяем чужие. Новые окна pywebview и так отдаёт системному
+    браузеру (OPEN_EXTERNAL_LINKS_IN_BROWSER), где TLS цел.
+
+    Вызывать ДО показа окна: в работающем приложении create_window создаёт окно
+    синхронно, поэтому события вроде before_show к моменту подписки уже прошли."""
+
+    def blocked(target: str, args) -> None:
+        logging.warning("Окно панели: заблокирован переход на %s", target)
+        args.Cancel = True
+
+    def target_of(args) -> str:
+        try:
+            return str(args.Uri)
+        except Exception:  # noqa: BLE001 — без адреса пропускать нельзя
+            return ""
+
+    def on_frame_navigation_starting(_sender, args) -> None:
+        target = target_of(args)
+        if not _is_allowed_panel_frame_url(target):
+            blocked(target, args)
+
+    control = getattr(getattr(window, "native", None), "webview", None)
+    frames_guarded = False
+
+    def on_navigation_starting(_sender, args) -> None:
+        nonlocal frames_guarded
+        # Фреймы ловит только CoreWebView2 — он готов к первой навигации страницы,
+        # а фреймов раньше неё не бывает. Обработчик идёт в UI-потоке, где
+        # CoreWebView2 и разрешено трогать.
+        if not frames_guarded:
+            try:
+                control.CoreWebView2.FrameNavigationStarting += on_frame_navigation_starting
+                frames_guarded = True
+            except Exception:  # noqa: BLE001
+                logging.exception("Окно панели: не удалось перехватить навигацию фреймов")
+        target = target_of(args)
+        if target != "about:blank" and not is_local_panel_url(target):
+            blocked(target, args)
+
+    try:
+        control.NavigationStarting += on_navigation_starting
+        return
+    except Exception:  # noqa: BLE001 — иной бэкенд/версия pywebview
+        logging.warning("Окно панели: нет NavigationStarting, проверяю адрес после загрузки")
+
+    # Без перехвата хотя бы уводим окно с чужой страницы сразу после загрузки.
+    def on_loaded(window) -> None:
+        current = window.get_current_url() or ""
+        # Только http(s): своя заглушка (load_html) тоже вызовет loaded.
+        if current.startswith(("http://", "https://")) and not is_local_panel_url(current):
+            logging.warning("Окно панели: ушло на %s, страница закрыта", current)
+            window.load_html("<p>Переход за пределы панели заблокирован.</p>")
+
+    window.events.loaded += on_loaded
+
+
+def _open_installer_locked(path: Path):
+    """Открывает установщик на чтение так, чтобы до закрытия файла его нельзя
+    было ни перезаписать, ни удалить, ни переименовать.
+
+    Обычный open() на Windows открывает с FILE_SHARE_READ|FILE_SHARE_WRITE —
+    параллельная запись остаётся возможной. Здесь — CreateFileW только с
+    FILE_SHARE_READ (запуск .exe — это чтение/исполнение, ему он не мешает)."""
+    if os.name != "nt":
+        return open(path, "rb")  # noqa: SIM115 — закрывает вызывающий
+
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    GENERIC_READ = 0x80000000
+    FILE_SHARE_READ = 0x00000001
+    OPEN_EXISTING = 3
+    FILE_ATTRIBUTE_NORMAL = 0x80
+    INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    raw = kernel32.CreateFileW(
+        str(path), GENERIC_READ, FILE_SHARE_READ, None, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, None
+    )
+    if raw == INVALID_HANDLE_VALUE or raw is None:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        fd = msvcrt.open_osfhandle(raw, os.O_RDONLY | os.O_BINARY)
+    except OSError:
+        kernel32.CloseHandle(wintypes.HANDLE(raw))
+        raise
+    return os.fdopen(fd, "rb")
+
+
 class DesktopBridge:
     def __init__(self) -> None:
         self._window: webview.Window | None = None
         # Открытые окна WebView панелей по URL — чтобы не плодить дубли: повторный
         # «Веб-просмотр» разворачивает существующее окно, а не создаёт новое.
         self._panel_windows: dict[str, "webview.Window"] = {}
+        # Проверенный установщик, запертый от подмены до выхода (см. install_update).
+        self._installer_handle = None
         # Окно открывается в уменьшённом (не развёрнутом) режиме — см. center_on_open.
         # Состояние используется кастомной кнопкой «развернуть/восстановить».
         self._maximized = False
@@ -1124,57 +1243,76 @@ class DesktopBridge:
             if not expected_sha256:
                 logging.error("У готового обновления нет сохранённого sha256.")
                 return {"ok": False, "error": "Обновление не проверено, установка отменена."}
+            # Файл держим открытым с запретом записи/удаления/переименования
+            # (_open_installer_locked) от начала сверки и до выхода приложения: иначе
+            # подмена между хешированием и Popen всё равно прошла бы, а Inno Setup
+            # после запроса UAC перечитывает данные из этого же файла по пути
+            # (переименовать запущенный .exe Windows разрешает). Чтению установщиком
+            # дескриптор не мешает (FILE_SHARE_READ).
             try:
-                actual_digest = hashlib.sha256()
-                with open(installer, "rb") as handle:
+                handle = _open_installer_locked(installer)
+            except OSError as error:
+                logging.exception("Не удалось открыть установщик для проверки")
+                return {"ok": False, "error": f"Не удалось проверить установщик: {error}"}
+            launched = False
+            try:
+                try:
+                    actual_digest = hashlib.sha256()
                     for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                         actual_digest.update(chunk)
-                actual_sha256 = actual_digest.hexdigest()
-            except OSError as error:
-                logging.exception("Не удалось прочитать установщик для проверки")
-                return {"ok": False, "error": f"Не удалось проверить установщик: {error}"}
-            if not hmac.compare_digest(actual_sha256, expected_sha256):
-                logging.error(
-                    "sha256 установщика перед запуском не совпал: ожидали %s, получили %s",
-                    expected_sha256,
-                    actual_sha256,
+                    actual_sha256 = actual_digest.hexdigest()
+                except OSError as error:
+                    logging.exception("Не удалось прочитать установщик для проверки")
+                    return {"ok": False, "error": f"Не удалось проверить установщик: {error}"}
+                if not hmac.compare_digest(actual_sha256, expected_sha256):
+                    logging.error(
+                        "sha256 установщика перед запуском не совпал: ожидали %s, получили %s",
+                        expected_sha256,
+                        actual_sha256,
+                    )
+                    return {
+                        "ok": False,
+                        "error": "Установщик изменился после загрузки — запуск отменён.",
+                    }
+
+                logging.info("Запускаю установщик обновления %s: %s", version, installer)
+                proc = subprocess.Popen(  # noqa: S603 — путь наш, из проверенного состояния
+                    [
+                        str(installer),
+                        "/SILENT",
+                        "/NOCANCEL",
+                        "/RELAUNCH=1",
+                    ],
+                    env=_clean_pyinstaller_env(),
+                    close_fds=True,
                 )
-                return {
-                    "ok": False,
-                    "error": "Установщик изменился после загрузки — запуск отменён.",
-                }
 
-            logging.info("Запускаю установщик обновления %s: %s", version, installer)
-            proc = subprocess.Popen(  # noqa: S603 — путь наш, из проверенного состояния
-                [
-                    str(installer),
-                    "/SILENT",
-                    "/NOCANCEL",
-                    "/RELAUNCH=1",
-                ],
-                env=_clean_pyinstaller_env(),
-                close_fds=True,
-            )
-
-            # Ждём подтверждения, что установщик действительно поднялся. Раньше
-            # окно закрывалось по таймеру безусловно: оператор жал «Нет» в UAC —
-            # и приложение всё равно исчезало, ничего не установив и не подняв
-            # себя обратно через /RELAUNCH. Промах по UAC — рядовое событие.
-            deadline = time.monotonic() + INSTALLER_CONFIRM_WAIT
-            while time.monotonic() < deadline:
-                code = proc.poll()
-                if code is None:
-                    time.sleep(INSTALLER_POLL_INTERVAL)
-                    continue
-                if code == 0:
-                    # Тихая установка не может закончиться за секунды и при этом
-                    # успешно: скорее всего установщик передал работу другому
-                    # процессу. Закрываться не на чем — пусть оператор повторит.
-                    logging.warning("Установщик вышел с кодом 0, не начав установку.")
-                    return {"ok": False, "error": "Установщик завершился, не начав установку."}
-                error_text = _installer_exit_error(code)
-                logging.warning("Установщик завершился с кодом %s: %s", code, error_text)
-                return {"ok": False, "error": error_text}
+                # Ждём подтверждения, что установщик действительно поднялся. Раньше
+                # окно закрывалось по таймеру безусловно: оператор жал «Нет» в UAC —
+                # и приложение всё равно исчезало, ничего не установив и не подняв
+                # себя обратно через /RELAUNCH. Промах по UAC — рядовое событие.
+                deadline = time.monotonic() + INSTALLER_CONFIRM_WAIT
+                while time.monotonic() < deadline:
+                    code = proc.poll()
+                    if code is None:
+                        time.sleep(INSTALLER_POLL_INTERVAL)
+                        continue
+                    if code == 0:
+                        # Тихая установка не может закончиться за секунды и при этом
+                        # успешно: скорее всего установщик передал работу другому
+                        # процессу. Закрываться не на чем — пусть оператор повторит.
+                        logging.warning("Установщик вышел с кодом 0, не начав установку.")
+                        return {"ok": False, "error": "Установщик завершился, не начав установку."}
+                    error_text = _installer_exit_error(code)
+                    logging.warning("Установщик завершился с кодом %s: %s", code, error_text)
+                    return {"ok": False, "error": error_text}
+                launched = True
+            finally:
+                if launched:
+                    # Закроется вместе с процессом приложения.
+                    self._installer_handle = handle
+                else:
+                    handle.close()
         except Exception as error:  # noqa: BLE001
             logging.exception("Не удалось запустить установщик обновления")
             return {"ok": False, "error": f"Не удалось запустить установщик: {error}"}
@@ -1268,7 +1406,12 @@ class DesktopBridge:
         try:
             import webview
 
-            window = webview.create_window(title, url, width=1200, height=800)
+            # Скрытым: в работающем приложении create_window создаёт окно сразу
+            # (WebView2-контрол уже есть, а загрузка страницы асинхронна) — фильтр
+            # навигации ставим до того, как окно покажется и что-либо загрузит.
+            window = webview.create_window(title, url, width=1200, height=800, hidden=True)
+            _guard_panel_navigation(window)
+            window.show()
             self._panel_windows[url] = window
             try:
                 window.events.closed += lambda *_a: self._panel_windows.pop(url, None)

@@ -11,6 +11,7 @@ from __future__ import annotations
 import ftplib
 import hashlib
 import logging
+import math
 import os
 import posixpath
 import re
@@ -36,6 +37,7 @@ from webapp.config import (
 )
 from webapp.state import mirror_write_lock, state, state_lock
 from webapp.archives import safe_archive_member_path
+from webapp.io_utils import atomic_write_bytes
 from webapp.ftp_registry import (
     connection_to_config,
     find_ftp_connection,
@@ -387,6 +389,43 @@ def cleanup_old_archives(root_path: Path, retention_days: int) -> dict[str, int]
     return {"removed": removed, "freed_bytes": freed}
 
 
+# Граница ручной очистки («Очистить сейчас»): файлы панели старше неё больше не
+# скачиваются. Без неё при выключенной автоочистке синхронизация возвращала бы
+# всё, что пользователь только что удалил. Имя не похоже на архив — очистка и
+# сканеры его не трогают. Граница — от ПОСЛЕДНЕЙ ручной очистки (повторная с
+# большим сроком сдвигает её назад) и сбрасывается при смене настроек хранения:
+# так ошибочная очистка с малым сроком не запрещает скачивание навсегда.
+MANUAL_CLEANUP_CUTOFF_FILE = ".manual-cleanup-cutoff"
+
+
+def read_manual_cleanup_cutoff(root_path: Path) -> float | None:
+    try:
+        value = float((root_path / MANUAL_CLEANUP_CUTOFF_FILE).read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def write_manual_cleanup_cutoff(root_path: Path, cutoff: float) -> None:
+    try:
+        atomic_write_bytes(root_path / MANUAL_CLEANUP_CUTOFF_FILE, f"{cutoff:.0f}".encode("ascii"))
+    except OSError as exc:
+        logging.warning("Не удалось запомнить границу ручной очистки: %s", exc)
+
+
+def clear_manual_cleanup_cutoffs() -> None:
+    """Сбрасывает границы ручной очистки у всех панелей."""
+    try:
+        profiles = list(app_config.DATALOG_ROOT.iterdir())
+    except OSError:
+        return
+    for profile in profiles:
+        try:
+            (profile / MANUAL_CLEANUP_CUTOFF_FILE).unlink(missing_ok=True)
+        except OSError as exc:
+            logging.warning("Не удалось сбросить границу ручной очистки %s: %s", profile, exc)
+
+
 def directory_size_bytes(root_path: Path) -> int:
     return sum(stat_result.st_size for _path, _rel, stat_result in iter_tree_files(root_path))
 
@@ -532,12 +571,19 @@ def download_ftp_files(
 
     # При включённом ретеншне не качаем файлы старше срока хранения — иначе
     # удалённые очисткой архивы возвращались бы при каждой синхронизации.
+    # То же для файлов, удалённых вручную («Очистить сейчас»), — граница из профиля.
     settings = load_app_settings()
-    retention_cutoff = (
-        time.time() - settings["archive_retention_days"] * 86400
-        if settings["archive_retention_enabled"]
-        else None
-    )
+    retention_cutoffs = [
+        cutoff
+        for cutoff in (
+            time.time() - settings["archive_retention_days"] * 86400
+            if settings["archive_retention_enabled"]
+            else None,
+            read_manual_cleanup_cutoff(target_dir),
+        )
+        if cutoff is not None
+    ]
+    retention_cutoff = max(retention_cutoffs) if retention_cutoffs else None
     try:
         try:
             connection.voidcmd("TYPE I")

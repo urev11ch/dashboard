@@ -84,3 +84,22 @@ def test_blob_and_long_text_cells_are_shortened():
     assert shortened.endswith("…")
     assert db_browser.format_cell(None) is None
     assert db_browser.format_cell(3.5) == 3.5
+
+
+def test_format_cell_non_finite_float_is_json_safe():
+    import json
+
+    # JSONResponse сериализует с allow_nan=False: Inf/NaN дали бы 500.
+    cells = [db_browser.format_cell(float("inf")), db_browser.format_cell(float("nan"))]
+    assert cells == ["inf", "nan"]
+    json.dumps(cells, allow_nan=False)
+
+
+def test_column_comments_skips_broken_index():
+    connection = sqlite3.connect(":memory:")
+    connection.execute("CREATE TABLE data_format (data_format_index, comment)")
+    connection.executemany(
+        "INSERT INTO data_format VALUES (?, ?)",
+        [(0, "Температура"), (float("inf"), "Мусор"), ("x", "Мусор")],
+    )
+    assert db_browser.column_comments(connection) == {"data_format_0": "Температура"}

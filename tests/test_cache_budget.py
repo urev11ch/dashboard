@@ -68,11 +68,41 @@ def test_prune_evicts_directories_by_size(tmp_path):
 
 def test_prune_keeps_pending_temp_entries(tmp_path):
     # `<key>.tmp-<uuid>` — незавершённая распаковка в другом потоке, не трогаем.
-    pending = _write_entry(tmp_path, "abc.tmp-0123456789", 500, age_seconds=10 * 86400)
+    pending = _write_entry(tmp_path, "abc.tmp-0123456789", 500, age_seconds=60)
 
     app.prune_cache_root(tmp_path, ttl_seconds=10**9, max_bytes=1, max_entries=0)
 
     assert pending.exists()
+
+
+def test_prune_removes_abandoned_temp_entries(tmp_path):
+    # Процесс убили посреди распаковки — старый tmp никто не уберёт, кроме prune.
+    abandoned = _write_entry(tmp_path, "abc.tmp-0123456789", 500, age_seconds=10 * 86400)
+
+    app.prune_cache_root(tmp_path, ttl_seconds=10**9, max_bytes=1, max_entries=0)
+
+    assert not abandoned.exists()
+
+
+def test_prune_archive_cache_keeps_extraction_used_by_analysis(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(app.config, "ARCHIVE_CACHE_ROOT", tmp_path)
+    used_dir = tmp_path / "used-key"
+    used_dir.mkdir()
+    (used_dir / "Canal_1.db").write_bytes(b"x")
+    stamp = time.time() - 10**8  # старше любого TTL
+    os.utime(used_dir, (stamp, stamp))
+    monkeypatch.setattr(
+        app.state, "analysis", SimpleNamespace(db_files=[(used_dir / "Canal_1.db").resolve()])
+    )
+
+    app.cache.prune_archive_cache()
+    assert used_dir.exists()
+
+    monkeypatch.setattr(app.state, "analysis", None)
+    app.cache.prune_archive_cache()
+    assert not used_dir.exists()
 
 
 def test_touch_marks_entry_as_recently_used(tmp_path):
@@ -336,3 +366,52 @@ def test_unavailable_sample_stream_is_not_cached(tmp_path, monkeypatch):
         path.write_bytes(blob)
     # Кэш не должен помнить отказ — сэмплы обязаны прочитаться снова.
     assert core.analysis_samples_for_cycle(analysis, cycle)
+
+
+def test_prune_keeps_cache_hmac_key(tmp_path, monkeypatch):
+    # Ключ подписи не «используется» (mtime не обновляется): без защиты TTL/LRU
+    # удалили бы его первым, и весь кэш перестал бы проходить проверку подписи.
+    monkeypatch.setattr(app.config, "ANALYSIS_CACHE_ROOT", tmp_path)
+    key = _write_entry(tmp_path, "cache-hmac.key", 32, age_seconds=30 * 86400)
+    entry = _write_entry(tmp_path, "a.pkl", 100, age_seconds=60)
+
+    app.prune_cache_root(tmp_path, ttl_seconds=7 * 86400, max_bytes=10, max_entries=1000)
+
+    assert key.exists()
+    assert not entry.exists()
+
+
+def test_stale_archive_cache_kept_while_current_analysis_uses_it(tmp_path, monkeypatch):
+    # Архив перезаписали — у распаковки новый ключ. Старую нельзя удалять, пока на
+    # её базы ссылается текущий анализ (просмотрщик баз открывает их по пути).
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(app.config, "ARCHIVE_CACHE_ROOT", tmp_path)
+    monkeypatch.setattr(app.cache, "archive_cache_keys_by_source", app.OrderedDict())
+    archive = tmp_path / "src.zip"
+    old_dir = tmp_path / "old-key"
+    old_dir.mkdir()
+    (old_dir / "Canal_1.db").write_bytes(b"x")
+    app.cache.cleanup_stale_archive_cache(archive, "old-key")
+
+    monkeypatch.setattr(
+        app.state, "analysis", SimpleNamespace(db_files=[(old_dir / "Canal_1.db").resolve()])
+    )
+    app.cache.cleanup_stale_archive_cache(archive, "new-key")
+    assert old_dir.exists()
+
+    # Анализ сменился — прошлую распаковку теперь можно убрать при следующей смене.
+    monkeypatch.setattr(app.state, "analysis", None)
+    app.cache.cleanup_stale_archive_cache(archive, "newer-key")  # new-key не создавался
+
+
+def test_stale_archive_cache_removed_when_unused(tmp_path, monkeypatch):
+    monkeypatch.setattr(app.config, "ARCHIVE_CACHE_ROOT", tmp_path)
+    monkeypatch.setattr(app.cache, "archive_cache_keys_by_source", app.OrderedDict())
+    monkeypatch.setattr(app.state, "analysis", None)
+    archive = tmp_path / "src.zip"
+    old_dir = tmp_path / "old-key"
+    old_dir.mkdir()
+    app.cache.cleanup_stale_archive_cache(archive, "old-key")
+    app.cache.cleanup_stale_archive_cache(archive, "new-key")
+    assert not old_dir.exists()

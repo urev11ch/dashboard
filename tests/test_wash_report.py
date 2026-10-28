@@ -361,6 +361,7 @@ def test_read_samples_skips_broken_rows(tmp_path):
             (1000.0, 1.0, 60.0, 65.0, 2.0, 10.0, 6, 3, 4),
             (1001.0, "мусор", 60.0, 65.0, 2.0, 10.0, 6, 3, 4),
             (1002.0, 1.0, 60.0, 65.0, 2.0, 10.0, "мусор", 3, 4),
+            (1002.5, 1.0, 60.0, 65.0, 2.0, 10.0, float("inf"), 3, 4),  # OverflowError
             (1003.0, 1.1, 61.0, 66.0, 2.1, 10.1, 6, 3, 4),
         ],
     )
@@ -377,6 +378,25 @@ def test_connect_read_only_does_not_create_missing_file(tmp_path):
     else:
         connection.close()
     assert not missing.exists()
+
+
+def test_read_only_uri_network_path_has_empty_authority(tmp_path, monkeypatch):
+    monkeypatch.setattr(core.os, "name", "nt")
+    assert core.sqlite_read_only_uri("\\\\NAS\\datalog\\a.db") == "file:////NAS/datalog/a.db?mode=ro"
+    assert core.sqlite_read_only_uri("\\\\?\\UNC\\NAS\\d\\a.db") == "file:////NAS/d/a.db?mode=ro"
+    assert core.sqlite_read_only_uri("\\\\?\\C:\\d\\a.db") == "file:C:/d/a.db?mode=ro"
+    assert core.sqlite_read_only_uri("C:\\d\\a.db") == "file:C:/d/a.db?mode=ro"
+
+
+def test_connect_read_only_opens_double_slash_path(tmp_path):
+    # `//tmp/…` на POSIX — тот же файл; URI с пустой authority sqlite принимает.
+    db_path = tmp_path / "Canal_1.db"
+    _make_archive_db(db_path, [])
+    connection = core.connect_read_only("/" + str(db_path))
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM data").fetchone() == (0,)
+    finally:
+        connection.close()
 
 
 def test_connect_read_only_rejects_writes(tmp_path):
@@ -613,3 +633,32 @@ def test_read_samples_reports_broken_pages(tmp_path):
         assert "повреждён" in str(error)
     else:
         raise AssertionError("Ожидался SystemExit на повреждённых страницах")
+
+
+def test_connect_read_only_long_windows_path_keeps_prefix(tmp_path, monkeypatch):
+    # resolve() на Windows оставляет `\\?\` у путей длиннее MAX_PATH; без префикса
+    # sqlite такой файл не откроет, а в URI префикс не передать.
+    db_path = tmp_path / "Canal_1.db"
+    _make_archive_db(db_path, [])
+    long_path = "\\\\?\\C:\\" + "x" * 300 + "\\Canal_1.db"
+    opened = []
+    real_connect = sqlite3.connect
+
+    def fake_connect(target, *args, **kwargs):
+        opened.append((target, kwargs))
+        return real_connect(str(db_path))
+
+    monkeypatch.setattr(core.os, "name", "nt")
+    monkeypatch.setattr(core.os.path, "isfile", lambda path: path == long_path)
+    monkeypatch.setattr(core.sqlite3, "connect", fake_connect)
+
+    connection = core.connect_read_only(long_path)
+    try:
+        assert opened == [(long_path, {})]
+        with pytest.raises(sqlite3.OperationalError):
+            connection.execute("INSERT INTO data VALUES (1,1,1,1,1,1,1,1,1)")
+    finally:
+        connection.close()
+
+    with pytest.raises(sqlite3.OperationalError):
+        core.connect_read_only("\\\\?\\C:\\" + "y" * 300 + "\\missing.db")

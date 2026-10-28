@@ -52,6 +52,7 @@ from webapp.state import (  # noqa: F401
     ScanSummary,
     UpdateJob,
     WorkspaceJob,
+    mirror_write_lock,
     state,
     state_lock,
 )
@@ -164,6 +165,8 @@ from webapp.ftp_client import (  # noqa: F401
     is_ftp_profile,
     materialize_ftp_sources,
     open_ftp_connection,
+    clear_manual_cleanup_cutoffs,
+    write_manual_cleanup_cutoff,
     _ftp_list_entries,
     _ftp_relative_target,
     _is_archive_or_db_name,
@@ -246,8 +249,25 @@ async def _app_lifespan(_app: FastAPI):
         cleanup_stale_disk_caches()
 
 
+class _StaticFiles(StaticFiles):
+    """Статика с принудительной перепроверкой ES-модулей фронтенда.
+
+    js/main.js подключается с ?v=, но модули, которые он импортирует, грузятся
+    по голому пути — без ?v= WebView2 после обновления приложения отдал бы их
+    старые копии из кэша. no-cache заставляет перепроверять по ETag/Last-Modified:
+    сервер локальный, 304 почти ничего не стоит.
+    """
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        # path — с разделителями ОС (на Windows «js\\main.js»).
+        if path.replace("\\", "/").startswith("js/"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 app = FastAPI(title="Отчеты по мойкам", lifespan=_app_lifespan)
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+app.mount("/static", _StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 # Сервер не имеет аутентификации, а API даёт доступ к файловой системе
@@ -959,12 +979,18 @@ def update_app_settings_route(payload: dict[str, Any] = Body(...)) -> JSONRespon
     if not isinstance(source, dict):
         raise HTTPException(status_code=400, detail="Некорректное тело запроса.")
 
+    retention_keys = ("archive_retention_enabled", "archive_retention_days")
+    before = load_app_settings()
     try:
         settings = update_app_settings(source)
     except OSError as exc:
         raise HTTPException(
             status_code=500, detail=f"Не удалось сохранить настройки: {exc}"
         ) from exc
+    # Новые настройки хранения — новое решение пользователя: прежняя граница ручной
+    # очистки больше не должна мешать скачать то, что теперь укладывается в срок.
+    if any(before[key] != settings[key] for key in retention_keys):
+        clear_manual_cleanup_cutoffs()
 
     return JSONResponse({"ok": True, "settings": settings})
 
@@ -1053,22 +1079,20 @@ def get_diagnostics() -> JSONResponse:
 
 
 @app.post("/api/archives/cleanup")
-def cleanup_archives_now() -> JSONResponse:
-    settings = load_app_settings()
-    days = settings["archive_retention_days"]
+def cleanup_archives_now(payload: dict[str, Any] | None = Body(None)) -> JSONResponse:
+    # Срок берём из запроса — ровно тот, что пользователь видел в подтверждении;
+    # сохранённая настройка — только запасной вариант (старый клиент без тела).
+    days = (payload or {}).get("days")
+    if days is None:
+        days = load_app_settings()["archive_retention_days"]
+    # Только целое число: bool — подкласс int (true → 1 день, удалило бы почти всё),
+    # дробь молча обрезалась бы.
+    if isinstance(days, bool) or not isinstance(days, int):
+        raise HTTPException(status_code=400, detail="Некорректный срок хранения.")
+    days = max(ARCHIVE_RETENTION_MIN_DAYS, min(ARCHIVE_RETENTION_MAX_DAYS, days))
+
     with state_lock:
         target_root = state.selected_root or state.pending_root
-        job = state.workspace_job
-        job_active = job is not None and job.status in ACTIVE_JOB_STATUSES
-
-    # Удалять архивы под работающим анализом нельзя: файл исчезает прямо во время
-    # чтения и джоб падает. Очистка и так выполняется в конце каждой синхронизации.
-    if job_active:
-        raise HTTPException(
-            status_code=409,
-            detail="Идёт обработка источника. Дождитесь её завершения и повторите очистку.",
-        )
-
     if target_root is None:
         raise HTTPException(status_code=400, detail="Нет активного источника данных.")
     if not is_ftp_profile(target_root):
@@ -1076,7 +1100,33 @@ def cleanup_archives_now() -> JSONResponse:
             status_code=400, detail="Очистка доступна только для FTP-источника (папка datalog)."
         )
 
-    result = cleanup_old_archives(target_root, days)
+    busy = HTTPException(
+        status_code=409,
+        detail="Идёт обработка источника. Дождитесь её завершения и повторите очистку.",
+    )
+    # Удалять архивы под работающей синхронизацией/анализом нельзя: файл исчезает
+    # прямо во время чтения и джоб падает. Лок зеркала (тот же, что у писателя)
+    # берём ДО проверки джоба: джоб, стартовавший после проверки, встанет на этом
+    # локе в загрузке и проиндексирует уже очищенное зеркало.
+    try:
+        lock = mirror_write_lock(str(target_root.resolve()))
+    except OSError:
+        raise HTTPException(status_code=400, detail="Папка источника недоступна.") from None
+    if not lock.acquire(blocking=False):
+        raise busy
+    try:
+        with state_lock:
+            job = state.workspace_job
+            job_active = job is not None and job.status in ACTIVE_JOB_STATUSES
+        if job_active:
+            raise busy
+        result = cleanup_old_archives(target_root, days)
+        # Иначе при выключенной автоочистке следующая синхронизация скачала бы
+        # удалённое обратно.
+        write_manual_cleanup_cutoff(target_root, time.time() - days * 86400)
+    finally:
+        lock.release()
+
     if result["removed"]:
         with state_lock:
             state.last_cleanup_ts = time.time()

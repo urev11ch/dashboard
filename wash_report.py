@@ -562,12 +562,39 @@ def sqlite_read_only_uri(db_path: Path | str) -> str:
     https://www.sqlite.org/uri.html."""
     text = str(db_path)
     if os.name == "nt":
+        # Префикс длинных путей `\\?\` в URI не нужен (и `?` в нём сломал бы
+        # разбор): `\\?\UNC\srv\share` → `\\srv\share`, `\\?\C:\x` → `C:\x`.
+        if text.startswith("\\\\?\\UNC\\"):
+            text = "\\\\" + text[len("\\\\?\\UNC\\"):]
+        elif text.startswith("\\\\?\\"):
+            text = text[len("\\\\?\\"):]
         # На Windows sqlite ожидает в URI прямые слэши.
         text = text.replace("\\", "/")
     text = text.replace("%", "%25").replace("?", "%3f").replace("#", "%23")
+    if text.startswith("//"):
+        # Сетевой путь (`//NAS/share/…`, в т.ч. подключённый диск после
+        # resolve()): в `file://NAS/…` имя сервера стало бы authority URI, а
+        # sqlite принимает только пустую/localhost → «invalid uri authority».
+        # С пустой authority путь `//NAS/share/…` доходит до ОС как есть.
+        return f"file://{text}?mode=ro"
     return f"file:{text}?mode=ro"
 
+# Длиннее этого путь открывается в Windows только с префиксом `\\?\` (если в
+# системе не включены длинные пути), а в sqlite URI префикс не передать.
+WINDOWS_MAX_PATH = 260
+
+
 def connect_read_only(db_path: Path | str) -> sqlite3.Connection:
+    text = str(db_path)
+    if os.name == "nt" and text.startswith("\\\\?\\") and len(text) - 4 >= WINDOWS_MAX_PATH:
+        # Длинный путь: открываем по самому пути с префиксом (без URI) и
+        # запрещаем запись прагмой. Обычный connect создал бы отсутствующий файл —
+        # поэтому сначала проверяем, что он есть.
+        if not os.path.isfile(text):
+            raise sqlite3.OperationalError("unable to open database file")
+        connection = sqlite3.connect(text)
+        connection.execute("PRAGMA query_only = ON")
+        return connection
     return sqlite3.connect(sqlite_read_only_uri(db_path), uri=True)
 
 def broken_db_exit(db_path: Path, error: Exception) -> SystemExit:
@@ -891,7 +918,7 @@ def read_samples(
                             program=int(float(row[at_program] or 0)),
                             object_id=int(float(row[at_object] or 0)),
                         )
-                    except (ValueError, TypeError):
+                    except (ValueError, TypeError, OverflowError):  # Overflow — int(float("inf"))
                         skipped_rows += 1
                         continue
                     samples.append(sample)

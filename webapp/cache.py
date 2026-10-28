@@ -42,7 +42,14 @@ from webapp.config import (
 )
 from webapp.archives import extract_archive_dbs
 from webapp.io_utils import atomic_write_bytes
-from webapp.state import analysis_cache_lock, archive_cache_lock, chart_payload_cache_lock
+# Порядок локов: archive_cache_lock → state_lock (под state_lock кэш не трогают).
+from webapp.state import (
+    analysis_cache_lock,
+    archive_cache_lock,
+    chart_payload_cache_lock,
+    state,
+    state_lock,
+)
 
 # Последний ключ кэша по источнику (архив / .db / рабочая папка) — чтобы удалять
 # предыдущую версию записи того же источника. Ограничены по размеру: раньше
@@ -110,23 +117,37 @@ def cache_entry_size_bytes(path: Path) -> int:
         return 0
 
 
+CACHE_HMAC_KEY_NAME = "cache-hmac.key"
+# Незавершённая распаковка/запись старше этого — брошена (процесс убили посреди
+# работы), а не пишется сейчас: её можно вытеснять, иначе она висит вечно.
+TMP_ENTRY_MAX_AGE_SECONDS = 6 * 3600
+
+
 def is_protected_cache_entry(path: Path) -> bool:
     """Служебные записи, которые нельзя вытеснять: рабочая папка отчётов лежит
-    внутри корня кэша, а незавершённые распаковки (`<key>.tmp-<uuid>`) пишет
-    другой поток — он сам за собой уберёт."""
+    внутри корня кэша, свежие незавершённые распаковки (`<key>.tmp-<uuid>`) пишет
+    другой поток — он сам за собой уберёт, а ключ подписи кэша обновляется
+    только при создании: по TTL/LRU он ушёл бы первым и обнулил весь кэш."""
     if ".tmp-" in path.name:
-        return True
-    return path.name == WEB_RUNTIME_OUTPUT_DIR.name and path.parent == app_config.ANALYSIS_CACHE_ROOT
+        try:
+            return time.time() - path.stat().st_mtime < TMP_ENTRY_MAX_AGE_SECONDS
+        except OSError:
+            return True
+    if path.parent != app_config.ANALYSIS_CACHE_ROOT:
+        return False
+    return path.name in (WEB_RUNTIME_OUTPUT_DIR.name, CACHE_HMAC_KEY_NAME)
 
 
-def cleanup_expired_cache_entries(cache_root: Path, ttl_seconds: int) -> None:
+def cleanup_expired_cache_entries(
+    cache_root: Path, ttl_seconds: int, keep: frozenset[str] = frozenset()
+) -> None:
     cutoff = time.time() - ttl_seconds
     try:
         candidates = list(cache_root.iterdir())
     except OSError:
         return
     for candidate in candidates:
-        if is_protected_cache_entry(candidate):
+        if candidate.name in keep or is_protected_cache_entry(candidate):
             continue
         try:
             if candidate.stat().st_mtime >= cutoff:
@@ -142,8 +163,9 @@ def prune_cache_root(
     ttl_seconds: int,
     max_bytes: int,
     max_entries: int,
+    keep: frozenset[str] = frozenset(),
 ) -> None:
-    """TTL + бюджет кэша с LRU-эвикцией.
+    """TTL + бюджет кэша с LRU-эвикцией. Записи из `keep` (по имени) не трогаем.
 
     Одного TTL недостаточно: ключи записей зависят от mtime+size исходников, а
     автообновление FTP идёт каждые несколько минут, поэтому за сутки набегают
@@ -151,7 +173,7 @@ def prune_cache_root(
     выбрасываем протухшее по TTL, затем, пока не уложились в бюджет по объёму и
     количеству, удаляем давно не используемые записи (mtime обновляется при
     каждом попадании в кэш, см. touch_cache_entry)."""
-    cleanup_expired_cache_entries(cache_root, ttl_seconds)
+    cleanup_expired_cache_entries(cache_root, ttl_seconds, keep)
 
     try:
         candidates = list(cache_root.iterdir())
@@ -161,7 +183,7 @@ def prune_cache_root(
     entries: list[tuple[float, int, Path]] = []
     total_bytes = 0
     for candidate in candidates:
-        if is_protected_cache_entry(candidate):
+        if candidate.name in keep or is_protected_cache_entry(candidate):
             continue
         try:
             mtime = candidate.stat().st_mtime
@@ -192,6 +214,7 @@ def prune_archive_cache() -> None:
             ttl_seconds=ARCHIVE_CACHE_TTL_SECONDS,
             max_bytes=ARCHIVE_CACHE_MAX_BYTES,
             max_entries=ARCHIVE_CACHE_MAX_ENTRIES,
+            keep=archive_cache_dirs_in_use(),
         )
 
 
@@ -221,9 +244,33 @@ def remember_cache_key(
     return previous_key
 
 
+def archive_cache_dirs_in_use() -> frozenset[str]:
+    """Имена распаковок, где лежат базы текущего анализа (их открывает просмотрщик
+    баз): ни смена версии архива, ни TTL/бюджет кэша не должны их удалять."""
+    with state_lock:
+        analysis = state.analysis
+    if analysis is None:
+        return frozenset()
+    try:
+        root = app_config.ARCHIVE_CACHE_ROOT.resolve()
+    except OSError:
+        return frozenset()
+    names: set[str] = set()
+    for db_path in analysis.db_files:
+        try:
+            names.add(Path(db_path).relative_to(root).parts[0])
+        except (ValueError, IndexError):
+            continue  # база не из распаковки
+    return frozenset(names)
+
+
 def cleanup_stale_archive_cache(source_path: Path, cache_key: str) -> None:
     previous_key = remember_cache_key(archive_cache_keys_by_source, str(source_path), cache_key)
     if previous_key is None:
+        return
+    # Прошлая распаковка ещё нужна, пока новый анализ не заменил текущий (или если
+    # его отменят): её добьют TTL/бюджет кэша, когда на неё перестанут ссылаться.
+    if previous_key in archive_cache_dirs_in_use():
         return
     remove_cache_entry(app_config.ARCHIVE_CACHE_ROOT / previous_key)
 
@@ -342,7 +389,7 @@ def cache_hmac_key() -> bytes:
     with _cache_hmac_key_lock:
         if _cache_hmac_key is not None:
             return _cache_hmac_key
-        key_path = app_config.ANALYSIS_CACHE_ROOT / "cache-hmac.key"
+        key_path = app_config.ANALYSIS_CACHE_ROOT / CACHE_HMAC_KEY_NAME
         try:
             existing = key_path.read_bytes()
             if len(existing) >= CACHE_HMAC_DIGEST_SIZE:

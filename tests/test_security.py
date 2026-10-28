@@ -140,7 +140,7 @@ def test_armed_rejects_wrong_token(monkeypatch):
 
 def test_armed_static_is_open_without_token(monkeypatch):
     monkeypatch.setattr(app, "_api_token", _TOKEN)
-    request = _make_request(_LOCAL, _LOCAL_HOST, path="/static/app.js")
+    request = _make_request(_LOCAL, _LOCAL_HOST, path="/static/js/main.js")
     assert _guard(request).status_code == 200
 
 

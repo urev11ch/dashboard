@@ -348,3 +348,37 @@ def test_install_update_without_ready_job_does_not_arm_timers(tmp_path, monkeypa
 
     assert result["ok"] is False
     assert _FakeTimer.started == []
+
+
+def test_install_update_keeps_installer_locked_after_launch(tmp_path, monkeypatch):
+    # Inno Setup после UAC перечитывает данные из файла по пути: запирать его только
+    # до Popen мало — дескриптор живёт до выхода приложения.
+    desktop = _arm_ready_update(tmp_path, monkeypatch)
+    bridge = desktop.DesktopBridge()
+
+    assert bridge.install_update() == {"ok": True}
+
+    assert bridge._installer_handle is not None
+    assert not bridge._installer_handle.closed
+    bridge._installer_handle.close()
+
+
+def test_install_update_releases_installer_on_failure(tmp_path, monkeypatch):
+    desktop = _arm_ready_update(tmp_path, monkeypatch)
+    opened = []
+    real_open = desktop._open_installer_locked
+
+    def tracking_open(path):
+        handle = real_open(path)
+        opened.append(handle)
+        return handle
+
+    monkeypatch.setattr(desktop, "_open_installer_locked", tracking_open)
+    app.state.update_job.sha256 = "0" * 64  # файл «подменён»
+    bridge = desktop.DesktopBridge()
+
+    result = bridge.install_update()
+
+    assert result["ok"] is False
+    assert bridge._installer_handle is None
+    assert len(opened) == 1 and opened[0].closed

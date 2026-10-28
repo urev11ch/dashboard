@@ -523,7 +523,7 @@ def page_context(request: Request, snapshot: AppStateSnapshot) -> dict[str, Any]
     asset_versions = {
         "style_css": asset_version("style.css"),
         "wash_chart_js": asset_version("wash-chart.js"),
-        "app_js": asset_version("app.js"),
+        "main_js": asset_version("js/main.js"),
         # Иконка тоже версионируется: favicon и титлбар кэшируются браузером и
         # WebView2 намертво, и после смены иконки показывалась бы прежняя.
         "icon_svg": asset_version("washjournal-icon.svg"),
@@ -553,7 +553,7 @@ def page_context(request: Request, snapshot: AppStateSnapshot) -> dict[str, Any]
             # hasWorkspace = показан ли wash-экран (в меню он false, даже если
             # рабочая область загружена) — по нему wash-JS решает, стартовать ли.
             "hasWorkspace": wash_visible,
-            # Для папки фоновый опрос обновлений не нужен (app.js); раньше ради
+            # Для папки фоновый опрос обновлений не нужен (js/main.js); раньше ради
             # этого поля грузилась вся диагностика.
             "sourceKind": (
                 "none"

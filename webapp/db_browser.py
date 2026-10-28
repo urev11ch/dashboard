@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import math
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -86,7 +87,10 @@ def list_tables(db_path: Path) -> list[dict[str, Any]]:
 
 
 def format_cell(value: Any) -> Any:
-    """Значение ячейки для JSON: BLOB — как размер, длинный текст — с обрезкой."""
+    """Значение ячейки для JSON: BLOB — как размер, длинный текст — с обрезкой.
+    Inf/NaN (неисправный канал) — текстом: JSONResponse их не сериализует (500)."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
     if value is None or isinstance(value, (int, float)):
         return value
     if isinstance(value, (bytes, bytearray, memoryview)):
@@ -114,8 +118,13 @@ def column_comments(connection: sqlite3.Connection) -> dict[str, str]:
         if not row or row[0] is None:
             continue
         comment = str(row[1] or "").strip()
-        if comment:
-            labels[f"data_format_{int(row[0])}"] = comment
+        if not comment:
+            continue
+        try:
+            index = int(row[0])
+        except (TypeError, ValueError, OverflowError):  # мусор/Inf в индексе
+            continue
+        labels[f"data_format_{index}"] = comment
     return labels
 
 

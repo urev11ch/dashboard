@@ -370,3 +370,129 @@ def test_auto_update_is_enabled_by_default_and_can_be_turned_off():
     assert app.normalize_app_settings({"auto_update_enabled": False})["auto_update_enabled"] is False
     assert app.normalize_app_settings({"auto_update_enabled": "0"})["auto_update_enabled"] is False
     assert app.normalize_app_settings({"auto_update_enabled": "yes"})["auto_update_enabled"] is True
+
+
+# ---- ручная очистка архивов -------------------------------------------------
+def _ftp_profile_with_archives(tmp_path, monkeypatch):
+    import os
+    import time as _time
+
+    monkeypatch.setattr(app.config, "TEMP_ROOT", tmp_path / "temp")
+    datalog = tmp_path / "datalog"
+    monkeypatch.setattr(app.config, "DATALOG_ROOT", datalog)
+    profile = datalog / "panel1"
+    now = _time.time()
+    files = {}
+    for name, age_days in (("old.db", 400), ("mid.db", 40), ("fresh.db", 5)):
+        path = profile / "2026-01" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+        os.utime(path, (now - age_days * 86400, now - age_days * 86400))
+        files[name] = path
+    app.state.selected_root = profile.resolve()
+    return profile, files
+
+
+def test_cleanup_now_uses_days_from_request(tmp_path, monkeypatch):
+    # Сохранённая настройка — 365 дней, но в подтверждении пользователь видел 30:
+    # удалить нужно ровно по показанному сроку.
+    profile, files = _ftp_profile_with_archives(tmp_path, monkeypatch)
+    response = app.cleanup_archives_now({"days": 30})
+    body = json.loads(response.body)
+    assert body["days"] == 30 and body["removed"] == 2
+    assert not files["old.db"].exists() and not files["mid.db"].exists()
+    assert files["fresh.db"].exists()
+
+
+def test_cleanup_now_remembers_cutoff_so_sync_does_not_restore(tmp_path, monkeypatch):
+    # Автоочистка выключена: без запомненной границы синхронизация скачала бы
+    # удалённые файлы обратно.
+    import time as _time
+
+    profile, _files = _ftp_profile_with_archives(tmp_path, monkeypatch)
+    app.cleanup_archives_now({"days": 30})
+    cutoff = app.ftp_client.read_manual_cleanup_cutoff(profile)
+    assert cutoff is not None and abs(cutoff - (_time.time() - 30 * 86400)) < 60
+
+    old_stamp = _time.strftime("%Y%m%d%H%M%S", _time.gmtime(_time.time() - 100 * 86400))
+    new_stamp = _time.strftime("%Y%m%d%H%M%S", _time.gmtime(_time.time() - 86400))
+
+    class _FTP:
+        retr_calls = []
+
+        def voidcmd(self, cmd):
+            return "200 OK"
+
+        def mlsd(self, path):
+            yield "old.db", {"type": "file", "size": "1", "modify": old_stamp}
+            yield "new.db", {"type": "file", "size": "1", "modify": new_stamp}
+
+        def retrbinary(self, cmd, callback):
+            self.retr_calls.append(cmd.rsplit("/", 1)[-1])
+            callback(b"x")
+
+        def quit(self):
+            pass
+
+        def close(self):
+            pass
+
+    fake = _FTP()
+    monkeypatch.setattr(app.ftp_client, "open_ftp_connection", lambda config: fake)
+    app.download_ftp_files({"host": "h", "port": 21, "path": "/"}, profile)
+    assert fake.retr_calls == ["new.db"]
+
+
+def test_cleanup_now_refuses_while_mirror_is_written(tmp_path, monkeypatch):
+    profile, files = _ftp_profile_with_archives(tmp_path, monkeypatch)
+    lock = app.mirror_write_lock(str(profile.resolve()))
+    with lock:
+        with pytest.raises(app.HTTPException) as excinfo:
+            app.cleanup_archives_now({"days": 30})
+    assert excinfo.value.status_code == 409
+    assert files["old.db"].exists()
+
+
+def test_cleanup_now_refuses_while_job_running(tmp_path, monkeypatch):
+    profile, files = _ftp_profile_with_archives(tmp_path, monkeypatch)
+    app.state.workspace_job = app.WorkspaceJob(id="x", status="running")
+    with pytest.raises(app.HTTPException) as excinfo:
+        app.cleanup_archives_now({"days": 30})
+    assert excinfo.value.status_code == 409
+    assert files["old.db"].exists()
+    # лок зеркала отпущен — следующая попытка не залипает
+    assert app.mirror_write_lock(str(profile.resolve())).acquire(blocking=False)
+    app.mirror_write_lock(str(profile.resolve())).release()
+
+
+@pytest.mark.parametrize("days", [True, False, 30.5, "30", [30]])
+def test_cleanup_now_rejects_non_integer_days(tmp_path, monkeypatch, days):
+    # int(True) == 1: такой запрос удалил бы почти все архивы.
+    _profile, files = _ftp_profile_with_archives(tmp_path, monkeypatch)
+    with pytest.raises(app.HTTPException) as excinfo:
+        app.cleanup_archives_now({"days": days})
+    assert excinfo.value.status_code == 400
+    assert files["mid.db"].exists()
+
+
+def test_manual_cutoff_moves_back_and_resets_on_retention_change(tmp_path, monkeypatch):
+    import time as _time
+
+    profile, _files = _ftp_profile_with_archives(tmp_path, monkeypatch)
+    read = app.ftp_client.read_manual_cleanup_cutoff
+
+    app.cleanup_archives_now({"days": 1})
+    short = read(profile)
+    # Повторная очистка с бОльшим сроком сдвигает границу назад, а не держит старую.
+    app.cleanup_archives_now({"days": 300})
+    assert read(profile) < short
+    assert abs(read(profile) - (_time.time() - 300 * 86400)) < 60
+
+    # Смена настроек хранения сбрасывает границу.
+    app.update_app_settings_route({"archive_retention_days": 200})
+    assert read(profile) is None
+
+    # Прочие настройки её не трогают.
+    app.cleanup_archives_now({"days": 30})
+    app.update_app_settings_route({"ftp_auto_refresh_minutes": 7})
+    assert read(profile) is not None
