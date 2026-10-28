@@ -1,5 +1,13 @@
 import { test, expect } from "@playwright/test";
 
+// «Подключиться» — обычный POST с редиректом на /?view=menu. Кнопка WebView в
+// новой разметке видна раньше, чем отработают ES-модули (они грузятся отложенно
+// и навешивают обработчики в main()), и мгновенный клик уходил в пустоту.
+// waitForURL ждёт события load, а оно наступает после выполнения модулей.
+async function waitForMenuReady(page) {
+  await page.waitForURL(/[?&]view=menu/);
+}
+
 // Флоу панели: поиск → «Добавить панель» (сохранение) → сохранённая панель →
 // «Подключиться» → выбор «Веб-просмотр»/«Графики». Обнаружение мокаем.
 const DISCOVER = {
@@ -165,6 +173,7 @@ test.describe("сохранённая панель", () => {
 
     await page.goto("/");
     await page.click(".ftp-source-item button:has-text('Подключиться')");
+    await waitForMenuReady(page);
     await page.locator(".ftp-source-item").getByRole("button", { name: "WebView" }).click();
 
     await expect
@@ -193,6 +202,7 @@ test.describe("сохранённая панель", () => {
 
     await page.goto("/");
     await page.click(".ftp-source-item button:has-text('Подключиться')");
+    await waitForMenuReady(page);
     const wv = page.locator(".ftp-source-item").getByRole("button", { name: "WebView" });
     await wv.click(); // обычный клик → окно приложения
     await wv.click({ modifiers: ["Control"] }); // Ctrl+клик → браузер
