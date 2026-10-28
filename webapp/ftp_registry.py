@@ -20,6 +20,7 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 from webapp import config as app_config
+from webapp.equipment import normalize_equipment
 from webapp import state as state_module
 from webapp.config import (
     DELETED_PROFILE_DIR_RE,
@@ -77,7 +78,11 @@ def save_ftp_sources_registry(registry: dict[str, Any]) -> None:
         pass
 
 
-def upsert_ftp_connection(config: dict[str, Any], label: str = "") -> dict[str, Any]:
+def upsert_ftp_connection(
+    config: dict[str, Any], label: str = "", equipment: str | None = None
+) -> dict[str, Any]:
+    """Сохраняет панель. equipment=None — тип прежней записи (повторное
+    сохранение той же панели не должно сбрасывать ПОУ в CIP)."""
     conn_id = ftp_connection_id(config)
     entry = {
         "id": conn_id,
@@ -92,6 +97,10 @@ def upsert_ftp_connection(config: dict[str, Any], label: str = "") -> dict[str, 
     }
     with ftp_sources_lock:
         registry = load_ftp_sources_registry()
+        previous = next((c for c in registry["connections"] if c.get("id") == conn_id), None)
+        entry["equipment"] = normalize_equipment(
+            equipment if equipment is not None else (previous or {}).get("equipment")
+        )
         registry["connections"] = [c for c in registry["connections"] if c.get("id") != conn_id]
         registry["connections"].append(entry)
         registry["active_id"] = conn_id
@@ -196,6 +205,18 @@ def rename_ftp_connection(conn_id: str, label: str) -> bool:
     return updated
 
 
+def set_ftp_equipment(conn_id: str, equipment: str) -> bool:
+    """Меняет тип оборудования панели (CIP/ПОУ). True, если запись найдена."""
+    with ftp_sources_lock:
+        registry = load_ftp_sources_registry()
+        for conn in registry["connections"]:
+            if conn.get("id") == conn_id:
+                conn["equipment"] = normalize_equipment(equipment)
+                save_ftp_sources_registry(registry)
+                return True
+    return False
+
+
 def delete_ftp_connection(conn_id: str) -> None:
     with ftp_sources_lock:
         registry = load_ftp_sources_registry()
@@ -231,6 +252,7 @@ def list_ftp_sources_public() -> list[dict[str, Any]]:
                 "path": conn.get("path") or "/",
                 "username": conn.get("username") or "",
                 "web_scheme": conn.get("web_scheme") or "",
+                "equipment": normalize_equipment(conn.get("equipment")),
                 "active": conn.get("id") == registry.get("active_id"),
             }
         )

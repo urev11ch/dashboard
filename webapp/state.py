@@ -25,6 +25,30 @@ class ScanSummary:
     ftp_error: str = ""
     # Базы, пропущенные при анализе (повреждены/не подходят по структуре).
     skipped_db_files: list[str] = field(default_factory=list)
+    # Базы другого оборудования (архив ПОУ в источнике CIP и наоборот): не ошибка,
+    # а повод предложить открыть источник в другом режиме.
+    foreign_db_files: list[str] = field(default_factory=list)
+    foreign_equipment: str = ""
+
+
+@dataclass
+class PouColumn:
+    """Тег архива ПОУ: столбец `data_format_N` и его подпись на панели."""
+
+    column: str
+    label: str
+
+
+@dataclass
+class PouWorkspace:
+    """Открытый источник ПОУ: базы, их теги и общий диапазон времени. Сами
+    сэмплы не держим в памяти — тренд за период читается из баз по запросу."""
+
+    db_files: list[Path] = field(default_factory=list)
+    columns: list[PouColumn] = field(default_factory=list)
+    start_ts: float | None = None
+    end_ts: float | None = None
+    row_count: int = 0
 
 
 @dataclass
@@ -43,6 +67,10 @@ class WorkspaceJob:
     background: bool = False
     started_at: float = field(default_factory=time.time)
     finished_at: float | None = None
+    # Режим обработки (CIP — разбор моек, ПОУ — описание трендов) и источник
+    # («ftp:<id>» / «folder:<id>», пусто — разовая папка), для статистики карточек.
+    equipment: str = "cip"
+    source_key: str = ""
 
 
 @dataclass
@@ -89,6 +117,13 @@ class AppState:
     # Панель, выбранная кнопкой «Подключиться» (зелёная строка + WebView/Графики/
     # Отключить в меню). Сессионное состояние, одна панель одновременно.
     connected_ftp_id: str = ""
+    # Режим открытой рабочей области: CIP (analysis) или ПОУ (pou_workspace).
+    workspace_equipment: str = "cip"
+    workspace_source_key: str = ""
+    pou_workspace: PouWorkspace | None = None
+    # Несовпадение типа: в источнике нет баз выбранного режима, но есть базы
+    # другого — {"equipment": "pou", "count": 3, "source_key": "...", ...}.
+    equipment_mismatch: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -105,6 +140,10 @@ class AppStateSnapshot:
     scan_summary: ScanSummary
     workspace_job_payload: dict[str, Any]
     connected_ftp_id: str
+    workspace_equipment: str = "cip"
+    workspace_source_key: str = ""
+    pou_workspace: PouWorkspace | None = None
+    equipment_mismatch: dict[str, Any] | None = None
 
 
 # Статусы рабочего джоба анализа, при которых он ещё «живой»: идёт или получил

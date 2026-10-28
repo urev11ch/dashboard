@@ -35,6 +35,13 @@ from webapp.config import (
     WORKSPACE_JOB_JOIN_TIMEOUT_SECONDS,
 )
 from webapp.state import ACTIVE_JOB_STATUSES, ScanSummary, WorkspaceJob, state, state_lock
+from webapp.equipment import (
+    EQUIPMENT_LABELS,
+    EQUIPMENT_POU,
+    normalize_equipment,
+    split_db_files_by_equipment,
+)
+from webapp.pou import describe_pou_files
 from webapp.io_utils import format_file_list
 from webapp.cache import (
     clear_chart_payload_cache,
@@ -68,6 +75,25 @@ def is_ignored_workspace_dir(path: Path, ignored_paths: set[Path]) -> bool:
         return False
 
 
+class EquipmentMismatchError(Exception):
+    """В источнике нет баз выбранного режима, зато есть базы другого оборудования
+    (открыли архив ПОУ как CIP или наоборот)."""
+
+    def __init__(self, equipment: str, files: list[str]):
+        self.equipment = equipment
+        self.files = files
+        other_label = EQUIPMENT_LABELS[equipment]
+        super().__init__(
+            f"В источнике нет архивов этого типа, но найдены архивы {other_label} "
+            f"({len(files)}): {format_file_list(files)}. Откройте источник в режиме {other_label}."
+        )
+
+
+def workspace_has_data_locked() -> bool:
+    """Открыта ли рабочая область (журнал CIP или тренды ПОУ); под state_lock."""
+    return state.analysis is not None or state.pou_workspace is not None
+
+
 def finish_workspace_job_cancelled(job_id: str, message: str) -> dict[str, Any] | None:
     with state_lock:
         job = state.workspace_job
@@ -81,7 +107,7 @@ def finish_workspace_job_cancelled(job_id: str, message: str) -> dict[str, Any] 
         state.pending_root = None
         state.pending_display_root = ""
 
-        if state.analysis is None:
+        if not workspace_has_data_locked():
             state.selected_root = None
             state.selected_display_root = ""
             state.scan_summary = ScanSummary()
@@ -103,7 +129,7 @@ def finish_workspace_job_failed(job_id: str, message: str) -> dict[str, Any] | N
         state.pending_display_root = ""
         state.error = message
 
-        if state.analysis is None:
+        if not workspace_has_data_locked():
             state.selected_root = None
             state.selected_display_root = ""
             state.scan_summary = ScanSummary()
@@ -537,6 +563,28 @@ def run_workspace_job(
                 "В выбранном источнике не найдено ни одной базы `.db` ни в папке, ни в поддерживаемых архивах, ни на FTP."
             )
 
+        with state_lock:
+            job = state.workspace_job
+            equipment = normalize_equipment(job.equipment if job and job.id == job_id else "")
+        db_files, foreign_db_files, dropped_db_files, foreign_equipment = split_db_files_by_equipment(
+            db_files, equipment
+        )
+        scan_summary.foreign_db_files = sorted(path.name for path in foreign_db_files)
+        scan_summary.foreign_equipment = foreign_equipment if foreign_db_files else ""
+        if not db_files and foreign_db_files:
+            raise EquipmentMismatchError(foreign_equipment, scan_summary.foreign_db_files)
+
+        if equipment == EQUIPMENT_POU:
+            run_pou_workspace_job(
+                job_id,
+                target_root,
+                db_files,
+                scan_summary,
+                skipped=[path.name for path in dropped_db_files],
+                cancel_check=cancel_check,
+            )
+            return
+
         analysis, skipped_db_files = analyze_db_files_incremental(
             db_files,
             output_dir=config.WEB_RUNTIME_OUTPUT_DIR,
@@ -566,6 +614,10 @@ def run_workspace_job(
             state.scan_summary = scan_summary
             state.error = None
             state.last_sync_ts = time.time()
+            state.pou_workspace = None
+            state.workspace_equipment = job.equipment
+            state.workspace_source_key = job.source_key
+            state.equipment_mismatch = None
             clear_chart_payload_cache()
 
             job.target_root = target_root
@@ -576,6 +628,17 @@ def run_workspace_job(
             job.finished_at = time.time()
     except core.AnalysisCancelledError:
         finish_workspace_job_cancelled(job_id, "Обработка источника отменена.")
+    except EquipmentMismatchError as exc:
+        with state_lock:
+            job = state.workspace_job
+            if job is not None and job.id == job_id:
+                state.equipment_mismatch = {
+                    "equipment": exc.equipment,
+                    "count": len(exc.files),
+                    "files": exc.files[:20],
+                    "source_key": job.source_key,
+                }
+        finish_workspace_job_failed(job_id, str(exc))
     except SystemExit as exc:
         message = str(exc) or "Не удалось открыть выбранный источник."
         finish_workspace_job_failed(job_id, message)
@@ -583,12 +646,56 @@ def run_workspace_job(
         finish_workspace_job_failed(job_id, f"Не удалось открыть источник: {exc}")
 
 
+def run_pou_workspace_job(
+    job_id: str,
+    target_root: Path,
+    db_files: list[Path],
+    scan_summary: ScanSummary,
+    *,
+    skipped: list[str],
+    cancel_check: Callable[[], bool] | None = None,
+) -> None:
+    """Режим ПОУ: вместо разбора моек — описание баз (теги и диапазон времени).
+    Тренд за период строится по запросу из самих баз."""
+    workspace, broken = describe_pou_files(db_files, cancel_check=cancel_check)
+    scan_summary.skipped_db_files = sorted([*skipped, *broken])
+    if not workspace.db_files:
+        raise SystemExit("Ни одну базу ПОУ не удалось прочитать.")
+    with state_lock:
+        job = state.workspace_job
+        if job is None or job.id != job_id:
+            return
+        state.selected_root = target_root
+        state.pending_root = None
+        state.selected_display_root = job.display_target or str(target_root)
+        state.pending_display_root = ""
+        state.analysis = None
+        state.analysis_revision += 1
+        state.pou_workspace = workspace
+        state.workspace_equipment = job.equipment
+        state.workspace_source_key = job.source_key
+        state.equipment_mismatch = None
+        state.scan_summary = scan_summary
+        state.error = None
+        state.last_sync_ts = time.time()
+
+        job.target_root = target_root
+        job.status = "completed"
+        job.phase = "completed"
+        job.message = build_job_completion_message(scan_summary)
+        job.current = max(job.current, job.total)
+        job.finished_at = time.time()
+
+
 def start_workspace_job(
     candidate: Path,
     *,
     display_target: str | None = None,
     background: bool = False,
+    equipment: str | None = None,
+    source_key: str | None = None,
 ) -> None:
+    """equipment/source_key = None — те же, что у открытой области (обновление)."""
     # Активный рабочий поток живёт в state.py (см. там комментарий) — читаем/пишем
     # как атрибут модуля, чтобы ftp_registry видел актуальное значение.
     previous_thread = state_module._workspace_job_thread
@@ -598,16 +705,29 @@ def start_workspace_job(
         state.workspace_job.message = "Отменяю предыдущую обработку источника."
 
     resolved_candidate = candidate.resolve()
+    job_equipment = normalize_equipment(equipment if equipment is not None else state.workspace_equipment)
+    job_source_key = source_key if source_key is not None else state.workspace_source_key
+    # Смена режима (CIP ↔ ПОУ) или источника: прежняя область другого типа на
+    # экране остаться не должна — журнал CIP с трендами ПОУ не смешиваем.
+    if job_equipment != state.workspace_equipment:
+        state.analysis = None
+        state.pou_workspace = None
+        state.analysis_revision += 1
+    state.workspace_equipment = job_equipment
+    state.workspace_source_key = job_source_key
+    state.equipment_mismatch = None
     job = WorkspaceJob(
         id=uuid.uuid4().hex,
         target_root=resolved_candidate,
         display_target=display_target or str(resolved_candidate),
         background=background,
+        equipment=job_equipment,
+        source_key=job_source_key,
     )
     state.workspace_job = job
     state.pending_root = resolved_candidate
     state.pending_display_root = job.display_target
-    if state.analysis is None:
+    if not workspace_has_data_locked():
         state.selected_root = None
         state.selected_display_root = ""
         state.object_name_overrides = {}
@@ -635,7 +755,7 @@ def trigger_ftp_auto_refresh() -> bool:
             return False
 
         target_root = state.selected_root or state.pending_root
-        if target_root is None or state.analysis is None:
+        if target_root is None or not workspace_has_data_locked():
             return False
 
         if not is_ftp_profile(target_root):

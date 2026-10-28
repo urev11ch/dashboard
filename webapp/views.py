@@ -43,6 +43,9 @@ from webapp.settings_store import (
 from webapp.ftp_registry import list_ftp_sources_public
 from webapp.ftp_client import ftp_profile_stats, is_ftp_profile
 from webapp.chart_payload import SERIES_CONFIG
+from webapp.equipment import EQUIPMENT_LABELS, EQUIPMENT_TYPES, normalize_equipment
+from webapp.folder_sources import list_folder_sources
+from webapp.source_stats import format_ago, load_source_stats, panel_now_ts, summarize_for_card
 
 def resolve_workspace_input_value(
     selected_root: Path | None,
@@ -79,6 +82,8 @@ def copy_scan_summary(summary: ScanSummary) -> ScanSummary:
         ftp_failed_files=list(summary.ftp_failed_files),
         ftp_error=summary.ftp_error,
         skipped_db_files=list(summary.skipped_db_files),
+        foreign_db_files=list(summary.foreign_db_files),
+        foreign_equipment=summary.foreign_equipment,
     )
 
 
@@ -121,6 +126,76 @@ def build_menu_source_rows(
     return rows
 
 
+def ftp_source_key(conn_id: str) -> str:
+    return f"ftp:{conn_id}"
+
+
+def folder_source_key(folder_id: str) -> str:
+    return f"folder:{folder_id}"
+
+
+def build_source_cards(ftp_sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Карточки главного экрана: FTP-панели и сохранённые папки одним списком.
+
+    Сводка (последняя мойка, счётчики) — из последнего открытия источника
+    (source_stats); у ни разу не открытого её нет."""
+    stats = load_source_stats()
+    now_panel = panel_now_ts()
+    cards: list[dict[str, Any]] = []
+    for source in ftp_sources:
+        key = ftp_source_key(source["id"])
+        entry = stats.get(key)
+        mirror = ftp_profile_stats(source["id"])
+        archive_count = int(mirror["archive_count"])
+        if entry and entry.get("last_sync_ts"):
+            sync_line = f"Синхронизация {format_ago(entry['last_sync_ts'])}"
+        elif archive_count:
+            sync_line = f"Скачано архивов: {archive_count}"
+        else:
+            sync_line = "Ещё не синхронизировалась"
+        cards.append(
+            {
+                "kind": "ftp",
+                "id": source["id"],
+                "key": key,
+                "label": source.get("label") or source.get("host") or "Панель",
+                "address": str(source.get("host") or ""),
+                "equipment": normalize_equipment(source.get("equipment")),
+                "status": "ok" if entry and entry.get("last_sync_ts") else "off",
+                "sync_line": sync_line,
+                "summary": summarize_for_card(entry, now_panel),
+                "web_scheme": source.get("web_scheme") or "",
+                "kind_label": "FTP-панель",
+            }
+        )
+    for folder in list_folder_sources():
+        key = folder_source_key(folder["id"])
+        entry = stats.get(key)
+        if not folder["exists"]:
+            sync_line, status = "Папка не найдена", "warn"
+        elif entry and entry.get("opened_at"):
+            sync_line, status = f"Открывалась {format_ago(entry['opened_at'])}", "off"
+        else:
+            sync_line, status = "Ещё не открывалась", "off"
+        cards.append(
+            {
+                "kind": "folder",
+                "id": folder["id"],
+                "key": key,
+                "label": folder["label"],
+                "address": folder["path"],
+                "equipment": folder["equipment"],
+                "status": status,
+                "sync_line": sync_line,
+                "summary": summarize_for_card(entry, now_panel),
+                "web_scheme": "",
+                "kind_label": "Папка",
+            }
+        )
+    cards.sort(key=lambda card: (card["kind"] != "ftp", card["label"].lower()))
+    return cards
+
+
 def capture_state_snapshot() -> AppStateSnapshot:
     return AppStateSnapshot(
         analysis=state.analysis,
@@ -135,6 +210,10 @@ def capture_state_snapshot() -> AppStateSnapshot:
         scan_summary=copy_scan_summary(state.scan_summary),
         workspace_job_payload=serialize_job(state.workspace_job),
         connected_ftp_id=state.connected_ftp_id,
+        workspace_equipment=state.workspace_equipment,
+        workspace_source_key=state.workspace_source_key,
+        pou_workspace=state.pou_workspace,
+        equipment_mismatch=dict(state.equipment_mismatch) if state.equipment_mismatch else None,
     )
 
 
@@ -468,6 +547,19 @@ def build_workspace_payload(snapshot: AppStateSnapshot) -> dict[str, Any]:
         "warnings": build_scan_warnings(snapshot.scan_summary),
         "job_status": snapshot.workspace_job_payload,
         "tz_offset_min": local_tz_offset_min(),
+        "equipment": snapshot.workspace_equipment,
+        "source_key": snapshot.workspace_source_key,
+        # Базы другого оборудования в открытом источнике — баннер в журнале.
+        "foreign": (
+            {
+                "equipment": snapshot.scan_summary.foreign_equipment,
+                "equipment_label": EQUIPMENT_LABELS.get(snapshot.scan_summary.foreign_equipment, ""),
+                "count": len(snapshot.scan_summary.foreign_db_files),
+                "files": snapshot.scan_summary.foreign_db_files[:20],
+            }
+            if snapshot.scan_summary.foreign_db_files
+            else None
+        ),
     }
 
 
@@ -513,7 +605,14 @@ def page_context(request: Request, snapshot: AppStateSnapshot) -> dict[str, Any]
     # На экране меню (даже при загруженной области) wash-JS не должен стартовать —
     # его DOM отсутствует. Гейт `if (!hasWorkspace) return` смотрит на hasWorkspace.
     wash_visible = analysis is not None and not force_menu
-    menu_sources = [] if wash_visible else build_menu_source_rows(ftp_sources, connected_id)
+    pou_visible = snapshot.pou_workspace is not None and analysis is None and not force_menu
+    menu_visible = not wash_visible and not pou_visible
+    menu_sources = build_menu_source_rows(ftp_sources, connected_id) if menu_visible else []
+    source_cards = build_source_cards(ftp_sources) if menu_visible else []
+    mismatch = snapshot.equipment_mismatch
+    if mismatch:
+        mismatch = dict(mismatch)
+        mismatch["equipment_label"] = EQUIPMENT_LABELS.get(mismatch.get("equipment"), "")
     def asset_version(filename: str) -> int:
         try:
             return int((STATIC_DIR / filename).stat().st_mtime)
@@ -541,6 +640,15 @@ def page_context(request: Request, snapshot: AppStateSnapshot) -> dict[str, Any]
         "workspace_default_path": default_folder_path,
         "ftp_form_defaults": dict(DEFAULT_FTP_FORM_VALUES),
         "ftp_sources": menu_sources,
+        "source_cards": source_cards,
+        "equipment_types": [
+            {"id": eq, "label": EQUIPMENT_LABELS[eq], "count": sum(1 for c in source_cards if c["equipment"] == eq)}
+            for eq in EQUIPMENT_TYPES
+        ],
+        "menu_visible": menu_visible,
+        "pou_visible": pou_visible,
+        "equipment_mismatch": mismatch,
+        "workspace_equipment": snapshot.workspace_equipment,
         "force_menu": force_menu,
         "connected_id": connected_id,
         "app_version": APP_VERSION,
@@ -553,6 +661,10 @@ def page_context(request: Request, snapshot: AppStateSnapshot) -> dict[str, Any]
             # hasWorkspace = показан ли wash-экран (в меню он false, даже если
             # рабочая область загружена) — по нему wash-JS решает, стартовать ли.
             "hasWorkspace": wash_visible,
+            # Экран трендов ПОУ (свой JS, до гейта hasWorkspace).
+            "pouVisible": pou_visible,
+            "workspaceEquipment": snapshot.workspace_equipment,
+            "sourceKey": snapshot.workspace_source_key,
             # Для папки фоновый опрос обновлений не нужен (js/main.js); раньше ради
             # этого поля грузилась вся диагностика.
             "sourceKind": (

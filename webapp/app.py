@@ -86,12 +86,16 @@ from webapp.ftp_registry import (  # noqa: F401
     purge_deleted_profile_dirs,
     rename_ftp_connection,
     save_ftp_sources_registry,
+    set_ftp_equipment,
     upsert_ftp_connection,
 )
 # Настройки приложения (имена объектов, стили графика, путь папки, общие
 # настройки + применение к вердикту) вынесены в webapp/settings_store.py.
 # TEMP_ROOT модуль читает через config, поэтому его тесты патчат app.config.TEMP_ROOT;
 # concurrency-тест load_app_settings патчит app.settings_store.load_app_settings.
+from webapp import folder_sources, pou, source_stats
+from webapp.equipment import EQUIPMENT_TYPES, normalize_equipment
+from webapp.views import folder_source_key, ftp_source_key
 from webapp import settings_store
 from webapp.settings_store import (  # noqa: F401
     app_settings_path,
@@ -448,7 +452,7 @@ def index(request: Request) -> HTMLResponse:
 
 
 @app.post("/workspace/open")
-def open_workspace(path: str = Form(...)) -> RedirectResponse:
+def open_workspace(path: str = Form(...), equipment: str = Form("")) -> RedirectResponse:
     candidate = Path(path).expanduser()
     # exists/is_dir/resolve — stat/realpath syscalls, а save_last_folder_path пишет
     # файл на диск. Держать их под глобальным state_lock (на нём ждут SSE и все
@@ -457,15 +461,22 @@ def open_workspace(path: str = Form(...)) -> RedirectResponse:
     if not candidate.exists() or not candidate.is_dir():
         with state_lock:
             state.error = f"Папка не найдена: {candidate}"
-            if state.analysis is None:
+            if state.analysis is None and state.pou_workspace is None:
                 state.pending_root = None
                 state.pending_display_root = ""
         return RedirectResponse(url="/", status_code=303)
 
     resolved = candidate.resolve()
     save_last_folder_path(str(resolved))
+    # Открытая папка — источник в списке главного экрана (как FTP-панель).
+    folder = folder_sources.add_folder_source(resolved, equipment=equipment.strip() or None)
     with state_lock:
-        start_workspace_job(resolved, display_target=str(resolved))
+        start_workspace_job(
+            resolved,
+            display_target=str(resolved),
+            equipment=folder["equipment"],
+            source_key=folder_source_key(folder["id"]),
+        )
     return RedirectResponse(url="/", status_code=303)
 
 
@@ -521,6 +532,7 @@ def add_ftp_source(
     passive: str = Form(""),
     label: str = Form(""),
     web_scheme: str = Form(""),
+    equipment: str = Form(""),
 ) -> RedirectResponse:
     """Сохраняет панель в реестр БЕЗ открытия рабочей области (кнопка «Добавить
     панель»). Панель появляется в списке сохранённых; подключение — отдельным
@@ -540,8 +552,8 @@ def add_ftp_source(
         with state_lock:
             state.error = str(exc)
         return RedirectResponse(url="/", status_code=303)
-    upsert_ftp_connection(ftp_config, label=label)
-    return RedirectResponse(url="/", status_code=303)
+    upsert_ftp_connection(ftp_config, label=label, equipment=equipment.strip() or None)
+    return RedirectResponse(url="/?view=menu", status_code=303)
 
 
 @app.post("/workspace/ftp-source/connect")
@@ -583,6 +595,157 @@ def delete_ftp_source(source_id: str = Form(...)) -> RedirectResponse:
                 state.connected_ftp_id = ""
         delete_ftp_connection(saved_id)
     return RedirectResponse(url="/", status_code=303)
+
+
+MENU_URL = "/?view=menu"
+
+
+def _menu_error(message: str) -> RedirectResponse:
+    with state_lock:
+        state.error = message
+    return RedirectResponse(url=MENU_URL, status_code=303)
+
+
+@app.post("/workspace/source/open")
+def open_source(
+    source_kind: str = Form(...),
+    source_id: str = Form(...),
+    equipment: str = Form(""),
+) -> RedirectResponse:
+    """«Открыть журнал» на карточке источника. equipment — разовое переопределение
+    режима (кнопка «Открыть в режиме ПОУ» при несовпадении); пусто — тип источника."""
+    source_id = source_id.strip()
+    override = equipment.strip() or None
+    if source_kind == "ftp":
+        connection = find_ftp_connection(source_id)
+        if connection is None:
+            return _menu_error("Сохранённая панель не найдена.")
+        try:
+            workspace_dir, display_label = create_ftp_workspace(
+                connection_to_config(connection), label=connection.get("label") or ""
+            )
+        except (ValueError, OSError) as exc:
+            return _menu_error(str(exc))
+        with state_lock:
+            start_workspace_job(
+                workspace_dir,
+                display_target=display_label,
+                equipment=normalize_equipment(override or connection.get("equipment")),
+                source_key=ftp_source_key(source_id),
+            )
+        return RedirectResponse(url="/", status_code=303)
+    if source_kind == "folder":
+        folder = folder_sources.find_folder_source(source_id)
+        if folder is None:
+            return _menu_error("Сохранённая папка не найдена.")
+        if not folder["exists"]:
+            return _menu_error(f"Папка не найдена: {folder['path']}")
+        save_last_folder_path(folder["path"])
+        with state_lock:
+            start_workspace_job(
+                Path(folder["path"]),
+                display_target=folder["path"],
+                equipment=normalize_equipment(override or folder["equipment"]),
+                source_key=folder_source_key(source_id),
+            )
+        return RedirectResponse(url="/", status_code=303)
+    return _menu_error("Неизвестный тип источника.")
+
+
+@app.post("/workspace/source/add-folder")
+def add_folder_source_route(
+    path: str = Form(...), label: str = Form(""), equipment: str = Form("")
+) -> RedirectResponse:
+    candidate = Path(path.strip()).expanduser()
+    if not path.strip() or not candidate.is_dir():
+        return _menu_error(f"Папка не найдена: {candidate}")
+    folder_sources.add_folder_source(candidate, label=label, equipment=equipment.strip() or None)
+    return RedirectResponse(url=MENU_URL, status_code=303)
+
+
+@app.post("/workspace/source/rename")
+def rename_source(
+    source_kind: str = Form(...), source_id: str = Form(...), label: str = Form("")
+) -> RedirectResponse:
+    if source_kind == "ftp":
+        rename_ftp_connection(source_id.strip(), label)
+    elif source_kind == "folder":
+        folder_sources.rename_folder_source(source_id.strip(), label)
+    return RedirectResponse(url=MENU_URL, status_code=303)
+
+
+@app.post("/workspace/source/equipment")
+def set_source_equipment(
+    source_kind: str = Form(...),
+    source_id: str = Form(...),
+    equipment: str = Form(...),
+    open_after: str = Form(""),
+) -> RedirectResponse:
+    """Смена типа оборудования источника (CIP ↔ ПОУ). open_after — сразу открыть
+    источник в новом режиме (кнопка в уведомлении о несовпадении)."""
+    source_id = source_id.strip()
+    if equipment.strip() not in EQUIPMENT_TYPES:
+        return _menu_error("Неизвестный тип оборудования.")
+    if source_kind == "ftp":
+        found = set_ftp_equipment(source_id, equipment)
+    elif source_kind == "folder":
+        found = folder_sources.set_folder_equipment(source_id, equipment)
+    else:
+        found = False
+    if not found:
+        return _menu_error("Источник не найден.")
+    if open_after:
+        return open_source(source_kind=source_kind, source_id=source_id, equipment="")
+    return RedirectResponse(url=MENU_URL, status_code=303)
+
+
+@app.post("/workspace/source/delete")
+def delete_source(source_kind: str = Form(...), source_id: str = Form(...)) -> RedirectResponse:
+    """Убрать источник из списка. Для папки файлы на диске не трогаются; для
+    панели — как прежнее «Удалить» (вместе со скачанным зеркалом)."""
+    source_id = source_id.strip()
+    if source_kind == "ftp":
+        delete_ftp_source(source_id=source_id)
+        source_stats.forget_source(ftp_source_key(source_id))
+    elif source_kind == "folder":
+        key = folder_source_key(source_id)
+        with state_lock:
+            if state.workspace_source_key == key:
+                reset_workspace()
+        folder_sources.delete_folder_source(source_id)
+        source_stats.forget_source(key)
+    return RedirectResponse(url=MENU_URL, status_code=303)
+
+
+@app.get("/api/pou/summary")
+def pou_summary() -> JSONResponse:
+    with state_lock:
+        workspace = state.pou_workspace
+        key = state.workspace_source_key
+        revision = state.analysis_revision
+        last_sync_ts = state.last_sync_ts
+        snapshot = capture_state_snapshot()
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Источник ПОУ не открыт.")
+    source_stats.record_pou_stats(key, revision, workspace, last_sync_ts)
+    payload = build_workspace_payload(snapshot)
+    payload["pou"] = {
+        "db_count": len(workspace.db_files),
+        "row_count": workspace.row_count,
+        "start": workspace.start_ts,
+        "end": workspace.end_ts,
+        "columns": [{"column": col.column, "label": col.label} for col in workspace.columns],
+    }
+    return JSONResponse(payload)
+
+
+@app.get("/api/pou/trend")
+def pou_trend(start: float, end: float) -> JSONResponse:
+    with state_lock:
+        workspace = state.pou_workspace
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Источник ПОУ не открыт.")
+    return JSONResponse(pou.build_pou_trend_payload(workspace, start, end))
 
 
 @app.post("/workspace/reset")
@@ -645,6 +808,16 @@ def workspace_data() -> JSONResponse:
     payload["program_rows"] = build_program_rows(
         snapshot.program_name_overrides, snapshot.analysis
     )
+    if snapshot.analysis is not None:
+        try:
+            source_stats.record_cip_stats(
+                snapshot.workspace_source_key,
+                snapshot.analysis_revision,
+                payload["wash_rows"],
+                state.last_sync_ts,
+            )
+        except OSError:  # сводка карточки — не повод ронять журнал
+            logging.exception("Не удалось сохранить сводку источника")
     return JSONResponse(payload)
 
 
