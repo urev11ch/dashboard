@@ -20,7 +20,8 @@ test("welcome: «Обзор» без pywebview показывает тост, н
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
   await page.goto("/");
-  // Вкладок источника больше нет — секция «Папка с архивами» видна сразу.
+  // Поле папки — в панели «Добавить источник → Папка».
+  await page.click("[data-folder-add-toggle]");
   await page.click("[data-folder-picker]"); // в браузере choose_folder недоступен → тост об ошибке
   await expect(page.locator(".toast-stack .toast")).toBeVisible({ timeout: 15000 });
   expect(errors).toEqual([]);

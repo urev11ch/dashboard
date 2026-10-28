@@ -192,6 +192,14 @@ def test_card_summary_not_rewritten_for_same_revision(temp_root):
     assert source_stats.load_source_stats()["folder:y"]["cycle_count"] == 1
 
 
+def test_card_summary_without_recent_washes(temp_root):
+    old = NOW_PANEL - 30 * 86400
+    source_stats.record_cip_stats("folder:z", 1, [{"start_ts": old}, {"start_ts": old - 60}], None)
+    summary = source_stats.summarize_for_card(source_stats.load_source_stats()["folder:z"], NOW_PANEL)
+    assert summary["detail"] == "За неделю моек не было · всего 2"
+    assert summary["verdict"] == ""
+
+
 def test_never_opened_source_has_no_summary():
     assert source_stats.summarize_for_card(None) is None
 
@@ -249,7 +257,7 @@ def test_only_other_equipment_is_mismatch(monkeypatch, tmp_path):
     pou = make_db(tmp_path / "pou.db", POU_LABELS)
     job = run_job(monkeypatch, tmp_path, [pou], "cip")
     assert job.status == "failed"
-    assert "найдены архивы ПОУ" in job.message
+    assert job.message.startswith("В источнике нет архивов CIP, но найдены архивы ПОУ (1): pou.db")
     mismatch = app.state.equipment_mismatch
     assert mismatch["equipment"] == "pou" and mismatch["count"] == 1
     assert mismatch["source_key"] == "folder:t"
@@ -270,3 +278,14 @@ def test_pou_trend_payload_groups_panels(tmp_path):
     assert all(len(series["points"]) == 20 for series in payload["series"])
     # Период вне данных — пустой тренд, а не ошибка.
     assert build_pou_trend_payload(workspace, 0, 1)["has_data"] is False
+
+
+def test_reset_clears_pou_and_mismatch(monkeypatch, tmp_path):
+    run_job(monkeypatch, tmp_path, [make_db(tmp_path / "pou.db", POU_LABELS)], "pou")
+    assert app.state.pou_workspace is not None
+    with app.state_lock:
+        app.state.equipment_mismatch = {"equipment": "cip", "count": 1}
+        app.reset_workspace()
+    assert app.state.pou_workspace is None
+    assert app.state.equipment_mismatch is None
+    assert app.state.workspace_source_key == ""

@@ -2,6 +2,7 @@
 
 import { fetchWithTimeout } from "../core/api.js";
 import { openFormDialog } from "../core/dialogs.js";
+import { currentHomeMode } from "./home.js";
 
 // Кнопка «Найти панель в сети»: скан локальной подсети по FTP (POST
 // /api/ftp/discover), список найденных хостов, клик подставляет адрес в форму.
@@ -53,8 +54,8 @@ export function initFtpDiscovery() {
     panel.name ? `Weintek ${panel.name}` : `Weintek ${panel.host}`;
 
   // Всплывающее окно выбранной панели: имя + пароль → «Добавить панель».
-  // Панель СОХРАНЯЕТСЯ (POST /workspace/ftp-source/add) и появляется в списке;
-  // подключение (веб-просмотр / графики) — отдельным шагом по «Подключиться».
+  // Панель СОХРАНЯЕТСЯ (POST /workspace/ftp-source/add) и появляется карточкой
+  // на главной; журнал открывается её кнопкой «Открыть журнал».
   const openConnectDialog = (panel) => {
     const displayName = panelDisplayName(panel);
     openFormDialog({
@@ -70,6 +71,8 @@ export function initFtpDiscovery() {
         ["path", "/datalog"],
         ["passive", "on"],
         ["web_scheme", panel.web_scheme || ""],
+        // Панель сохраняется в режиме главной, в котором её нашли (CIP/ПОУ).
+        ["equipment", currentHomeMode()],
       ],
       fields: [
         // «Weintek cMT-3C6F», можно поправить

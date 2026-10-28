@@ -47,27 +47,6 @@ from webapp.equipment import EQUIPMENT_LABELS, EQUIPMENT_TYPES, normalize_equipm
 from webapp.folder_sources import list_folder_sources
 from webapp.source_stats import format_ago, load_source_stats, panel_now_ts, summarize_for_card
 
-def resolve_workspace_input_value(
-    selected_root: Path | None,
-    pending_root: Path | None,
-) -> str:
-    current_root = selected_root or pending_root
-    if current_root is not None:
-        return str(current_root)
-
-    # После перезапуска активного источника ещё нет — подставляем последний
-    # открытый путь к папке, если он сохранён.
-    last_path = load_last_folder_path()
-    if last_path:
-        return last_path
-
-    # Иначе — путь по умолчанию: заданный в настройках, а при его отсутствии —
-    # локальная папка со скачанными архивами (datalog). Она определяется per-user
-    # (%LOCALAPPDATA%\OptiCIP Dashboard\datalog на Windows), поэтому на каждом ПК
-    # подставляется путь текущего пользователя.
-    return resolve_default_folder_path()
-
-
 def resolve_default_folder_path() -> str:
     """Путь по умолчанию для поля «Папка»: заданный пользователем в настройках,
     а при его отсутствии — встроенная папка datalog."""
@@ -87,43 +66,25 @@ def copy_scan_summary(summary: ScanSummary) -> ScanSummary:
     )
 
 
-def build_menu_source_rows(
-    ftp_sources: list[dict[str, Any]],
-    connected_id: str = "",
-) -> list[dict[str, Any]]:
-    """Панели для главного меню: к записи реестра добавляется состояние зеркала.
+def ftp_mirror_meta(conn_id: str) -> list[str]:
+    """Состояние скачанного зеркала панели для карточки: «12 архивов ·
+    последний 13.07.2026 · 41 МБ» или «архивов нет».
 
-    Обход каталога зеркала делается здесь, а не в list_ftp_sources_public:
-    список панелей собирается на КАЖДУЮ отрисовку `/`, включая экран журнала, а
-    состояние нужно только меню."""
-    rows: list[dict[str, Any]] = []
-    for source in ftp_sources:
-        stats = ftp_profile_stats(source["id"])
-        archive_count = int(stats["archive_count"])
-
-        meta: list[str] = []
-        if source.get("host"):
-            meta.append(str(source["host"]))
-        if archive_count:
-            meta.append(
-                f"{archive_count} {plural_ru(archive_count, 'архив', 'архива', 'архивов')}"
-            )
-            last_day = str(stats["last_day"])
-            if last_day:
-                year, month, day = last_day.split("-")
-                meta.append(f"последний {day}.{month}.{year}")
-            meta.append(format_bytes(int(stats["size_bytes"])))
-        else:
-            # Пустое зеркало — не ошибка (панель добавили, но не синхронизировали).
-            # Молчать нельзя: иначе непонятно, почему у панели нет данных.
-            meta.append("архивов нет")
-
-        row = dict(source)
-        row["meta"] = meta
-        row["is_connected"] = bool(connected_id) and source["id"] == connected_id
-        rows.append(row)
-
-    return rows
+    Обход каталога зеркала — только для главного экрана, а не в
+    list_ftp_sources_public: тот зовётся на каждую отрисовку `/`."""
+    stats = ftp_profile_stats(conn_id)
+    archive_count = int(stats["archive_count"])
+    if not archive_count:
+        # Пустое зеркало — не ошибка (панель добавили, но не синхронизировали).
+        # Молчать нельзя: иначе непонятно, почему у панели нет данных.
+        return ["архивов нет"]
+    meta = [f"{archive_count} {plural_ru(archive_count, 'архив', 'архива', 'архивов')}"]
+    last_day = str(stats["last_day"])
+    if last_day:
+        year, month, day = last_day.split("-")
+        meta.append(f"последний {day}.{month}.{year}")
+    meta.append(format_bytes(int(stats["size_bytes"])))
+    return meta
 
 
 def ftp_source_key(conn_id: str) -> str:
@@ -145,12 +106,8 @@ def build_source_cards(ftp_sources: list[dict[str, Any]]) -> list[dict[str, Any]
     for source in ftp_sources:
         key = ftp_source_key(source["id"])
         entry = stats.get(key)
-        mirror = ftp_profile_stats(source["id"])
-        archive_count = int(mirror["archive_count"])
         if entry and entry.get("last_sync_ts"):
             sync_line = f"Синхронизация {format_ago(entry['last_sync_ts'])}"
-        elif archive_count:
-            sync_line = f"Скачано архивов: {archive_count}"
         else:
             sync_line = "Ещё не синхронизировалась"
         cards.append(
@@ -159,7 +116,8 @@ def build_source_cards(ftp_sources: list[dict[str, Any]]) -> list[dict[str, Any]
                 "id": source["id"],
                 "key": key,
                 "label": source.get("label") or source.get("host") or "Панель",
-                "address": str(source.get("host") or ""),
+                "address": " · ".join([str(source.get("host") or ""), *ftp_mirror_meta(source["id"])]),
+                "host": str(source.get("host") or ""),
                 "equipment": normalize_equipment(source.get("equipment")),
                 "status": "ok" if entry and entry.get("last_sync_ts") else "off",
                 "sync_line": sync_line,
@@ -184,6 +142,7 @@ def build_source_cards(ftp_sources: list[dict[str, Any]]) -> list[dict[str, Any]
                 "key": key,
                 "label": folder["label"],
                 "address": folder["path"],
+                "host": "",
                 "equipment": folder["equipment"],
                 "status": status,
                 "sync_line": sync_line,
@@ -209,7 +168,6 @@ def capture_state_snapshot() -> AppStateSnapshot:
         error=state.error,
         scan_summary=copy_scan_summary(state.scan_summary),
         workspace_job_payload=serialize_job(state.workspace_job),
-        connected_ftp_id=state.connected_ftp_id,
         workspace_equipment=state.workspace_equipment,
         workspace_source_key=state.workspace_source_key,
         pou_workspace=state.pou_workspace,
@@ -587,28 +545,19 @@ def page_context(request: Request, snapshot: AppStateSnapshot) -> dict[str, Any]
     selected_root = snapshot.selected_root
     pending_root = snapshot.pending_root
     workspace_payload = build_workspace_payload(snapshot)
-    workspace_input_value = resolve_workspace_input_value(selected_root, pending_root)
     # Путь по умолчанию читает файл настроек (load_app_settings) — считаем один раз
     # и переиспользуем для подсказки и дефолта поля «Папка» (раньше два вызова →
     # двойное чтение+json.loads на каждую загрузку /).
     default_folder_path = resolve_default_folder_path()
 
-    # Подключённая панель («Подключиться» → зелёная строка + WebView/Графики/
-    # Отключить). Состояние сессионное (state.connected_ftp_id), не привязано к
-    # загрузке графиков; одновременно одна панель. ?view=menu показывает меню даже
-    # при загруженной области («Главное меню» без разрыва соединения).
-    ftp_sources = list_ftp_sources_public()
+    # ?view=menu показывает главную даже при загруженной области («Главное меню»).
     force_menu = request.query_params.get("view") == "menu"
-    connected_id = snapshot.connected_ftp_id
-    if connected_id and not any(src["id"] == connected_id for src in ftp_sources):
-        connected_id = ""  # панель удалили — сбрасываем пометку
     # На экране меню (даже при загруженной области) wash-JS не должен стартовать —
     # его DOM отсутствует. Гейт `if (!hasWorkspace) return` смотрит на hasWorkspace.
     wash_visible = analysis is not None and not force_menu
     pou_visible = snapshot.pou_workspace is not None and analysis is None and not force_menu
     menu_visible = not wash_visible and not pou_visible
-    menu_sources = build_menu_source_rows(ftp_sources, connected_id) if menu_visible else []
-    source_cards = build_source_cards(ftp_sources) if menu_visible else []
+    source_cards = build_source_cards(list_ftp_sources_public()) if menu_visible else []
     mismatch = snapshot.equipment_mismatch
     if mismatch:
         mismatch = dict(mismatch)
@@ -634,12 +583,10 @@ def page_context(request: Request, snapshot: AppStateSnapshot) -> dict[str, Any]
         "selected_root": str(selected_root) if selected_root else "",
         "display_root": workspace_payload["display_root"],
         "project_root": str(PROJECT_ROOT),
-        "workspace_input_value": workspace_input_value,
         # Подсказка в поле «Папка» = путь по умолчанию (настройка или datalog).
         "workspace_path_placeholder": default_folder_path,
         "workspace_default_path": default_folder_path,
         "ftp_form_defaults": dict(DEFAULT_FTP_FORM_VALUES),
-        "ftp_sources": menu_sources,
         "source_cards": source_cards,
         "equipment_types": [
             {"id": eq, "label": EQUIPMENT_LABELS[eq], "count": sum(1 for c in source_cards if c["equipment"] == eq)}
@@ -648,9 +595,10 @@ def page_context(request: Request, snapshot: AppStateSnapshot) -> dict[str, Any]
         "menu_visible": menu_visible,
         "pou_visible": pou_visible,
         "equipment_mismatch": mismatch,
+        "foreign": workspace_payload["foreign"],
+        "source_parts": snapshot.workspace_source_key.split(":", 1) if snapshot.workspace_source_key else [],
         "workspace_equipment": snapshot.workspace_equipment,
         "force_menu": force_menu,
-        "connected_id": connected_id,
         "app_version": APP_VERSION,
         "summary": workspace_payload["summary"],
         "error": workspace_payload["error"],

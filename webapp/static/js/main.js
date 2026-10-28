@@ -37,10 +37,11 @@ import { closeSettings, initSettings, openSettings } from "./settings/index.js";
 import { initAutoUpdate, initWelcomeUpdateButton } from "./updates.js";
 import { closeChartModal, initWashModal, mountChart, openWashModal } from "./wash-modal.js";
 import { initFtpDiscovery } from "./welcome/ftp-discovery.js";
+import { initHome } from "./welcome/home.js";
+import { initPouScreen } from "./pou/screen.js";
 import {
   initConnectedPanelWebView,
   initPanelGraphsContext,
-  initSavedPanelRename,
   initWashWebViewButton,
 } from "./welcome/panels.js";
 import { invalidateWashCaches } from "./workspace/cache.js";
@@ -89,7 +90,7 @@ function main() {
   initFolderDefaultButtons();
   initFtpDiscovery();
   initPanelGraphsContext();
-  initSavedPanelRename();
+  initHome();
   initConnectedPanelWebView();
   initWashWebViewButton();
   initWelcomeUpdateButton();
@@ -106,6 +107,12 @@ function main() {
     fetchWorkspaceData,
     applyWorkspacePayload,
   });
+
+  // Экран трендов ПОУ — свой модуль; журнала CIP на нём нет.
+  if (appState.pouVisible) {
+    initClock();
+    initPouScreen();
+  }
 
   if (!appState.hasWorkspace) {
     return;

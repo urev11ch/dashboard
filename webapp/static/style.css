@@ -3704,3 +3704,466 @@ body.desktop-shell .db-browser-panel {
 body.desktop-shell .auto-update-banner {
   bottom: 22px;
 }
+
+/* ---- Главный экран: режим CIP | ПОУ и карточки источников ------------------ */
+/* Режим — атрибут на <html> (ставится скриптом в <head> до отрисовки). Карточки
+   и подписи другого режима скрываются стилями, без перерисовки. */
+html[data-home-mode="cip"] [data-equipment="pou"],
+html[data-home-mode="pou"] [data-equipment="cip"],
+html[data-home-mode="cip"] [data-mode-only="pou"],
+html[data-home-mode="pou"] [data-mode-only="cip"] {
+  display: none;
+}
+
+.welcome-shell.home-shell {
+  display: block;
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 28px 48px 40px;
+  place-items: initial;
+}
+
+body.desktop-shell .welcome-shell.home-shell {
+  padding-top: calc(28px + var(--titlebar-h));
+}
+
+/* Кнопки главной — обычным регистром и компактнее глобальных (как на макете). */
+.home-shell button {
+  height: 36px;
+  padding: 0 14px;
+  font-size: 13px;
+  letter-spacing: 0;
+  text-transform: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.home-shell svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.home-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 22px;
+}
+
+.home-brand {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.home-tagline,
+.home-version,
+.home-hint,
+.home-muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.home-head-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.home-modes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.home-shell .home-mode {
+  height: auto;
+  padding: 18px 22px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  text-align: left;
+  background: var(--panel-strong);
+  color: var(--text);
+  border: 1.5px solid var(--line);
+  border-radius: 10px;
+  font-weight: 400;
+}
+
+.home-shell .home-mode:hover {
+  background: var(--panel-strong);
+  border-color: rgba(23, 87, 255, 0.4);
+}
+
+html[data-home-mode="cip"] .home-mode[data-home-mode="cip"],
+html[data-home-mode="pou"] .home-mode[data-home-mode="pou"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(23, 87, 255, 0.14);
+}
+
+.home-mode-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  background: var(--panel-soft);
+  color: var(--muted);
+}
+
+.home-shell .home-mode-icon svg {
+  width: 26px;
+  height: 26px;
+}
+
+html[data-home-mode="cip"] .home-mode[data-home-mode="cip"] .home-mode-icon,
+html[data-home-mode="pou"] .home-mode[data-home-mode="pou"] .home-mode-icon {
+  background: var(--tag-bg);
+  color: var(--accent);
+}
+
+.home-mode-text {
+  display: grid;
+  gap: 3px;
+}
+
+.home-mode-title {
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.home-mode-desc,
+.home-mode-count {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.home-mode-count {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.home-notice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  margin-bottom: 18px;
+  border-radius: var(--radius-panel);
+  background: var(--warn-bg);
+  border: 1px solid rgba(194, 67, 47, 0.25);
+  color: var(--warn);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.home-notice-text {
+  flex: 1 1 360px;
+}
+
+.home-notice form {
+  margin: 0;
+}
+
+.home-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.home-section-head h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.home-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 16px;
+}
+
+.source-card {
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-shadow: var(--shadow);
+  cursor: default;
+  user-select: none;
+}
+
+.source-card-top {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.source-card-name {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-card-kind {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--muted);
+  opacity: 0.5;
+}
+
+.status-dot.is-ok {
+  background: var(--success-accent);
+  box-shadow: 0 0 0 3px var(--success-bg);
+  opacity: 1;
+}
+
+.status-dot.is-warn {
+  background: var(--warn);
+  box-shadow: 0 0 0 3px var(--warn-bg);
+  opacity: 1;
+}
+
+.source-card-address {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-card-sync {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.source-card-stats {
+  margin: 8px 0 6px;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--panel-soft);
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.source-card-verdict {
+  margin-left: 6px;
+  font-weight: 600;
+}
+
+.source-card-verdict.is-ok {
+  color: var(--success-text);
+}
+
+.source-card-verdict.is-warn {
+  color: var(--warn);
+}
+
+/* Вердикт мойки на карточке подчиняется той же настройке, что колонка
+   «Результат» в журнале: пока она скрыта, не показываем его и здесь. */
+body.wash-result-hidden .source-card-verdict {
+  display: none;
+}
+
+.source-card-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.source-card-actions form {
+  flex: 1;
+  margin: 0;
+}
+
+.home-shell .source-card-open {
+  width: 100%;
+  justify-content: center;
+}
+
+.source-card-more {
+  position: relative;
+}
+
+.source-card-more > summary {
+  list-style: none;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: var(--radius-control);
+}
+
+.source-card-more > summary::-webkit-details-marker {
+  display: none;
+}
+
+.source-card-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 5;
+  min-width: 200px;
+  padding: 6px;
+  display: grid;
+  gap: 2px;
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow);
+}
+
+.source-card-menu form {
+  margin: 0;
+}
+
+.home-shell .source-card-menu button {
+  width: 100%;
+  justify-content: flex-start;
+  border-color: transparent;
+}
+
+.home-shell .source-card-menu .source-card-danger {
+  color: var(--warn);
+}
+
+.source-add {
+  min-height: 250px;
+  border: 1.5px dashed rgba(40, 58, 96, 0.25);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--muted);
+  padding: 18px;
+}
+
+.home-shell .source-add-icon svg {
+  width: 28px;
+  height: 28px;
+}
+
+.source-add-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.home-shell .ftp-discover {
+  margin-top: 14px;
+}
+
+.home-panel {
+  margin-top: 16px;
+  padding: 18px;
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+}
+
+.home-panel-title {
+  margin: 0 0 12px;
+  font-size: 14px;
+}
+
+.home-form-grid-2 {
+  grid-template-columns: 1fr 1fr;
+  margin-top: 10px;
+}
+
+/* ---- Экран ПОУ: тренды за период ------------------------------------------ */
+/* В отличие от журнала (список с собственной прокруткой во всю высоту окна),
+   экран ПОУ — обычная страница: график во всю ширину и естественной высоты,
+   страница прокручивается, а не сжимает график в остаток окна. */
+.wash-screen.pou-screen {
+  height: auto;
+  min-height: 100vh;
+  overflow: visible;
+  grid-template-rows: none;
+  align-content: start;
+}
+
+/* Баннер о базах другого оборудования добавляет строку в сетку журнала. */
+.wash-screen:not(.pou-screen):has(.screen-notice) {
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+}
+
+.screen-notice {
+  margin-bottom: 0;
+}
+
+.pou-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.pou-range {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* График — как в окне мойки (chart-host--modal), во всю ширину карточки. */
+.pou-chart-card {
+  padding: 12px 16px;
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+}
+
+.pou-chart-card .chart-host--modal {
+  height: auto;
+}
+
+/* Высота — из ширины по пропорциям рисунка (viewBox). wash-chart.js задаёт SVG
+   высоту inline-стилем (фиксированную в вебе, 100% в десктопе) — при ширине
+   карточки она не совпадала с пропорцией, и под графиком оставалась пустота. */
+.pou-chart-card .chart-host--modal .wash-chart-svg {
+  height: auto !important;
+}
+
+/* «Настройка кривых» сохраняет стили серий графика мойки — к тегам ПОУ она не
+   относится. */
+.pou-chart-card .wash-chart-controls {
+  display: none;
+}
+
+.pou-note {
+  margin: 0;
+}

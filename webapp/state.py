@@ -114,9 +114,6 @@ class AppState:
     update_job: UpdateJob | None = None
     last_sync_ts: float | None = None
     last_cleanup_ts: float | None = None
-    # Панель, выбранная кнопкой «Подключиться» (зелёная строка + WebView/Графики/
-    # Отключить в меню). Сессионное состояние, одна панель одновременно.
-    connected_ftp_id: str = ""
     # Режим открытой рабочей области: CIP (analysis) или ПОУ (pou_workspace).
     workspace_equipment: str = "cip"
     workspace_source_key: str = ""
@@ -139,7 +136,6 @@ class AppStateSnapshot:
     error: str | None
     scan_summary: ScanSummary
     workspace_job_payload: dict[str, Any]
-    connected_ftp_id: str
     workspace_equipment: str = "cip"
     workspace_source_key: str = ""
     pou_workspace: PouWorkspace | None = None

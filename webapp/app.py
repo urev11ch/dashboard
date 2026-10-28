@@ -211,7 +211,6 @@ from webapp.views import (  # noqa: F401
     page_context,
     require_analysis,
     resolve_default_folder_path,
-    resolve_workspace_input_value,
 )
 from webapp.chart_payload import build_cycle_chart_payload
 # Выгрузка журнала моек в .xlsx (сборка строк + книга).
@@ -428,12 +427,14 @@ def reset_workspace() -> None:
     state.pending_display_root = ""
     state.selected_display_root = ""
     state.analysis = None
+    state.pou_workspace = None
+    state.equipment_mismatch = None
+    state.workspace_source_key = ""
     state.analysis_revision += 1
     state.object_name_overrides = {}
     state.program_name_overrides = {}
     state.error = None
     state.scan_summary = ScanSummary()
-    state.connected_ftp_id = ""  # «Отключить»: снимаем пометку подключения
     clear_chart_payload_cache()
 
 
@@ -556,18 +557,6 @@ def add_ftp_source(
     return RedirectResponse(url="/?view=menu", status_code=303)
 
 
-@app.post("/workspace/ftp-source/connect")
-def connect_ftp_source(source_id: str = Form(...)) -> RedirectResponse:
-    """Помечает панель как подключённую (зелёная строка + WebView/Графики/
-    Отключить в меню). Графики НЕ загружаются здесь — только по кнопке «Графики».
-    Одновременно активна одна панель. Возвращаемся в меню."""
-    saved_id = source_id.strip()
-    if saved_id and find_ftp_connection(saved_id) is not None:
-        with state_lock:
-            state.connected_ftp_id = saved_id
-    return RedirectResponse(url="/?view=menu", status_code=303)
-
-
 @app.post("/workspace/ftp-source/rename")
 def rename_ftp_source(
     source_id: str = Form(...), label: str = Form("")
@@ -588,11 +577,6 @@ def delete_ftp_source(source_id: str = Form(...)) -> RedirectResponse:
             clears_active = current_root is not None and current_root.name == saved_id
             if clears_active:
                 reset_workspace()
-            # Снимаем пометку подключения, даже если графики не были загружены —
-            # иначе connected_ftp_id залипает и повторно добавленная панель с тем
-            # же id (host|port|user|path) покажется «подключённой».
-            if state.connected_ftp_id == saved_id:
-                state.connected_ftp_id = ""
         delete_ftp_connection(saved_id)
     return RedirectResponse(url="/", status_code=303)
 
@@ -654,12 +638,22 @@ def open_source(
 
 @app.post("/workspace/source/add-folder")
 def add_folder_source_route(
-    path: str = Form(...), label: str = Form(""), equipment: str = Form("")
+    path: str = Form(...),
+    label: str = Form(""),
+    equipment: str = Form(""),
+    fallback_equipment: str = Form(""),
 ) -> RedirectResponse:
+    """Добавить папку. Тип — явный (equipment), иначе по содержимому, иначе
+    fallback_equipment: режим главной, в котором её добавляют."""
     candidate = Path(path.strip()).expanduser()
     if not path.strip() or not candidate.is_dir():
         return _menu_error(f"Папка не найдена: {candidate}")
-    folder_sources.add_folder_source(candidate, label=label, equipment=equipment.strip() or None)
+    folder_sources.add_folder_source(
+        candidate,
+        label=label,
+        equipment=equipment.strip() or None,
+        fallback_equipment=fallback_equipment.strip() or None,
+    )
     return RedirectResponse(url=MENU_URL, status_code=303)
 
 

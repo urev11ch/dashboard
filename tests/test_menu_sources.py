@@ -88,35 +88,18 @@ def test_stats_reject_path_escape(datalog_root):
     assert ftp_profile_stats("../чужое")["archive_count"] == 0
 
 
-# --- строки меню -------------------------------------------------------------
-def test_menu_row_shows_mirror_state(datalog_root):
+# --- сводка зеркала для карточки ---------------------------------------------
+def test_mirror_meta_shows_mirror_state(datalog_root):
     profile = datalog_root / "abc"
     _archive(profile, "Canal_1_20260713.db", size=43_000_000)
 
-    rows = views.build_menu_source_rows(
-        [{"id": "abc", "host": "192.168.1.88", "label": "Цех 1"}], connected_id="abc"
-    )
-
-    assert rows[0]["meta"] == ["192.168.1.88", "1 архив", "последний 13.07.2026", "41 МБ"]
-    assert rows[0]["is_connected"] is True
+    assert views.ftp_mirror_meta("abc") == ["1 архив", "последний 13.07.2026", "41 МБ"]
 
 
-def test_menu_row_says_mirror_is_empty(datalog_root):
+def test_mirror_meta_says_mirror_is_empty(datalog_root):
     # Пустое зеркало — не ошибка, но молчать нельзя: иначе непонятно, почему у
     # панели нет данных.
-    rows = views.build_menu_source_rows([{"id": "abc", "host": "10.0.0.5", "label": "Цех 2"}])
-
-    assert rows[0]["meta"] == ["10.0.0.5", "архивов нет"]
-    assert rows[0]["is_connected"] is False
-
-
-def test_menu_row_keeps_registry_fields(datalog_root):
-    source = {"id": "abc", "host": "10.0.0.5", "label": "Цех 2", "web_scheme": "http"}
-    rows = views.build_menu_source_rows([source])
-
-    assert rows[0]["web_scheme"] == "http"
-    # Исходный словарь реестра не мутируем.
-    assert "meta" not in source
+    assert views.ftp_mirror_meta("abc") == ["архивов нет"]
 
 
 # --- форматирование ----------------------------------------------------------

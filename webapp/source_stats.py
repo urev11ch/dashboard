@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from webapp import config as app_config
-from webapp.io_utils import atomic_write_json, local_tz_offset_min, read_json_object
+from webapp.io_utils import atomic_write_json, local_tz_offset_min, plural_ru, read_json_object
 from webapp.state import PouWorkspace
 
 SOURCE_STATS_FILENAME = "wash_source_stats.json"
@@ -136,18 +136,6 @@ def format_ago(ts: float | None, now: float | None = None) -> str:
     return f"{local:%d.%m.%Y}"
 
 
-def plural_ru(count: int, one: str, few: str, many: str) -> str:
-    count = abs(count) % 100
-    if 10 < count < 20:
-        return many
-    count %= 10
-    if count == 1:
-        return one
-    if 1 < count < 5:
-        return few
-    return many
-
-
 def summarize_for_card(entry: dict[str, Any] | None, now_panel: float | None = None) -> dict[str, Any] | None:
     """Строки сводки карточки или None, если источник ещё не открывали."""
     if not entry:
@@ -175,9 +163,15 @@ def summarize_for_card(entry: dict[str, Any] | None, now_panel: float | None = N
         verdict, verdict_kind = "Все завершены штатно", "ok"
     else:
         verdict, verdict_kind = "", ""
+    total = int(entry.get("cycle_count") or 0)
+    if count:
+        detail = f"{count} {plural_ru(count, 'мойка', 'мойки', 'моек')} за неделю"
+    else:
+        # Архив старше недели: «0 моек за неделю» читалось бы как сбой.
+        detail = f"За неделю моек не было · всего {total}"
     return {
         "headline": f"Последняя мойка {format_panel_moment(last, now_panel)}" if last else "Моек не найдено",
-        "detail": f"{count} {plural_ru(count, 'мойка', 'мойки', 'моек')} за неделю",
+        "detail": detail,
         "verdict": verdict,
         "verdict_kind": verdict_kind,
     }

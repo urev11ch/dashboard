@@ -1,6 +1,5 @@
 // Сохранённые FTP-панели: переименование, переход «графики ↔ WebView панели».
 
-import { openRenameDialog } from "../core/dialogs.js";
 
 // Запоминает контекст панели для экрана графиков (быстрый переход графики→веб).
 function rememberPanelContext(host, scheme, label) {
@@ -63,15 +62,6 @@ export function initPanelGraphsContext() {
         }
       });
     });
-}
-
-// Кнопка «Изменить» у сохранённой панели → диалог переименования.
-export function initSavedPanelRename() {
-  document.querySelectorAll("[data-panel-rename]").forEach((button) => {
-    button.addEventListener("click", () => {
-      openRenameDialog(button.dataset.sourceId || "", button.dataset.label || "");
-    });
-  });
 }
 
 // Клик по WebView: обычный — во встроенном окне приложения; Ctrl/Cmd+клик — в

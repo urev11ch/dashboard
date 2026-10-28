@@ -149,8 +149,6 @@ def test_default_folder_path_used_when_set(tmp_path, monkeypatch):
     app.save_app_settings({"default_folder_path": "  /data/x  "})
     assert app.load_app_settings()["default_folder_path"] == "/data/x"
     assert app.resolve_default_folder_path() == "/data/x"
-    # активная сессия и последний путь имеют приоритет над настройкой по умолчанию
-    assert app.resolve_workspace_input_value(None, None) == "/data/x"
 
 
 def test_settings_route_merges_partial(tmp_path, monkeypatch):

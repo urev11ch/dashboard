@@ -79,13 +79,14 @@ class EquipmentMismatchError(Exception):
     """В источнике нет баз выбранного режима, зато есть базы другого оборудования
     (открыли архив ПОУ как CIP или наоборот)."""
 
-    def __init__(self, equipment: str, files: list[str]):
+    def __init__(self, requested: str, equipment: str, files: list[str]):
         self.equipment = equipment
         self.files = files
         other_label = EQUIPMENT_LABELS[equipment]
+        shown = ", ".join(files[:5]) + (" и другие" if len(files) > 5 else "")
         super().__init__(
-            f"В источнике нет архивов этого типа, но найдены архивы {other_label} "
-            f"({len(files)}): {format_file_list(files)}. Откройте источник в режиме {other_label}."
+            f"В источнике нет архивов {EQUIPMENT_LABELS[requested]}, но найдены архивы "
+            f"{other_label} ({len(files)}): {shown}."
         )
 
 
@@ -572,7 +573,7 @@ def run_workspace_job(
         scan_summary.foreign_db_files = sorted(path.name for path in foreign_db_files)
         scan_summary.foreign_equipment = foreign_equipment if foreign_db_files else ""
         if not db_files and foreign_db_files:
-            raise EquipmentMismatchError(foreign_equipment, scan_summary.foreign_db_files)
+            raise EquipmentMismatchError(equipment, foreign_equipment, scan_summary.foreign_db_files)
 
         if equipment == EQUIPMENT_POU:
             run_pou_workspace_job(

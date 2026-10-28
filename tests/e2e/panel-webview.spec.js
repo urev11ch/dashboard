@@ -1,15 +1,7 @@
 import { test, expect } from "@playwright/test";
 
-// «Подключиться» — обычный POST с редиректом на /?view=menu. Кнопка WebView в
-// новой разметке видна раньше, чем отработают ES-модули (они грузятся отложенно
-// и навешивают обработчики в main()), и мгновенный клик уходил в пустоту.
-// waitForURL ждёт события load, а оно наступает после выполнения модулей.
-async function waitForMenuReady(page) {
-  await page.waitForURL(/[?&]view=menu/);
-}
-
-// Флоу панели: поиск → «Добавить панель» (сохранение) → сохранённая панель →
-// «Подключиться» → выбор «Веб-просмотр»/«Графики». Обнаружение мокаем.
+// Флоу панели: поиск → «Добавить панель» (сохранение) → карточка панели на
+// главной (журнал, WebView, меню «⋯»). Обнаружение мокаем.
 const DISCOVER = {
   scanned: 253,
   ftp_hosts: 1,
@@ -107,60 +99,54 @@ test.describe("сохранённая панель", () => {
         passive: "on",
         label: "Weintek cMT-3C6F",
         web_scheme: "http",
+        equipment: "cip",
       },
     });
   });
   test.afterEach(async ({ page }) => {
-    await page.request.post("/workspace/reset"); // снять пометку подключения
-    await page.goto("/");
-    const more = page.locator(".ftp-source-item [data-panel-more] > summary");
-    while (await more.count()) {
-      await more.first().click(); // «Удалить» лежит под многоточием
-      page.once("dialog", (d) => d.accept());
-      await page.locator(".ftp-source-item form[action*='delete'] button").first().click();
-      await page.waitForLoadState("networkidle");
+    await page.request.post("/workspace/reset");
+    await page.goto("/?view=menu");
+    const ids = await page
+      .locator('[data-source-card][data-kind="ftp"]')
+      .evaluateAll((cards) => cards.map((card) => card.dataset.id));
+    for (const id of ids) {
+      await page.request.post("/workspace/source/delete", {
+        form: { source_kind: "ftp", source_id: id },
+      });
     }
   });
 
-  test("«Подключиться» → зелёная строка + WebView/Графики/Отключить, без попапа", async ({
+  const panelCard = (page) =>
+    page.locator('[data-source-card][data-kind="ftp"]', { hasText: "192.168.1.88" });
+
+  test("карточка панели: «Открыть журнал моек» и WebView, без шага «Подключиться»", async ({
     page,
   }) => {
-    await page.goto("/");
-    await page.click(".ftp-source-item button:has-text('Подключиться')");
-
-    const item = page.locator(".ftp-source-item");
-    await expect(item).toHaveClass(/is-connected/, { timeout: 15000 });
-    await expect(item.getByRole("button", { name: "WebView" })).toBeVisible();
-    await expect(item.getByRole("button", { name: "Графики" })).toBeVisible();
-    await expect(item.getByRole("button", { name: "Отключить" })).toBeVisible();
-    // Всплывающего окна выбора нет.
-    await expect(page.locator(".ftp-connect-modal")).toHaveCount(0);
+    await page.goto("/?view=menu");
+    await page.click('[data-home-mode="cip"]');
+    const card = panelCard(page);
+    await expect(card).toBeVisible();
+    await expect(card.getByRole("button", { name: /Открыть журнал моек/ })).toBeVisible();
+    await expect(card.getByRole("button", { name: "WebView" })).toBeVisible();
+    await expect(card.getByRole("button", { name: "Подключиться" })).toHaveCount(0);
+    await expect(card.locator(".source-card-address")).toContainText("192.168.1.88");
   });
 
-  test("«Отключить» возвращает обычные действия", async ({ page }) => {
-    await page.goto("/");
-    await page.click(".ftp-source-item button:has-text('Подключиться')");
-    await expect(page.locator(".ftp-source-item")).toHaveClass(/is-connected/);
-    await page.click(".ftp-source-item button:has-text('Отключить')");
-    await expect(page.locator(".ftp-source-item")).not.toHaveClass(/is-connected/);
-    await expect(page.getByRole("button", { name: "Подключиться" })).toBeVisible();
-  });
-
-  test("«Изменить» переименовывает панель в списке", async ({ page }) => {
-    await page.goto("/");
-    await page.click("[data-panel-more] > summary");
-    await page.click("[data-panel-rename]");
+  test("«Переименовать» в меню карточки меняет название", async ({ page }) => {
+    await page.goto("/?view=menu");
+    await page.click('[data-home-mode="cip"]');
+    const card = panelCard(page);
+    await card.locator("[data-source-more] > summary").click();
+    await card.locator("[data-source-rename]").click();
     const modal = page.locator(".ftp-connect-modal");
     await expect(modal).toBeVisible();
     await modal.locator('input[name="label"]').fill("Цех 5");
     await modal.getByRole("button", { name: "Сохранить" }).click();
     await page.waitForLoadState("networkidle");
-    await expect(page.locator(".ftp-source-label")).toHaveText("Цех 5");
+    await expect(panelCard(page).locator(".source-card-name")).toHaveText("Цех 5");
   });
 
-  test("WebView подключённой панели открывает окно/вкладку /app/dashboard", async ({
-    page,
-  }) => {
+  test("WebView панели открывает окно/вкладку /app/dashboard", async ({ page }) => {
     // В вебе WebView открывается через window.open (топ-левел), не iframe:
     // EasyWeb запрещает встраивание (X-Frame-Options). Перехватываем open.
     await page.addInitScript(() => {
@@ -171,10 +157,10 @@ test.describe("сохранённая панель", () => {
       };
     });
 
-    await page.goto("/");
-    await page.click(".ftp-source-item button:has-text('Подключиться')");
-    await waitForMenuReady(page);
-    await page.locator(".ftp-source-item").getByRole("button", { name: "WebView" }).click();
+    // goto ждёт события load — обработчики модулей уже навешены.
+    await page.goto("/?view=menu");
+    await page.click('[data-home-mode="cip"]');
+    await panelCard(page).getByRole("button", { name: "WebView" }).click();
 
     await expect
       .poll(() => page.evaluate(() => window.__opened), { timeout: 15000 })
@@ -200,10 +186,9 @@ test.describe("сохранённая панель", () => {
       };
     });
 
-    await page.goto("/");
-    await page.click(".ftp-source-item button:has-text('Подключиться')");
-    await waitForMenuReady(page);
-    const wv = page.locator(".ftp-source-item").getByRole("button", { name: "WebView" });
+    await page.goto("/?view=menu");
+    await page.click('[data-home-mode="cip"]');
+    const wv = panelCard(page).getByRole("button", { name: "WebView" });
     await wv.click(); // обычный клик → окно приложения
     await wv.click({ modifiers: ["Control"] }); // Ctrl+клик → браузер
 

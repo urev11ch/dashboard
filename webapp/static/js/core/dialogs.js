@@ -1,17 +1,5 @@
 // Модальные формы с обычным POST-сабмитом (сервер отвечает редиректом на /).
 
-// Диалог переименования сохранённой панели: поле имени → сабмит на
-// /workspace/ftp-source/rename (форма, серверный редирект на /).
-export function openRenameDialog(sourceId, label) {
-  openFormDialog({
-    action: "/workspace/ftp-source/rename",
-    title: "Название панели",
-    hidden: [["source_id", sourceId]],
-    fields: [{ label: "Название", name: "label", value: label || "", required: true, focus: true, select: true }],
-    submitLabel: "Сохранить",
-  });
-}
-
 // Модальная форма с обычным POST-сабмитом (серверный редирект на /): заголовок,
 // скрытые поля, видимые поля и «Отмена / <submitLabel>». Клик по подложке
 // закрывает окно. Тексты — только через textContent/value: могут прийти из сети.

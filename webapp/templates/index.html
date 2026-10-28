@@ -6,6 +6,16 @@
   <title>{{ page_title }}</title>
   <link rel="icon" type="image/svg+xml" href="{{ request.url_for('static', path='washjournal-icon.svg') }}?v={{ asset_versions.icon_svg }}">
   <link rel="stylesheet" href="{{ request.url_for('static', path='style.css') }}?v={{ asset_versions.style_css }}">
+  <script>
+    // Режим главного экрана (CIP/ПОУ) — до первой отрисовки, иначе карточки
+    // другого режима мелькнули бы. Выбор пользователя хранится в localStorage;
+    // без него — режим открытой рабочей области.
+    (function () {
+      var mode = {{ workspace_equipment | tojson }};
+      try { mode = localStorage.getItem("opticipHomeModeV1") || mode; } catch (e) {}
+      document.documentElement.dataset.homeMode = mode === "pou" ? "pou" : "cip";
+    })();
+  </script>
 </head>
 <body>
   <div class="app-titlebar" data-app-titlebar hidden>
@@ -25,160 +35,266 @@
       </button>
     </div>
   </div>
-  {% if not has_analysis or force_menu %}
-  <main class="welcome-shell">
-    <section class="welcome-card">
-      <header class="welcome-head">
-        <h1 class="welcome-title">OptiCIP Dashboard</h1>
-        <span class="welcome-version">Версия {{ app_version }}</span>
-      </header>
+  {% if menu_visible %}
+  <!-- Главный экран: режим CIP | ПОУ (фильтр карточек, выбор в localStorage —
+       применяется скриптом в <head> до первой отрисовки) и источники-карточки:
+       FTP-панели и сохранённые папки. Каждый источник открывается в своём типе. -->
+  <main class="welcome-shell home-shell" data-home>
+    <header class="home-head">
+      <div class="home-brand">
+        <h1 class="welcome-title">OptiCIP</h1>
+        <span class="home-tagline">журналы CIP и пастеризации</span>
+      </div>
+      <div class="home-head-right">
+        <span class="welcome-update-status" data-update-status role="status" aria-live="polite"></span>
+        <span class="home-version">Версия {{ app_version }}</span>
+        <button type="button" class="ghost" data-update-btn>Проверить обновления</button>
+      </div>
+    </header>
 
-      <section class="welcome-section">
-        <div class="welcome-section-head">
-          <span class="eyebrow">Панели</span>
-          <div class="welcome-section-actions">
-            <button type="button" class="ghost welcome-manual-toggle" data-ftp-manual aria-expanded="false" aria-controls="manualPanel">
-              <svg class="welcome-manual-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"></path></svg>
-              Добавить вручную
-            </button>
-            <button type="button" class="ftp-search-btn" data-ftp-discover>
-              <svg class="ftp-search-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z"></path></svg>
-              Найти панель
-            </button>
-          </div>
+    <div class="home-modes" role="tablist" aria-label="Оборудование">
+      {% for eq in equipment_types %}
+      <button type="button" class="home-mode" role="tab" data-home-mode="{{ eq.id }}">
+        <span class="home-mode-icon">{% if eq.id == "pou" %}<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4a2 2 0 1 1 4 0v9.5a4 4 0 1 1-4 0z"></path><path d="M12 9v6"></path><path d="M17 6h3M17 9h3"></path></svg>{% else %}<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3c3 4 6 7 6 10.5A6 6 0 0 1 6 13.5C6 10 9 7 12 3z"></path><path d="M9.5 14.5a2.5 2.5 0 0 0 2.5 2.5"></path></svg>{% endif %}</span>
+        <span class="home-mode-text">
+          <span class="home-mode-title">{% if eq.id == "pou" %}ПОУ — пастеризация{% else %}CIP — мойки{% endif %}</span>
+          <span class="home-mode-desc">{% if eq.id == "pou" %}Тренды температуры пастеризации, клапан возврата, выход продукта{% else %}Журнал моек, концентрации, температуры подачи и возврата{% endif %}</span>
+        </span>
+        <span class="home-mode-count">{{ eq.count }} {% if eq.count % 10 == 1 and eq.count % 100 != 11 %}источник{% elif eq.count % 10 in [2, 3, 4] and eq.count % 100 not in [12, 13, 14] %}источника{% else %}источников{% endif %}</span>
+      </button>
+      {% endfor %}
+    </div>
+
+    {% if equipment_mismatch %}
+    {% set mm_source = (equipment_mismatch.source_key or "").split(":", 1) %}
+    <div class="home-notice" role="alert" data-equipment-mismatch>
+      <span class="home-notice-text">{{ error }}</span>
+      {% if mm_source | length == 2 %}
+      <form method="post" action="/workspace/source/open" data-home-open data-equipment-target="{{ equipment_mismatch.equipment }}">
+        <input type="hidden" name="source_kind" value="{{ mm_source[0] }}">
+        <input type="hidden" name="source_id" value="{{ mm_source[1] }}">
+        <input type="hidden" name="equipment" value="{{ equipment_mismatch.equipment }}">
+        <button type="submit" class="ghost">Открыть в режиме {{ equipment_mismatch.equipment_label }}</button>
+      </form>
+      <form method="post" action="/workspace/source/equipment" data-home-open data-equipment-target="{{ equipment_mismatch.equipment }}">
+        <input type="hidden" name="source_kind" value="{{ mm_source[0] }}">
+        <input type="hidden" name="source_id" value="{{ mm_source[1] }}">
+        <input type="hidden" name="equipment" value="{{ equipment_mismatch.equipment }}">
+        <input type="hidden" name="open_after" value="1">
+        <button type="submit">Сделать источником {{ equipment_mismatch.equipment_label }}</button>
+      </form>
+      {% endif %}
+    </div>
+    {% elif error %}
+    <div class="notice error">{{ error }}</div>
+    {% endif %}
+
+    <div class="home-section-head">
+      <h2>Источники <span data-mode-only="cip">CIP</span><span data-mode-only="pou">ПОУ</span></h2>
+      <span class="home-hint">Двойной клик по карточке — открыть журнал</span>
+    </div>
+
+    <div class="home-grid">
+      {% for card in source_cards %}
+      <article class="source-card" data-source-card data-equipment="{{ card.equipment }}" data-kind="{{ card.kind }}" data-id="{{ card.id }}">
+        <div class="source-card-top">
+          <span class="status-dot is-{{ card.status }}" aria-hidden="true"></span>
+          <h3 class="source-card-name">{{ card.label }}</h3>
+          <span class="source-card-kind">{% if card.kind == "ftp" %}<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"></rect><path d="M8 20h8M12 16v4"></path></svg>{% else %}<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h7l2 2h9v11H3z"></path></svg>{% endif %}{{ card.kind_label }}</span>
+          <details class="source-card-more" data-source-more>
+            <summary aria-label="Ещё действия" title="Ещё действия">⋯</summary>
+            <div class="source-card-menu">
+              <button type="button" class="ghost" data-source-rename data-kind="{{ card.kind }}" data-id="{{ card.id }}" data-label="{{ card.label }}">Переименовать</button>
+              {% set other = "cip" if card.equipment == "pou" else "pou" %}
+              <form method="post" action="/workspace/source/equipment">
+                <input type="hidden" name="source_kind" value="{{ card.kind }}">
+                <input type="hidden" name="source_id" value="{{ card.id }}">
+                <input type="hidden" name="equipment" value="{{ other }}">
+                <button type="submit" class="ghost">Перенести в {{ "ПОУ" if other == "pou" else "CIP" }}</button>
+              </form>
+              <form method="post" action="/workspace/source/delete" data-source-delete
+                    data-confirm="{% if card.kind == 'ftp' %}Удалить сохранённую панель вместе со скачанными архивами?{% else %}Убрать папку из списка? Файлы на диске останутся.{% endif %}">
+                <input type="hidden" name="source_kind" value="{{ card.kind }}">
+                <input type="hidden" name="source_id" value="{{ card.id }}">
+                <button type="submit" class="ghost source-card-danger">{% if card.kind == "ftp" %}Удалить{% else %}Убрать из списка{% endif %}</button>
+              </form>
+            </div>
+          </details>
         </div>
-
-        {% if ftp_sources %}
-        <ul class="ftp-source-list">
-          {% for src in ftp_sources %}
-          <li class="ftp-source-item{% if src.is_connected %} is-connected{% endif %}">
-            <div class="ftp-source-info">
-              <span class="ftp-source-label">{{ src.label }}</span>
-              <span class="ftp-source-meta">{{ src.meta | join(' · ') }}</span>
-            </div>
-            <div class="ftp-source-actions">
-              {% if src.is_connected %}
-              <button type="button" data-panel-webview
-                title="В окне приложения (Ctrl+клик — в браузере)"
-                data-host="{{ src.host }}"
-                data-scheme="{{ src.web_scheme }}"
-                data-label="{{ src.label }}">WebView</button>
-              <form method="post" action="/workspace/open-ftp" data-panel-graphs
-                data-host="{{ src.host }}"
-                data-scheme="{{ src.web_scheme }}"
-                data-label="{{ src.label }}">
-                <input type="hidden" name="source_id" value="{{ src.id }}">
-                <button type="submit">Графики</button>
-              </form>
-              <form method="post" action="/workspace/reset">
-                <button type="submit" class="ghost">Отключить</button>
-              </form>
-              {% else %}
-              <form method="post" action="/workspace/ftp-source/connect">
-                <input type="hidden" name="source_id" value="{{ src.id }}">
-                <button type="submit">Подключиться</button>
-              </form>
-              <!-- «Изменить» и «Удалить» — под многоточием: промах по «Удалить»
-                   необратим, а рядом стоит главное действие строки. -->
-              <details class="ftp-source-more" data-panel-more>
-                <summary aria-label="Ещё действия" title="Ещё действия">⋯</summary>
-                <div class="ftp-source-menu">
-                  <button type="button" class="ghost" data-panel-rename
-                    data-source-id="{{ src.id }}"
-                    data-label="{{ src.label }}">Изменить</button>
-                  <form method="post" action="/workspace/ftp-source/delete" onsubmit="return confirm('Удалить сохранённую панель?');">
-                    <input type="hidden" name="source_id" value="{{ src.id }}">
-                    <button type="submit" class="ghost ftp-source-menu-danger">Удалить</button>
-                  </form>
-                </div>
-              </details>
-              {% endif %}
-            </div>
-          </li>
-          {% endfor %}
-        </ul>
-        {% else %}
-        <p class="welcome-empty">Панелей пока нет — найдите панель в сети или добавьте вручную.</p>
-        {% endif %}
-
-        <div class="ftp-discover" data-ftp-discover-root>
-          <span class="ftp-discover-status" data-ftp-discover-status role="status" aria-live="polite"></span>
-          <ul class="ftp-discover-results" data-ftp-discover-results hidden></ul>
-          <!-- Подсеть для скана: показывается, только если скан ничего не нашёл
-               (панель за маршрутизатором — своего адреса в её сети у ПК нет). -->
-          <input type="text" class="ftp-discover-subnet" data-ftp-subnet hidden
-                 placeholder="Подсеть, напр. 192.168.18.0" aria-label="Подсеть для поиска"
-                 autocomplete="off" spellcheck="false">
+        <div class="source-card-address">{{ card.address }}</div>
+        <div class="source-card-sync">{{ card.sync_line }}</div>
+        <div class="source-card-stats">
+          {% if card.summary %}
+          <strong>{{ card.summary.headline }}</strong>
+          <span>{{ card.summary.detail }}{% if card.summary.verdict %} <span class="source-card-verdict is-{{ card.summary.verdict_kind }}">{{ card.summary.verdict }}</span>{% endif %}</span>
+          {% else %}
+          <span class="home-muted">Ещё не открывался — откройте журнал, чтобы увидеть сводку.</span>
+          {% endif %}
         </div>
+        <div class="source-card-actions">
+          <form method="post" action="/workspace/source/open" data-home-open data-equipment-target="{{ card.equipment }}"
+                {% if card.kind == "ftp" %}data-panel-graphs data-host="{{ card.host }}" data-scheme="{{ card.web_scheme }}" data-label="{{ card.label }}"{% endif %}>
+            <input type="hidden" name="source_kind" value="{{ card.kind }}">
+            <input type="hidden" name="source_id" value="{{ card.id }}">
+            <button type="submit" class="source-card-open">{% if card.equipment == "pou" %}Открыть тренды{% else %}Открыть журнал моек{% endif %} <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></button>
+          </form>
+          {% if card.kind == "ftp" %}
+          <button type="button" class="ghost" data-panel-webview
+            title="В окне приложения (Ctrl+клик — в браузере)"
+            data-host="{{ card.host }}"
+            data-scheme="{{ card.web_scheme }}"
+            data-label="{{ card.label }}">WebView</button>
+          {% endif %}
+        </div>
+      </article>
+      {% endfor %}
 
-        <div class="welcome-ftp-add" id="manualPanel" data-ftp-add hidden>
-          <form method="post" action="/workspace/ftp-source/add" class="folder-form folder-form--ftp" data-ftp-add-form>
-            <div class="welcome-ftp-panel">
-            <div class="welcome-form-grid">
-              <label>
-                <span>Host или ссылка</span>
-                <input type="text" name="host" value="{{ ftp_form_defaults.host }}" placeholder="IP панели или ftp://user:pass@IP/datalog" autocomplete="off" spellcheck="false" required>
-              </label>
-              <label>
-                <span>Port</span>
-                <input type="number" name="port" value="{{ ftp_form_defaults.port }}" min="1" max="65535" step="1" autocomplete="off" required>
-              </label>
-              <label>
-                <span>Папка на сервере</span>
-                <input type="text" name="path" value="{{ ftp_form_defaults.path }}" placeholder="/datalog" autocomplete="off" spellcheck="false">
-              </label>
-            </div>
-            <label for="ftpLabel">Название панели (необязательно)</label>
-            <input id="ftpLabel" type="text" name="label" placeholder="Например: Цех 1" autocomplete="off" spellcheck="false">
-            <label for="ftpPassword">Пароль</label>
-            <input id="ftpPassword" type="password" name="password" value="{{ ftp_form_defaults.password }}" placeholder="111111" autocomplete="current-password">
-            <input type="hidden" name="passive" value="on">
-            <div class="folder-actions">
-              <button type="submit">Добавить панель</button>
-            </div>
-            </div>
+      <div class="source-add">
+        <span class="source-add-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></span>
+        <span>Добавить источник <span data-mode-only="cip">CIP</span><span data-mode-only="pou">ПОУ</span></span>
+        <div class="source-add-actions">
+          <button type="button" class="ghost" data-ftp-discover><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"></circle><path d="m20 20-4.5-4.5"></path></svg> Найти в сети</button>
+          <button type="button" class="ghost" data-ftp-manual aria-expanded="false" aria-controls="manualPanel">Вручную</button>
+          <button type="button" class="ghost" data-folder-add-toggle aria-expanded="false" aria-controls="folderAddPanel"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h7l2 2h9v11H3z"></path></svg> Папка</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="ftp-discover" data-ftp-discover-root>
+      <span class="ftp-discover-status" data-ftp-discover-status role="status" aria-live="polite"></span>
+      <ul class="ftp-discover-results" data-ftp-discover-results hidden></ul>
+      <!-- Подсеть для скана: показывается, только если скан ничего не нашёл
+           (панель за маршрутизатором — своего адреса в её сети у ПК нет). -->
+      <input type="text" class="ftp-discover-subnet" data-ftp-subnet hidden
+             placeholder="Подсеть, напр. 192.168.18.0" aria-label="Подсеть для поиска"
+             autocomplete="off" spellcheck="false">
+    </div>
+
+    <div class="home-panel" id="manualPanel" data-ftp-add hidden>
+      <form method="post" action="/workspace/ftp-source/add" class="folder-form folder-form--ftp" data-ftp-add-form>
+        <h3 class="home-panel-title">FTP-панель вручную</h3>
+        <div class="welcome-form-grid">
+          <label>
+            <span>Host или ссылка</span>
+            <input type="text" name="host" value="{{ ftp_form_defaults.host }}" placeholder="IP панели или ftp://user:pass@IP/datalog" autocomplete="off" spellcheck="false" required>
+          </label>
+          <label>
+            <span>Port</span>
+            <input type="number" name="port" value="{{ ftp_form_defaults.port }}" min="1" max="65535" step="1" autocomplete="off" required>
+          </label>
+          <label>
+            <span>Папка на сервере</span>
+            <input type="text" name="path" value="{{ ftp_form_defaults.path }}" placeholder="/datalog" autocomplete="off" spellcheck="false">
+          </label>
+        </div>
+        <div class="welcome-form-grid home-form-grid-2">
+          <label>
+            <span>Название (необязательно)</span>
+            <input type="text" name="label" placeholder="Например: Цех 1" autocomplete="off" spellcheck="false">
+          </label>
+          <label>
+            <span>Пароль</span>
+            <input type="password" name="password" value="{{ ftp_form_defaults.password }}" placeholder="111111" autocomplete="current-password">
+          </label>
+        </div>
+        <input type="hidden" name="passive" value="on">
+        <input type="hidden" name="equipment" value="cip" data-equipment-input>
+        <div class="folder-actions">
+          <button type="submit">Добавить панель</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="home-panel" id="folderAddPanel" data-folder-add hidden>
+      <form method="post" action="/workspace/source/add-folder" class="folder-form" id="workspaceOpenForm">
+        <h3 class="home-panel-title">Папка с архивами</h3>
+        <div class="welcome-folder-row">
+          <input id="workspacePath" type="text" name="path" value="" placeholder="{{ workspace_path_placeholder }}" aria-label="Путь к папке" autocomplete="off" spellcheck="false" required>
+          <button
+            type="button"
+            class="ghost"
+            data-folder-picker
+            data-target-input="workspacePath"
+            data-submit-form="workspaceOpenForm"
+          >
+            Обзор
+          </button>
+          <button
+            type="button"
+            class="ghost"
+            data-folder-default
+            data-target-input="workspacePath"
+            data-default-path="{{ workspace_default_path }}"
+            title="Подставить путь по умолчанию ({{ workspace_default_path }})"
+          >
+            По умолчанию
+          </button>
+          <button type="submit">Добавить папку</button>
+        </div>
+        <input type="hidden" name="fallback_equipment" value="cip" data-equipment-input>
+        <p class="home-muted">Тип (CIP/ПОУ) определится по содержимому папки; его можно сменить в меню карточки.</p>
+      </form>
+    </div>
+  </main>
+  {% elif pou_visible %}
+  <!-- ПОУ: тренды всех тегов архива за период. Журнал прогонов с оценкой —
+       после того, как станут известны коды процесса. -->
+  <main class="wash-screen pou-screen" data-pou-screen>
+    <header class="screen-header">
+      <div>
+        <h1>ПОУ — тренды</h1>
+        <div class="screen-path">{{ display_root }}</div>
+        <div class="screen-clock" id="appClock" aria-live="off"></div>
+      </div>
+      <div class="screen-header-actions">
+        <div class="screen-stats" data-pou-stats></div>
+        <div class="screen-header-buttons">
+          <button type="button" class="ghost" data-wash-webview hidden title="В окне приложения (Ctrl+клик — в браузере)">WebView</button>
+          <form method="post" action="/workspace/refresh">
+            <button type="submit">Обновить данные</button>
+          </form>
+          <form method="get" action="/">
+            <input type="hidden" name="view" value="menu">
+            <button type="submit" class="ghost">Главное меню</button>
           </form>
         </div>
-      </section>
+      </div>
+    </header>
 
-      <section class="welcome-section">
-        <span class="eyebrow">Папка с архивами</span>
-        <form method="post" action="/workspace/open" class="folder-form" id="workspaceOpenForm">
-          <div class="welcome-folder-row">
-            <input id="workspacePath" type="text" name="path" value="{{ workspace_input_value }}" placeholder="{{ workspace_path_placeholder }}" aria-label="Путь к папке" autocomplete="off" spellcheck="false" required>
-            <button
-              type="button"
-              class="ghost"
-              data-folder-picker
-              data-target-input="workspacePath"
-              data-submit-form="workspaceOpenForm"
-            >
-              Обзор
-            </button>
-            <button
-              type="button"
-              class="ghost"
-              data-folder-default
-              data-target-input="workspacePath"
-              data-default-path="{{ workspace_default_path }}"
-              title="Подставить путь по умолчанию ({{ workspace_default_path }})"
-            >
-              По умолчанию
-            </button>
-            <button type="submit">Открыть</button>
-          </div>
-        </form>
-      </section>
+    {% if foreign and source_parts | length == 2 %}
+    <!-- В источнике есть базы другого оборудования: их в этом режиме не видно. -->
+    <div class="home-notice screen-notice" role="status" data-foreign-notice>
+      <span class="home-notice-text">В источнике найдены архивы {{ foreign.equipment_label }} ({{ foreign.count }}): {{ foreign.files | join(", ") }}{% if foreign.count > foreign.files | length %} и другие{% endif %}. В этом режиме они не показываются.</span>
+      <form method="post" action="/workspace/source/open" data-home-open data-equipment-target="{{ foreign.equipment }}">
+        <input type="hidden" name="source_kind" value="{{ source_parts[0] }}">
+        <input type="hidden" name="source_id" value="{{ source_parts[1] }}">
+        <input type="hidden" name="equipment" value="{{ foreign.equipment }}">
+        <button type="submit" class="ghost">Открыть в режиме {{ foreign.equipment_label }}</button>
+      </form>
+    </div>
+    {% endif %}
 
-      {% if error %}
-      <div class="notice error">{{ error }}</div>
-      {% endif %}
-
-      <footer class="welcome-footer">
-        <span class="welcome-update-status" data-update-status role="status" aria-live="polite"></span>
-        <button type="button" class="ghost" data-update-btn>Проверить обновления</button>
-      </footer>
+    <section class="list-toolbar pou-toolbar">
+      <div class="toolbar-period-presets" role="group" aria-label="Период">
+        <button type="button" class="ghost toolbar-period-preset" data-pou-period="1">Сутки</button>
+        <button type="button" class="ghost toolbar-period-preset" data-pou-period="3">3 дня</button>
+        <button type="button" class="ghost toolbar-period-preset" data-pou-period="7">Неделя</button>
+        <button type="button" class="ghost toolbar-period-preset" data-pou-period="all">Весь период</button>
+      </div>
+      <label class="toolbar-calendar-button" aria-label="Показать день" title="Показать день">
+        <input type="date" class="toolbar-date-input" data-pou-day aria-label="Показать день">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M7 2a1 1 0 0 1 1 1v1h8V3a1 1 0 1 1 2 0v1h1a3 3 0 0 1 3 3v11a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V7a3 3 0 0 1 3-3h1V3a1 1 0 0 1 1-1Zm13 8H4v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8ZM6 6a1 1 0 0 0-1 1v1h15V7a1 1 0 0 0-1-1H6Zm2 7h3v3H8v-3Z"/>
+            </svg>
+      </label>
+      <span class="pou-range" data-pou-range></span>
     </section>
+
+    <section class="pou-chart-card">
+      <div class="chart-host chart-host--modal" data-chart-host></div>
+      <div class="technical-empty chart-empty" data-chart-empty hidden>Загружаю данные.</div>
+    </section>
+    <p class="home-muted pou-note">Журнал прогонов с оценкой (уставка, возвраты, расхождение датчиков) появится после настройки кодов процесса ПОУ.</p>
   </main>
   {% else %}
   <main class="wash-screen">
@@ -219,6 +335,19 @@
         </div>
       </div>
     </header>
+
+    {% if foreign and source_parts | length == 2 %}
+    <!-- В источнике есть базы другого оборудования: их в этом режиме не видно. -->
+    <div class="home-notice screen-notice" role="status" data-foreign-notice>
+      <span class="home-notice-text">В источнике найдены архивы {{ foreign.equipment_label }} ({{ foreign.count }}): {{ foreign.files | join(", ") }}{% if foreign.count > foreign.files | length %} и другие{% endif %}. В этом режиме они не показываются.</span>
+      <form method="post" action="/workspace/source/open" data-home-open data-equipment-target="{{ foreign.equipment }}">
+        <input type="hidden" name="source_kind" value="{{ source_parts[0] }}">
+        <input type="hidden" name="source_id" value="{{ source_parts[1] }}">
+        <input type="hidden" name="equipment" value="{{ foreign.equipment }}">
+        <button type="submit" class="ghost">Открыть в режиме {{ foreign.equipment_label }}</button>
+      </form>
+    </div>
+    {% endif %}
 
     <section class="list-toolbar">
       <div class="toolbar-field toolbar-field--search">

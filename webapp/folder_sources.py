@@ -102,9 +102,15 @@ def find_folder_source(source_id: str) -> dict[str, Any] | None:
     return None
 
 
-def add_folder_source(path: str | Path, label: str = "", equipment: str | None = None) -> dict[str, Any]:
+def add_folder_source(
+    path: str | Path,
+    label: str = "",
+    equipment: str | None = None,
+    fallback_equipment: str | None = None,
+) -> dict[str, Any]:
     """Добавляет папку (или обновляет запись той же папки). equipment=None —
-    прежний тип записи, для новой — угаданный по содержимому, иначе CIP."""
+    прежний тип записи, для новой — угаданный по содержимому, иначе
+    fallback_equipment (режим, в котором её добавляют), иначе CIP."""
     entry = _make_entry(path, label, equipment)
     # Обход папки — до блокировки реестра: на большом архиве он заметно дольше.
     guessed = guess_folder_equipment(entry["path"]) if equipment is None else None
@@ -116,7 +122,7 @@ def add_folder_source(path: str | Path, label: str = "", equipment: str | None =
             if previous is not None:
                 entry["equipment"] = normalize_equipment(previous.get("equipment"))
             else:
-                entry["equipment"] = guessed or EQUIPMENT_CIP
+                entry["equipment"] = guessed or normalize_equipment(fallback_equipment)
         if previous is not None and not (label or "").strip():
             entry["label"] = previous.get("label") or entry["label"]
         registry["folders"] = [f for f in registry["folders"] if f["id"] != entry["id"]]
