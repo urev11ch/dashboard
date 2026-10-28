@@ -123,6 +123,41 @@ jobs:
           }
           Write-Host "Смоук-тест пройден: .exe стартует и корректно завершается."
 
+      - name: Smoke test portable copy with Mark of the Web
+        # Портативный zip, распакованный Проводником, помечает КАЖДЫЙ файл меткой
+        # «скачано из интернета» (поток Zone.Identifier), а .NET Framework такие
+        # сборки не грузит — pythonnet падал с «Failed to resolve
+        # Python.Runtime.Loader.Initialize» (1.1.40.1–1.1.40.2). Приложение само
+        # снимает метку до загрузки pythonnet (unblock_bundle_files). Здесь
+        # воспроизводим распаковку из интернета на КОПИИ сборки (dist не трогаем —
+        # из неё ещё пакуются zip и установщик) и требуем, чтобы самопроверка
+        # прошла, а метка с Python.Runtime.dll исчезла.
+        run: |
+          $copy = Join-Path $env:RUNNER_TEMP "motw\OptiCIP-Dashboard"
+          New-Item -ItemType Directory -Force -Path (Split-Path $copy) | Out-Null
+          Copy-Item -Recurse -Force "dist\OptiCIP-Dashboard" $copy
+          # Метим всё в _internal (там .NET-сборки), но не сам .exe: на помеченном
+          # .exe ShellExecute может показать предупреждение безопасности, которое
+          # на раннере некому закрыть, — шаг повис бы до таймаута.
+          Get-ChildItem -Recurse -File (Join-Path $copy "_internal") | ForEach-Object {
+            Set-Content -Path $_.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3"
+          }
+          $dll = Get-ChildItem -Recurse -File $copy -Filter Python.Runtime.dll | Select-Object -First 1
+          if (-not (Get-Item $dll.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue)) {
+            Write-Error "Не удалось поставить метку — тест ничего бы не проверил."
+            exit 1
+          }
+          $p = Start-Process (Join-Path $copy "OptiCIP-Dashboard.exe") -ArgumentList '--selftest' -Wait -PassThru
+          if ($p.ExitCode -ne 0) {
+            Write-Error "Помеченная копия не прошла самопроверку (код $($p.ExitCode)) — портативный zip у пользователей не запустится."
+            exit 1
+          }
+          if (Get-Item $dll.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue) {
+            Write-Error "Самопроверка прошла, но метка с Python.Runtime.dll не снята."
+            exit 1
+          }
+          Write-Host "Портативная копия с меткой «из интернета» запускается."
+
       - name: Sign executable
         if: env.HAS_SIGNING == 'true'
         env:
