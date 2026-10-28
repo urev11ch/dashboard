@@ -104,8 +104,12 @@ WEBVIEW_FOREIGN_PLATFORMS = [
     "webview.platforms.gtk",
     "webview.platforms.qt",
 ]
-# Файлы pywebview под чужие платформы/архитектуры (сборка только x64).
-WEBVIEW_FOREIGN_FILES = ("pywebview-android.jar", "win-arm64", "win-x86", "WebBrowserInterop.x86.dll")
+# Файлы pywebview, которые сборке не нужны (Android и 32-битный mshtml-интероп).
+# runtimes/win-arm64 и win-x86 НЕ вырезаем, хоть процесс и x64: pywebview при
+# импорте edgechromium добавляет в PATH папки всех трёх архитектур и падает
+# «Cannot find win-arm64», если любой нет, — окно не открывалось ни на одном ПК
+# (1.1.40.1–1.1.40.2). Это по одному WebView2Loader.dll (~150 КБ).
+WEBVIEW_FOREIGN_FILES = ("pywebview-android.jar", "WebBrowserInterop.x86.dll")
 
 
 def is_foreign_webview_file(entry) -> bool:

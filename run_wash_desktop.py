@@ -609,10 +609,45 @@ def show_fatal_error(message: str) -> None:
         pass
 
 
+# Метка «скачано из интернета» (Mark of the Web) — альтернативный NTFS-поток
+# файла. Её ставит Проводник на всё, что распаковано из скачанного zip.
+ZONE_IDENTIFIER_STREAM = ":Zone.Identifier"
+
+
+def unblock_bundle_files() -> None:
+    """Снимает метку «скачано из интернета» с файлов сборки.
+
+    Портативный zip, распакованный Проводником, помечает каждый файл, а .NET
+    Framework помеченные сборки не грузит: pythonnet падал с «Failed to resolve
+    Python.Runtime.Loader.Initialize». Установщик меток не оставляет — чиним
+    только портативную папку; файлы принадлежат пользователю, права
+    администратора не нужны. Обычный запуск без меток папку не обходит.
+    """
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return
+    root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+    marker = root / "pythonnet" / "runtime" / "Python.Runtime.dll"
+    if marker.exists() and not os.path.exists(f"{marker}{ZONE_IDENTIFIER_STREAM}"):
+        return
+    removed = failed = 0
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            os.remove(f"{path}{ZONE_IDENTIFIER_STREAM}")
+            removed += 1
+        except FileNotFoundError:
+            pass
+        except OSError:
+            failed += 1
+    logging.info("Снята метка «из интернета»: %s файлов, не удалось: %s", removed, failed)
+
+
 def preflight_windows_runtime() -> None:
     if sys.platform != "win32":
         return
 
+    unblock_bundle_files()  # до pythonnet: помеченную сборку .NET не загрузит
     from pythonnet import get_runtime_info, load
 
     load("netfx")
@@ -1810,6 +1845,12 @@ def run_selftest() -> int:
         import webview  # noqa: F401 — проверяем именно факт импорта из бандла
 
         preflight_windows_runtime()  # pythonnet: load("netfx") + clr.AddReference
+        if sys.platform == "win32":
+            # Бэкенд окна: при импорте подключает сборки WebView2 и ищет папки
+            # runtimes/win-arm64|win-x64|win-x86 — ВСЕ три, на любом ПК. Без этой
+            # проверки сборка без win-arm64 прошла CI и не открывала окно нигде
+            # («Cannot find win-arm64», 1.1.40.1–1.1.40.2). Окно не создаётся.
+            import webview.platforms.edgechromium  # noqa: F401
         load_web_app()  # FastAPI-приложение со всеми его зависимостями
     except Exception:
         logging.exception("Самопроверка не пройдена")
@@ -1880,9 +1921,17 @@ def main(argv: list[str] | None = None) -> int:
         preflight_windows_runtime()
     except Exception as exc:  # pragma: no cover - Windows-specific runtime failure
         logging.exception("Windows runtime preflight failed")
+        hint = ""
+        if "Python.Runtime" in str(exc):
+            hint = (
+                "Если это портативная версия из zip: закройте окно, в свойствах "
+                "zip-архива отметьте «Разблокировать» и распакуйте заново — "
+                "или используйте установщик.\n\n"
+            )
         show_fatal_error(
             "Приложение не запустилось.\n\n"
             f"{exc}\n\n"
+            f"{hint}"
             f"Лог: {LOG_PATH}"
         )
         return 1
